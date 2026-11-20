@@ -50,9 +50,10 @@ export function formatTime(ms: number): string {
   return new Date(ms).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-/** "1.234,56" / "12,5" / "12.5" → sayı. Geçersizse NaN. */
-export function parseDecimal(input: string | number): number {
+/** "1.234,56" / "12,5" / "12.5" → sayı. Geçersizse (boş, eksik alan, metin dışı) NaN. */
+export function parseDecimal(input: string | number | null | undefined): number {
   if (typeof input === "number") return input;
+  if (typeof input !== "string") return NaN;
   let s = input.trim().replace(/\s/g, "");
   if (!s) return NaN;
   if (s.includes(",") && s.includes(".")) {

@@ -11,7 +11,9 @@ import type { TechnicalAnalysis } from "@/lib/technical";
 import { fetchJson, goToLogin, UnauthorizedError, usePolling } from "@/lib/usePolling";
 import { formatQuotePrice, isIndex, OVERVIEW } from "./MarketView";
 import { AssetNewsPanel } from "./AssetNewsPanel";
+import { HeadlinesPanel, WhyMovingButton } from "./AssetInsights";
 import { OrderForm } from "./OrdersView";
+import { AlarmForm } from "./AlarmsView";
 import { PriceChart, type ChartOverlay } from "./PriceChart";
 import { SignalBadge, TechnicalPanel } from "./TechnicalPanel";
 import { TransactionForm, toInput } from "./TransactionForm";
@@ -37,7 +39,7 @@ const RANGE_HINT: Record<ChartRange, string> = {
   "5Y": "son 5 yıl",
 };
 
-type Action = "virtual" | "order" | "tx" | null;
+type Action = "virtual" | "order" | "tx" | "alarm" | null;
 
 type Layer = "sma50" | "sma200" | "bb" | "rsi";
 
@@ -49,6 +51,22 @@ const LAYERS: { key: Layer; label: string; color: string; hint: string }[] = [
   { key: "rsi", label: "RSI", color: "#a78bfa", hint: "alttaki panel. 70 üstü: kısa sürede çok yükseldi, 30 altı: kısa sürede çok düştü." },
 ];
 
+const LAYER_ALIASES: Record<string, Layer> = { sma50: "sma50", sma200: "sma200", bb: "bb", bollinger: "bb", rsi: "rsi" };
+
+/** "sma50,bollinger" → katman durumu. Parametre yoksa varsayılan: yalnızca RSI açık. */
+function parseLayers(raw: string | null): Record<Layer, boolean> {
+  const out: Record<Layer, boolean> = { sma50: false, sma200: false, bb: false, rsi: true };
+  const keys = (raw ?? "")
+    .toLowerCase()
+    .split(/[,\s]+/)
+    .map((k) => LAYER_ALIASES[k])
+    .filter(Boolean);
+  if (keys.length === 0) return out;
+  out.rsi = false;
+  for (const k of keys) out[k] = true;
+  return out;
+}
+
 export function AssetDetailView() {
   const params = useSearchParams();
   const router = useRouter();
@@ -58,12 +76,17 @@ export function AssetDetailView() {
   const nameParam = params.get("ad");
   const isFund = ref?.type === "fund";
   // Fon fiyatı günde bir açıklanır: gün içi aralıklar yerine 1 ay ve üstü.
-  const [range, setRange] = useState<ChartRange>(isFund ? "3A" : "1A");
+  const aralik = params.get("aralik");
+  const [range, setRange] = useState<ChartRange>(
+    RANGES.some((r) => r.value === aralik) && !(isFund && (aralik === "1G" || aralik === "1H")) ? (aralik as ChartRange) : isFund ? "3A" : "1A",
+  );
   const [chart, setChart] = useState<{ key: string; data: ChartData | null; error?: string } | null>(null);
   const [action, setAction] = useState<Action>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [tech, setTech] = useState<{ id: string; data: TechnicalAnalysis | null; error: string | null } | null>(null);
-  const [layers, setLayers] = useState<Record<Layer, boolean>>({ sma50: false, sma200: false, bb: false, rsi: true });
+  // &katman=sma50,sma200,bollinger,rsi: eğitim derslerindeki "Uygulamada dene" bağlantıları katmanları hazır açar.
+  const katman = params.get("katman");
+  const [layers, setLayers] = useState<Record<Layer, boolean>>(() => parseLayers(katman));
 
   const price = usePolling<{ quotes: Quote[] }>(`/api/prices?ids=${encodeURIComponent(id || "fx:USD")}`);
   const watch = usePolling<{ items: WatchItem[] }>("/api/watchlist", 120_000);
@@ -292,6 +315,9 @@ export function AssetDetailView() {
           <button onClick={() => setAction("tx")} className="rounded-xl bg-accent px-2 py-3 text-sm font-semibold text-emerald-950 hover:brightness-110">
             İşlem ekle
           </button>
+          <button onClick={() => setAction("alarm")} className="col-span-3 rounded-xl border border-line bg-surface px-2 py-2.5 text-sm font-medium text-slate-200 hover:bg-surface-2">
+            Alarm kur <span className="text-xs text-slate-500">(işlem yapmaz, yalnızca haber verir)</span>
+          </button>
         </div>
       )}
 
@@ -301,17 +327,32 @@ export function AssetDetailView() {
         </p>
       )}
 
+      {!index && <WhyMovingButton instrument={id} changePct={q?.changePct} />}
+
       <TechnicalPanel data={techData} error={tech && tech.id === id ? tech.error : null} />
 
       {ref.type === "bist" && !index && <KapPanel symbol={ref.symbol} />}
 
       {supportsDividends(ref.type) && !index && <DividendPanel instrument={id} assetType={ref.type} />}
 
+      <HeadlinesPanel instrument={id} name={nameParam ?? current?.data?.name ?? null} />
+
       <AssetNewsPanel instrument={id} />
 
       {action === "virtual" && (
         <Modal title="Sanal pozisyon aç" onClose={() => setAction(null)}>
           <VirtualEntryForm initialAssetType={ref.type} initialSymbol={ref.symbol} onSaved={() => done("Sanal pozisyon açıldı. Portföy › Sanal sekmesinde görebilirsiniz.")} />
+        </Modal>
+      )}
+      {action === "alarm" && (
+        <Modal title="Alarm kur" onClose={() => setAction(null)}>
+          <AlarmForm
+            initialAssetType={ref.type}
+            initialSymbol={ref.symbol}
+            currentPrice={q?.price}
+            currency={q?.currency}
+            onSaved={() => done("Alarm kuruldu. Alarmlar sayfasından yönetebilirsiniz.")}
+          />
         </Modal>
       )}
       {action === "order" && (

@@ -5,7 +5,7 @@ import { buildPositions } from "./positions";
 import { listWatchlist } from "./market";
 import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
-import { getKapNotifyScope } from "./settings";
+import { getKapNotifyScope, getSetting, setSetting } from "./settings";
 import { politeFetch } from "./http";
 
 // KAP (Kamuyu Aydınlatma Platformu) bildirimleri.
@@ -158,14 +158,25 @@ export interface KapPollResult {
  * KAP'tan tarih aralığıyla bildirimleri çeker, ilgili hisselere ait olanları saklar,
  * pozisyon hisseleri için (ayara göre) bildirim + push üretir. Hata fırlatabilir.
  */
+const LAST_OK_KEY = "kap_last_ok";
+const DAY_MS = 86_400_000;
+
+/** Sorgu başlangıcı (ms): son başarılı çekim / son saklanan bildirim − 1 gün, en fazla 7 gün geri; hiçbiri yoksa 3 gün. */
+export function kapFromMs(now: number, lastOk: number | null, latestStored: number | null): number {
+  const base = lastOk ?? latestStored;
+  if (base == null) return now - 3 * DAY_MS;
+  return Math.max(now - 7 * DAY_MS, Math.min(now - DAY_MS, base - DAY_MS));
+}
+
 export async function pollKapNow(now = Date.now()): Promise<KapPollResult> {
   const interest = tickersOfInterest();
   if (interest.size === 0) return { fetched: 0, stored: 0, notified: 0 };
   const db = getDb();
-  const hasAny = !!db.prepare("SELECT 1 FROM kap_disclosures LIMIT 1").get();
-  // İlk çalışmada son 3 günü, sonra dün + bugünü al.
-  const from = istanbulDate(now - (hasAny ? 1 : 3) * 86_400_000);
+  // Boşluk kalmasın: son başarılı çekimden (yoksa en son saklanan bildirimden) 1 gün öncesinden
+  // başla; en fazla 7 gün geriye git. Hiç çekim yoksa son 3 gün.
+  const from = istanbulDate(kapFromMs(now, Number(getSetting(LAST_OK_KEY)) || null, (db.prepare("SELECT MAX(publish_at) AS m FROM kap_disclosures").get() as { m: number | null }).m));
   const items = await fetchKap(from, istanbulDate(now));
+  setSetting(LAST_OK_KEY, String(now));
 
   const insert = db.prepare(
     `INSERT OR IGNORE INTO kap_disclosures (disclosure_index, publish_at, stock_codes, kap_title, subject, summary, disclosure_class, disclosure_type, is_dividend)

@@ -40,7 +40,7 @@ export function currentModel(): { key: AiModelKey; id: string } {
 
 // ---- Kullanım ve maliyet ----------------------------------------------------
 
-export type UsageKind = "sohbet" | "haber" | "test";
+export type UsageKind = "sohbet" | "haber" | "test" | "ozet" | "neden";
 
 export interface UsageTotals {
   inputTokens: number;
@@ -107,12 +107,19 @@ export function addUsage(a: UsageTotals, b: UsageTotals): UsageTotals {
   };
 }
 
-/** İstanbul saatine göre bu ayın başı, UTC "YYYY-MM-DD HH:MM:SS" (created_at ile karşılaştırma için). */
-function monthStartUtc(now = new Date()): string {
+/**
+ * İstanbul saatine göre "now"un ayı: [ay başı, sonraki ay başı) aralığı, UTC
+ * "YYYY-MM-DD HH:MM:SS" (created_at ile karşılaştırma için). Üst sınır önemli:
+ * geçmiş bir tarihle sorulduğunda (testler, gecikmeli zamanlayıcı) sonraki ayların
+ * harcaması o aya sayılmasın.
+ */
+export function monthRangeUtc(now = new Date()): { start: string; end: string } {
   const ym = now.toLocaleDateString("en-CA", { timeZone: "Europe/Istanbul" }).slice(0, 7);
+  const [y, m] = ym.split("-").map(Number);
+  const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
   // İstanbul UTC+3 (yaz saati yok)
-  const start = new Date(`${ym}-01T00:00:00+03:00`);
-  return start.toISOString().slice(0, 19).replace("T", " ");
+  const iso = (s: string) => new Date(`${s}-01T00:00:00+03:00`).toISOString().slice(0, 19).replace("T", " ");
+  return { start: iso(ym), end: iso(next) };
 }
 
 export interface BudgetStatus {
@@ -124,9 +131,12 @@ export interface BudgetStatus {
 }
 
 export function getBudgetStatus(now = new Date()): BudgetStatus {
+  const { start, end } = monthRangeUtc(now);
   const row = getDb()
-    .prepare("SELECT COALESCE(SUM(cost_usd),0) AS c, COALESCE(SUM(web_searches),0) AS s, COUNT(*) AS n FROM ai_usage WHERE created_at >= ?")
-    .get(monthStartUtc(now)) as { c: number; s: number; n: number };
+    .prepare(
+      "SELECT COALESCE(SUM(cost_usd),0) AS c, COALESCE(SUM(web_searches),0) AS s, COUNT(*) AS n FROM ai_usage WHERE created_at >= ? AND created_at < ?",
+    )
+    .get(start, end) as { c: number; s: number; n: number };
   const budgetUsd = getAiSettings().budgetUsd;
   return { spentUsd: row.c, budgetUsd, overBudget: row.c >= budgetUsd, searches: row.s, calls: row.n };
 }

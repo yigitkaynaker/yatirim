@@ -275,6 +275,68 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_kap_publish ON kap_disclosures (publish_at);
   `,
+  `
+  -- İşlem yapmayan alarmlar (yalnızca bildirim + push). Süresi dolmaz.
+  -- kind: price (fiyat eşiği), day_change (günlük % değişim), cost_change (maliyete göre %),
+  --       volume_spike (bugünkü hacim / 20 günlük ortalama), signal_change (teknik sinyal değişimi)
+  -- scope: asset (tek varlık) | watchlist (izleme listesindeki herhangi biri)
+  -- direction: up (üstüne çıkınca / yükselince), down (altına inince / düşünce), both
+  -- state: tetiklenme durumu (JSON; varlık başına "kurulu mu", son tetiklenme, son sinyal)
+  CREATE TABLE alarms (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind          TEXT    NOT NULL CHECK (kind IN ('price','day_change','cost_change','volume_spike','signal_change')),
+    scope         TEXT    NOT NULL DEFAULT 'asset' CHECK (scope IN ('asset','watchlist')),
+    asset_type    TEXT,
+    symbol        TEXT,
+    mode          TEXT    CHECK (mode IS NULL OR mode IN ('real','virtual')),
+    direction     TEXT    NOT NULL DEFAULT 'both' CHECK (direction IN ('up','down','both')),
+    threshold     REAL,
+    repeat        TEXT    NOT NULL DEFAULT 'once' CHECK (repeat IN ('once','every')),
+    cooldown_min  INTEGER NOT NULL DEFAULT 60 CHECK (cooldown_min >= 0),
+    active        INTEGER NOT NULL DEFAULT 1,
+    note          TEXT,
+    source        TEXT    NOT NULL DEFAULT 'manuel',
+    state         TEXT,
+    fire_count    INTEGER NOT NULL DEFAULT 0,
+    last_fired_at INTEGER,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE alarm_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    alarm_id    INTEGER REFERENCES alarms(id) ON DELETE CASCADE,
+    instrument  TEXT    NOT NULL,
+    message     TEXT    NOT NULL,
+    value       REAL,
+    fired_at    INTEGER NOT NULL
+  );
+  CREATE INDEX idx_alarm_events_time ON alarm_events (fired_at);
+
+  -- Dış kaynak önbelleği (RSS başlıkları, piyasa duygusu…): yeniden başlatmada kaybolmasın.
+  CREATE TABLE ext_cache (
+    key         TEXT PRIMARY KEY,
+    value       TEXT    NOT NULL,
+    fetched_at  INTEGER NOT NULL
+  );
+
+  -- Haber taramasında ücretsiz kaynaklar (RSS + KAP) sayesinde yapılmayan ücretli aramalar (tahmini)
+  ALTER TABLE news_reports ADD COLUMN free_headlines INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE news_reports ADD COLUMN searches_saved INTEGER NOT NULL DEFAULT 0;
+
+  -- Temettü: brüt tutar ve uygulanan stopaj (amount = net, hesaba geçen)
+  ALTER TABLE dividends ADD COLUMN gross_amount REAL;
+  ALTER TABLE dividends ADD COLUMN withholding_pct REAL;
+
+  -- Günlük özet (hafta içi akşam; yapay zekalı ya da anahtar yoksa kurallı)
+  CREATE TABLE daily_summaries (
+    date        TEXT PRIMARY KEY,
+    text        TEXT    NOT NULL,
+    ai          INTEGER NOT NULL DEFAULT 0,
+    model       TEXT,
+    cost_usd    REAL    NOT NULL DEFAULT 0,
+    data        TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
 ];
 
 function open(): DatabaseSync {

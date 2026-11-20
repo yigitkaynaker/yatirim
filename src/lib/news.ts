@@ -11,16 +11,19 @@ import {
   getAiClient,
   getBudgetStatus,
   isAiConfigured,
+  monthRangeUtc,
   NoApiKeyError,
   recordUsage,
   type AiClient,
 } from "./aiClient";
-import { getAiSettings } from "./settings";
+import { getAiSettings, WEB_SEARCH_USD } from "./settings";
 import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
 import { formatNumber } from "./format";
 import { technicalContext } from "./technical";
 import { kapContext } from "./kap";
+import { headlineLine, headlinesFor, type Headline } from "./freeNews";
+import { unverifiedNumbers } from "./numberCheck";
 
 // HABER ANALİZİ
 // Gerçek + sanal pozisyonlar, izleme listesi ve bekleyen emirlerdeki varlıklar
@@ -42,7 +45,15 @@ export interface NewsItem {
   summary: string;
   positionImpact: string;
   sources: string[];
+  /** Olası olumlu / olumsuz senaryo (kısa) ve modelin güven düzeyi */
+  scenarioPositive?: string;
+  scenarioNegative?: string;
+  confidence?: Confidence;
+  /** Metinde geçen ama verilen bağlamda bulunmayan rakamlar (uyarı) */
+  unverified?: string[];
 }
+
+export type Confidence = "düşük" | "orta" | "yüksek";
 
 export interface NewsSource {
   url: string;
@@ -61,6 +72,9 @@ export interface NewsReport {
   error: string | null;
   webSearches: number;
   costUsd: number;
+  /** İsteme eklenen ücretsiz başlık (RSS) sayısı ve bu sayede yapılmayan tahmini ücretli arama */
+  freeHeadlines: number;
+  searchesSaved: number;
   createdAt: string;
   finishedAt: string | null;
 }
@@ -77,6 +91,8 @@ interface ReportRow {
   error: string | null;
   web_searches: number;
   cost_usd: number;
+  free_headlines: number;
+  searches_saved: number;
   created_at: string;
   finished_at: string | null;
 }
@@ -103,6 +119,8 @@ function fromRow(r: ReportRow): NewsReport {
     error: r.error,
     webSearches: r.web_searches,
     costUsd: r.cost_usd,
+    freeHeadlines: r.free_headlines ?? 0,
+    searchesSaved: r.searches_saved ?? 0,
     createdAt: r.created_at,
     finishedAt: r.finished_at,
   };
@@ -200,10 +218,13 @@ export const SUBMIT_TOOL: Anthropic.Tool = {
             sentiment: { type: "string", enum: ["olumlu", "olumsuz", "nötr"] },
             importance: { type: "integer", minimum: 1, maximum: 5, description: "1: önemsiz, 3: dikkate değer, 5: pozisyonu doğrudan etkileyebilecek çok önemli gelişme" },
             summary: { type: "string", description: "2-3 cümlelik sade Türkçe özet." },
-            position_impact: { type: "string", description: "Kullanıcının pozisyonuna / emrine olası etkisi, 1-2 cümle." },
-            sources: { type: "array", items: { type: "string" }, description: "Bu maddeyi destekleyen haber URL'leri (yalnızca arama sonuçlarından)." },
+            position_impact: { type: "string", description: "Kullanıcının pozisyonuna / emrine olası etkisi, 1-2 cümle. Al/sat tavsiyesi verme." },
+            scenario_positive: { type: "string", description: "Olumlu senaryo: işler iyi giderse ne olabilir (1 cümle)." },
+            scenario_negative: { type: "string", description: "Olumsuz senaryo: işler kötü giderse ne olabilir (1 cümle)." },
+            confidence: { type: "string", enum: ["düşük", "orta", "yüksek"], description: "Bu değerlendirmeye güven düzeyin. Kaynak az ya da çelişkiliyse düşük." },
+            sources: { type: "array", items: { type: "string" }, description: "Bu maddeyi destekleyen haber URL'leri: verilen ücretsiz başlıklardan, KAP bağlantılarından ya da arama sonuçlarından. Haber iddiası varsa en az bir bağlantı ZORUNLU." },
           },
-          required: ["asset_type", "symbol", "sentiment", "importance", "summary", "position_impact", "sources"],
+          required: ["asset_type", "symbol", "sentiment", "importance", "summary", "position_impact", "scenario_positive", "scenario_negative", "confidence", "sources"],
         },
       },
     },
@@ -220,17 +241,21 @@ function buildPrompt(
   maxSearches: number,
   technical: Map<string, string> = new Map(),
   kap: Map<string, string[]> = new Map(),
+  headlines: Map<string, Headline[]> = new Map(),
 ): { system: string; user: string } {
   const system = [
     "Sen kişisel bir yatırım uygulamasında çalışan haber analisti yardımcısısın. Kullanıcı yatırıma yeni başlayan biri.",
+    "Görevin: verilen varlıklarla ilgili son 1-2 günün önemli haberlerini değerlendirmek. ÖNCE istemde verilen ÜCRETSİZ kaynakları kullan: Google Haberler / Yahoo Finance başlıkları (RSS) ve KAP bildirimleri.",
     maxSearches > 0
-      ? `Görevin: verilen varlıklarla ilgili son 1-2 günün önemli haberlerini web_search aracıyla bulmak. En fazla ${maxSearches} arama yapabilirsin; bu yüzden aramaları birleştir (örn. birkaç BIST hissesini ya da genel piyasayı tek aramada sor) ve en önemli varlıklara öncelik ver.`
-      : "Bu taramada web araması kapalı. Yalnızca genel bilgine dayan, güncel haber iddiasında bulunma ve sources alanlarını boş bırak.",
+      ? `web_search ücretlidir (arama başına ~0,01 $). Yalnızca ücretsiz başlıklar bir varlık için yetersizse (başlık yok, belirsiz ya da önemli görünen bir gelişmenin ayrıntısı gerekiyor) kullan. En fazla ${maxSearches} arama yapabilirsin; aramaları birleştir. Ücretsiz başlıklar yeterliyse HİÇ arama yapma.`
+      : "Bu taramada web araması kapalı. Yalnızca verilen başlıklara ve KAP bildirimlerine dayan; başlığı olmayan varlık için güncel haber iddiasında bulunma.",
     "Sonucu MUTLAKA submit_news_report aracını bir kez çağırarak gönder. Ayrıca uzun metin yazma.",
     "Kurallar:",
     "- Her varlık için bir madde ekle; asset_type ve symbol listede yazdığı gibi olsun.",
     "- Kayda değer haber bulamadığın varlık için: sentiment \"nötr\", importance 1, summary \"Kayda değer yeni haber bulunamadı.\" yaz.",
-    "- Asla haber uydurma. Her haber iddiası için sources alanına gerçekten arama sonuçlarında gördüğün URL'leri koy.",
+    "- Asla haber uydurma. Her haber iddiası için sources alanına gerçekten gördüğün bağlantıları koy (başlık satırlarının sonundaki bağlantı, KAP bağlantısı ya da arama sonucu). Kaynağı olmayan iddia yazma.",
+    "- Rakamlar: istemde ya da arama sonuçlarında geçmeyen hiçbir fiyat, yüzde veya tutar yazma; tahmin rakamı uydurma.",
+    "- Her madde için kısa bir olumlu senaryo ve olumsuz senaryo yaz, güven düzeyini (düşük/orta/yüksek) belirt. Doğrudan \"al\" ya da \"sat\" deme.",
     "- importance 4 ve 5 yalnızca kullanıcının pozisyonunu ya da emrini doğrudan etkileyebilecek ciddi gelişmeler için (bilanço sürprizi, büyük düzenleme, sert fiyat hareketi, iflas/birleşme vb.).",
     "- Dil sade Türkçe olsun; teknik terim kullanırsan kısaca açıkla.",
     "- Kesin al/sat tavsiyesi verme; olası etkileri \"olabilir\" diliyle anlat.",
@@ -243,7 +268,12 @@ function buildPrompt(
       `- asset_type=${a.assetType} symbol=${a.symbol} (${displaySymbol(a.assetType, a.symbol)}) — ${a.notes.join("; ")}` +
       (technical.has(a.instrument) ? ` — ${technical.get(a.instrument)}` : "") +
       (a.assetType === "bist" && kap.has(a.symbol) ? `
-    KAP (son 48 saat): ${kap.get(a.symbol)!.join(" | ")}` : ""),
+    KAP (son 48 saat): ${kap.get(a.symbol)!.join(" | ")}` : "") +
+      (headlines.has(a.instrument)
+        ? `
+    Ücretsiz başlıklar (RSS): ${headlines.get(a.instrument)!.map(headlineLine).join(" | ")}`
+        : `
+    Ücretsiz başlık bulunamadı.`),
   );
   const user = [
     `Şu an (İstanbul): ${istanbulNow()}`,
@@ -304,6 +334,9 @@ export function parseReportInput(input: unknown, assets: ScanAsset[]): { marketS
       importance,
       summary: String(it.summary ?? "").trim().slice(0, 1200),
       positionImpact: String(it.position_impact ?? "").trim().slice(0, 800),
+      scenarioPositive: String(it.scenario_positive ?? "").trim().slice(0, 400) || undefined,
+      scenarioNegative: String(it.scenario_negative ?? "").trim().slice(0, 400) || undefined,
+      confidence: (["düşük", "orta", "yüksek"] as const).find((c) => c === it.confidence) ?? (sources.length === 0 ? "düşük" : "orta"),
       sources,
     });
   }
@@ -384,7 +417,11 @@ async function runScan(reportId: number, client: AiClient, only?: { type: AssetT
     }
     const technical = await technicalContext(assets);
     const kap = kapContext(assets.filter((a) => a.assetType === "bist").map((a) => a.symbol));
-    const { system, user } = buildPrompt(assets, maxSearches, technical, kap);
+    const headlines = await headlinesFor(assets);
+    const freeCount = [...headlines.values()].reduce((n, l) => n + l.length, 0);
+    const headlineByUrl = new Map<string, string>();
+    for (const l of headlines.values()) for (const h of l) headlineByUrl.set(h.url, `${h.title}${h.publisher ? ` — ${h.publisher}` : ""}`);
+    const { system, user } = buildPrompt(assets, maxSearches, technical, kap, headlines);
     const tools: Anthropic.ToolUnion[] = maxSearches > 0 ? [webSearchTool(maxSearches), SUBMIT_TOOL] : [SUBMIT_TOOL];
     const messages: Anthropic.MessageParam[] = [{ role: "user", content: user }];
 
@@ -428,6 +465,19 @@ async function runScan(reportId: number, client: AiClient, only?: { type: AssetT
       });
     }
     if (!report) throw new Error("Yapay zeka yapılandırılmış rapor döndürmedi.");
+    // Ücretsiz başlıklardan alıntılanan bağlantıları da kaynak listesine ekle.
+    for (const it of report.items) for (const u of it.sources) if (!sources.has(u) && headlineByUrl.has(u)) sources.set(u, headlineByUrl.get(u)!);
+    // Rakam kontrolü: yalnızca web araması yapılmadıysa (arama içeriği bize şifreli gelir).
+    if (usage.webSearches === 0) {
+      const ctx = [system, user];
+      for (const it of report.items) {
+        const bad = unverifiedNumbers([it.summary, it.positionImpact, it.scenarioPositive ?? "", it.scenarioNegative ?? ""].join(" "), ctx);
+        if (bad.length) it.unverified = bad;
+      }
+    }
+    // Ücretsiz bağlam varken kullanılmayan arama hakkı = tahmini tasarruf
+    const saved = freeCount > 0 ? Math.max(0, maxSearches - usage.webSearches) : 0;
+    db.prepare("UPDATE news_reports SET free_headlines = ?, searches_saved = ? WHERE id = ?").run(freeCount, saved, reportId);
     saveReport(reportId, report, [...sources].map(([url, title]) => ({ url, title })), usage);
   } catch (err) {
     const message = err instanceof actions.ValidationError ? err.message : aiErrorMessage(err);
@@ -565,4 +615,13 @@ export async function maybeRunScheduledScan(now = new Date(), client?: AiClient)
     console.error("[haber] otomatik tarama başlatılamadı", err);
     return { ran: false, reason: "hata" };
   }
+}
+
+/** Bu ay ücretsiz kaynaklar sayesinde yapılmayan tahmini ücretli arama ve tutarı */
+export function monthlySavings(now = new Date()): { searches: number; usd: number } {
+  const { start, end } = monthRangeUtc(now);
+  const row = getDb()
+    .prepare("SELECT COALESCE(SUM(searches_saved),0) AS n FROM news_reports WHERE created_at >= ? AND created_at < ? AND status = 'ok'")
+    .get(start, end) as { n: number };
+  return { searches: row.n, usd: row.n * WEB_SEARCH_USD };
 }

@@ -51,9 +51,21 @@ export function DividendSuggestionRow({ s, onDone }: { s: DividendSuggestion; on
         <div className="num text-xs text-slate-500">
           {formatDate(s.exDate)} · {formatQuantity(s.quantity)} adet × {formatNumber(s.perShare, 6)} {s.currency}
         </div>
+        <div className="num text-xs text-slate-500" title="Stopaj, temettü ödenirken kesilen vergidir. Oranı Ayarlar'dan değiştirebilirsiniz; hesabınıza geçen tutar farklıysa onaydan sonra düzenleyin.">
+          Brüt {formatMoney(s.grossAmount, s.currency)} − %{formatNumber(s.withholdingPct, 1)} stopaj = net {formatMoney(s.amount, s.currency)}
+        </div>
+        {s.splitAdjusted && (
+          <div className="text-[11px] text-amber-300/90">
+            Bu tarihten sonra hisse bölünmesi / bedelsiz yapıldı; pay başı tutar o günkü pay sayısına göre çevrildi. Hesabınıza geçen tutarla karşılaştırın.
+          </div>
+        )}
+        <div className="text-[11px] text-slate-500">Tutar kaynaktaki verilerden tahmindir; kesin tutar için aracı kurum ekstrenize bakın.</div>
         {error && <div className="text-xs text-rose-400">{error}</div>}
       </div>
-      <div className="num font-semibold text-emerald-300">{formatMoney(s.amount, s.currency)}</div>
+      <div className="num font-semibold text-emerald-300" title="Net (stopaj sonrası) tahmini tutar">
+        {formatMoney(s.amount, s.currency)}
+        <span className="block text-[10px] font-normal text-slate-500">net</span>
+      </div>
       <div className="flex gap-2">
         <button disabled={busy} onClick={() => act("confirm")} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-emerald-950 disabled:opacity-50">
           Onayla

@@ -17,7 +17,10 @@ export async function GET(req: NextRequest) {
   return handle(() => actions.getDividendOverview());
 }
 
-/** POST /api/dividends { action: "confirm" | "dismiss", mode, assetType, symbol, exDate, amount? } */
+/**
+ * POST /api/dividends { action: "confirm" | "dismiss", mode, assetType, symbol, exDate, amount?, overwrite? }
+ * Zaten kaydedilmiş temettüyü yeniden onaylamak 409 döner (girilen tutar korunur); düzenleme PATCH /api/dividends/:id.
+ */
 export async function POST(req: NextRequest) {
   return handle(async () => {
     const b = await readJson(req);
@@ -28,7 +31,12 @@ export async function POST(req: NextRequest) {
       exDate: String(b.exDate ?? ""),
     };
     if (b.action === "confirm") {
-      return actions.confirmDividend({ ...p, amount: (b.amount as string | number | null | undefined) ?? null, note: typeof b.note === "string" ? b.note : null });
+      return actions.confirmDividend({
+        ...p,
+        amount: (b.amount as string | number | null | undefined) ?? null,
+        note: typeof b.note === "string" ? b.note : null,
+        overwrite: b.overwrite === true,
+      });
     }
     if (b.action === "dismiss") return actions.dismissDividend(p);
     throw new ValidationError("İşlem geçersiz.");

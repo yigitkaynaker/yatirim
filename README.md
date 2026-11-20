@@ -134,6 +134,16 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 - **Pozisyon detayı:** Portföy'de bir satıra dokununca `/portfoy/pozisyon?mod=gercek|sanal&id=…` açılır: özet (miktar, maliyet, değer, K/Z, fiyat/kur etkisi, bugün, gün sayısı), alış/satış işaretli ve "Maliyetin" çizgili grafik (üstü yeşil, altı kırmızı), "Yatırımımın değeri" grafiği, işlemler, teknik sinyal, bekleyen emirler, temettü, KAP ve son haber analizi; Al/Sat/Emir ver ya da Gerçekten aldım/Sanal sat düğmeleri.
 - Dış kaynaklar tarayıcı User-Agent'ı ile, önbellekli ve hata alınca artan bekleme süresiyle (`src/lib/http.ts`) sorgulanır; hata durumunda son bilinen veri gösterilir.
 
+### Geliştirme paketi B: alarmlar, ücretsiz haberler, özet, risk
+- **Alarmlar** (`/alarmlar`, varlık ve pozisyon sayfasında *Alarm kur*): işlem yapmaz, yalnızca bildirim + push. Türler: fiyat eşiği, günlük % değişim, maliyete göre % (gerçek/sanal), hacim patlaması (bugünkü hacim / 20 günlük ortalama), teknik sinyal değişimi; izleme listesinin tümü için de kurulabilir. Süresi dolmaz; *tek sefer* ya da *her seferinde* (bekleme süresiyle). Koşul sürdükçe tekrar çalmaz. Sohbette `create_alarm`, `list_alarms`, `delete_alarm`. Mantık: `src/lib/alarmLogic.ts` (saf), servis: `src/lib/alarms.ts`.
+- **Ücretsiz haber başlıkları:** Google Haberler RSS (+ yabancı hisse/kripto için Yahoo Finance RSS), 20 dk önbellek, başlığa göre tekilleştirme. Varlık/pozisyon sayfasında *Son haberler*. Haber taraması önce bu başlıkları ve KAP'ı kullanır; ücretli web araması yalnızca yetersizse (varsayılan en fazla 2). Ayarlar'da *Bu ay ücretsiz kaynaklarla tasarruf*.
+- **Yapay zeka güvenilirliği:** araç sonucunda ya da bağlamda olmayan rakamlar "doğrulanamayan rakam" olarak işaretlenir (`src/lib/numberCheck.ts`); fiyat araçları veri zamanı döndürür; analizlerde olumlu/olumsuz senaryo ve güven düzeyi.
+- **Günlük özet:** hafta içi 18:45'ten sonra bir kez, yalnızca önbellekteki verilerden (web araması yok), ucuz modelle; anahtar yoksa kurallı özet. Portföy sayfasının üstünde ve bildirim olarak. **Neden hareket ediyor?** günlük hareketi %3 ve üstü varlıklarda (RSS + KAP).
+- **Piyasa duygusu:** kripto Korku & Açgözlülük endeksi (kaynak: alternative.me, günde bir kez).
+- **Kıyaslama ve risk:** Portföy'de "Portföyüm vs BIST 100 / Dolar / Gram altın" (zaman ağırlıklı getiri, 100'e endeksli), pozisyonda "aldığımdan beri"; Risk kartı (yoğunlaşma, ilk 3, varlık türü, döviz payı, oynaklık) ve isteğe bağlı hedef dağılım ile dengeleme önerisi (`src/lib/perfMath.ts`).
+- **Düzeltmeler:** altın elde tutulurken kuyumcu *alış* fiyatıyla değerlenir (alışta varsayılan *satış* fiyatı); temettü önerileri stopaj sonrası net (Ayarlar'dan oran) ve bölünmeye göre düzeltilir, kayıtlı temettü yeniden onaylanınca üzerine yazılmaz (409, *Düzenle* ile değiştirilir); eski fon fiyatıyla emir/alarm tetiklenmez; KAP boşluk kalmadan geriye doldurulur.
+- Testler: `npm run test:batchb` (alarm, RSS, rakam kontrolü, getiri/risk ve düzeltmelerin birim testleri).
+
 ## Kod yapısı (sonraki aşamalar için)
 
 | Yol | İçerik |

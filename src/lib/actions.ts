@@ -8,6 +8,7 @@ import * as technical from "./technical";
 import * as dividends from "./dividends";
 import * as kap from "./kap";
 import * as positionDetail from "./positionDetail";
+import * as alarms from "./alarms";
 import { runOrderCheck } from "./orderWatcher";
 import { getQuotes, type InstrumentRef } from "./prices";
 
@@ -230,13 +231,18 @@ export function listDividends(opts: { mode?: Mode; status?: "confirmed" | "dismi
 }
 
 /** Temettüyü gelir olarak kaydeder (gerçekleşen K/Z'ye eklenir). { mode, assetType, symbol, exDate, amount? } */
-export function confirmDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string; amount?: Num | null; note?: string | null }) {
+export function confirmDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string; amount?: Num | null; note?: string | null; overwrite?: boolean }) {
   return dividends.confirmDividend(p as unknown as Record<string, unknown>);
 }
 
 /** Temettü önerisini gizler. */
 export function dismissDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string }) {
   return dividends.dismissDividend(p as unknown as Record<string, unknown>);
+}
+
+/** Kaydedilmiş temettünün tutarını açıkça düzenler. Bulunamazsa null. */
+export function editDividend(id: number, p: { amount: Num; note?: string | null }) {
+  return dividends.updateDividend(id, p as unknown as Record<string, unknown>);
 }
 
 /** Temettü kaydını siler. Bulunamazsa false. */
@@ -258,4 +264,52 @@ export function listKapDisclosures(opts: { ticker?: string; limit?: number; sinc
 /** Tek pozisyonun ayrıntısı: özet, işlemler, emirler, temettü, KAP, haber, değer geçmişi. */
 export function getPositionDetail(mode: Mode, instrument: InstrumentRef) {
   return positionDetail.getPositionDetail(mode, instrument.type, instrument.symbol);
+}
+
+// ---- Alarmlar (işlem yapmaz, yalnızca bildirim) ----------------------------------------
+
+export type { Alarm, AlarmEvent, AlarmKind, AlarmScope } from "./alarms";
+
+/** Alarmlar (en yeni önce); instrument verilirse yalnızca o varlığınkiler. */
+export function listAlarms(opts: { instrument?: string; activeOnly?: boolean } = {}) {
+  return alarms.listAlarms(opts);
+}
+
+/** Son çalan alarmlar */
+export function listAlarmEvents(limit?: number) {
+  return alarms.listAlarmEvents(limit);
+}
+
+export interface CreateAlarmParams {
+  kind: alarms.AlarmKind;
+  scope?: alarms.AlarmScope;
+  assetType?: AssetType;
+  symbol?: string;
+  /** cost_change: hangi portföyün maliyeti */
+  mode?: Mode;
+  /** price: up = üstüne çıkarsa, down = altına inerse; yüzde alarmlarında up/down/both */
+  direction?: alarms.AlarmDirection;
+  /** price: fiyat; day_change/cost_change: yüzde; volume_spike: kat */
+  threshold?: Num;
+  repeat?: alarms.AlarmRepeat;
+  cooldownMin?: Num;
+  note?: string | null;
+}
+
+/** Alarm kurar (süresi dolmaz). Koşul sağlanırsa bildirim + push gönderilir; işlem yapılmaz. */
+export async function createAlarm(p: CreateAlarmParams, source = "manuel") {
+  const alarm = await alarms.createAlarm(p as unknown as Record<string, unknown>, source);
+  // Koşul zaten sağlanıyorsa beklemeden kontrol et.
+  await alarms.checkAlarms().catch(() => undefined);
+  return alarms.getAlarm(alarm.id)!;
+}
+
+/** Alarmı siler. Bulunamazsa false. */
+export function deleteAlarm(id: number) {
+  return alarms.deleteAlarm(id);
+}
+
+/** Alarmı açar / kapatır. */
+export function setAlarmActive(id: number, active: boolean) {
+  return alarms.setAlarmActive(id, active);
 }

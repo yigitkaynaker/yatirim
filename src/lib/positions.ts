@@ -190,6 +190,9 @@ export function dayChange(
       qtyStart = Math.max(0, qtyStart + (t.side === "buy" ? t.quantity : -t.quantity));
       continue;
     }
+    // Fiyatın ait olduğu seanstan SONRA yapılan işlem (örn. hafta sonu / seans açılmadan girilen
+    // alış) o seansın hareketine katılmadı: "bugün" hesabına girmez.
+    if (t.date > sessionDate) continue;
     const fx = t.currency === "TRY" ? 1 : t.fxTry && t.fxTry > 0 ? t.fxTry : currentRate(t.currency);
     if (fx == null) return null;
     const txValue = t.price * fx;

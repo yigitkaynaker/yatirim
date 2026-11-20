@@ -1,5 +1,5 @@
 import { pathCandles } from "../sampleData";
-import { C, THYAO } from "../shared";
+import { C, detailHref } from "../shared";
 import type { Lesson } from "../types";
 
 const candles = pathCandles(
@@ -98,9 +98,9 @@ export const hareketliOrtalamalar: Lesson = {
   ],
   tryIt: [
     {
-      href: THYAO,
+      href: detailHref("bist:THYAO", "Türk Hava Yolları", { katman: ["sma50", "sma200"], aralik: "1Y" }),
       label: "THYAO grafiğinde SMA 50 / SMA 200",
-      hint: "Grafiğin altındaki \"Grafikte göster\" bölümünden SMA 50 ve SMA 200 düğmelerini aç, 1Y aralığını seç. Fiyat ortalamaların üstünde mi, altında mı? Sarı çizgi pembeyi kesmiş mi?",
+      hint: "Bağlantı grafiği 1 yıllık aralıkta, SMA 50 (sarı) ve SMA 200 (pembe) çizgileri açık olarak açar. Fiyat ortalamaların üstünde mi, altında mı? Sarı çizgi pembeyi kesmiş mi?",
     },
     {
       href: "/sinyaller",

@@ -1,5 +1,6 @@
 "use client";
 
+import { MarketMoodCard } from "./AssetInsights";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ASSET_TYPE_INFO, displaySymbol, parseInstrumentId } from "@/lib/assets";
@@ -81,6 +82,8 @@ export function MarketView() {
         </span>
         <span className="text-slate-400">›</span>
       </Link>
+
+      <MarketMoodCard />
 
       <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 md:gap-3">
         {OVERVIEW.map((o) => {

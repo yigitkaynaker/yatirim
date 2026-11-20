@@ -1,5 +1,5 @@
 import { pathCandles } from "../sampleData";
-import { C, THYAO } from "../shared";
+import { C, detailHref } from "../shared";
 import type { Lesson } from "../types";
 
 // Önce dalgalı, sonra çok sakin (sıkışma), ardından sert kırılım
@@ -100,9 +100,9 @@ export const bollingerDersi: Lesson = {
   ],
   tryIt: [
     {
-      href: THYAO,
+      href: detailHref("bist:THYAO", "Türk Hava Yolları", { katman: ["bollinger"], aralik: "3A" }),
       label: "THYAO grafiğinde Bollinger",
-      hint: "\"Grafikte göster\" bölümünden Bollinger düğmesini aç ve 3A aralığını seç. Bantların daraldığı ve genişlediği dönemleri bul.",
+      hint: "Bağlantı grafiği 3 aylık aralıkta, Bollinger bantları açık olarak açar. Bantların daraldığı ve genişlediği dönemleri bul.",
     },
   ],
 };

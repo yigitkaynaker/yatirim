@@ -56,6 +56,19 @@ export function NewsItemView({ it }: { it: NewsItem }) {
         </Link>
         <span className={`rounded-md px-1.5 py-0.5 text-xs font-medium ${s.cls}`}>{s.label}</span>
         <Importance n={it.importance} />
+        {it.confidence && (
+          <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-slate-300" title="Yapay zekanın bu değerlendirmeye güveni. Kaynak az ya da çelişkiliyse düşüktür.">
+            güven: {it.confidence}
+          </span>
+        )}
+        {it.unverified && it.unverified.length > 0 && (
+          <span
+            className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-200"
+            title={`Şu rakamlar yapay zekaya verilen verilerde bulunamadı: ${it.unverified.join(", ")}. Hesaplanmış ya da hatalı olabilir.`}
+          >
+            doğrulanamayan rakam
+          </span>
+        )}
       </div>
       <p className="text-sm text-slate-300">{it.summary}</p>
       {it.positionImpact && (
@@ -63,6 +76,22 @@ export function NewsItemView({ it }: { it: NewsItem }) {
           <span className="text-slate-500">Pozisyonunuza etkisi: </span>
           {it.positionImpact}
         </p>
+      )}
+      {(it.scenarioPositive || it.scenarioNegative) && (
+        <div className="grid gap-1.5 text-xs sm:grid-cols-2">
+          {it.scenarioPositive && (
+            <p className="rounded-lg bg-emerald-500/5 px-2 py-1.5 text-slate-300">
+              <span className="text-emerald-300">Olumlu senaryo: </span>
+              {it.scenarioPositive}
+            </p>
+          )}
+          {it.scenarioNegative && (
+            <p className="rounded-lg bg-rose-500/5 px-2 py-1.5 text-slate-300">
+              <span className="text-rose-300">Olumsuz senaryo: </span>
+              {it.scenarioNegative}
+            </p>
+          )}
+        </div>
       )}
       {it.sources.length > 0 ? (
         <div className="flex flex-wrap gap-1.5 text-xs">

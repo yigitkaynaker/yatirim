@@ -66,7 +66,7 @@ export function goldKind(symbol: string): GoldKind | undefined {
 
 /** Altın alış/satış farkı (makas): arayüzde kısa açıklama */
 export const GOLD_SPREAD_EXPLAIN =
-  "Kuyumcu altını size satış fiyatından satar, sizden alış fiyatından geri alır. Aradaki farka makas denir; altını alıp hemen satarsanız bu fark kadar zarar edersiniz. Portföy değeri satış fiyatıyla gösterilir.";
+  "Kuyumcu altını size satış fiyatından satar, sizden alış fiyatından geri alır. Aradaki farka makas denir; altını alıp hemen satarsanız bu fark kadar zarar edersiniz. Bu yüzden alırken varsayılan fiyat satış fiyatıdır; portföyünüzdeki altının değeri ise alış fiyatıyla (bugün satsanız elinize geçecek tutarla) hesaplanır.";
 
 const GOLD_ALIASES: Record<string, string> = {
   GRAM: "GRAM", ALTIN: "GRAM", GRAMALTIN: "GRAM", GA: "GRAM",

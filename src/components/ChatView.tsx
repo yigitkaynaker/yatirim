@@ -48,6 +48,14 @@ function RichText({ text }: { text: string }) {
 }
 
 function CardView({ card }: { card: ActionCard }) {
+  if (card.tone === "warn") {
+    return (
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200" title="Yanıttaki bu rakamlar asistanın kullandığı araç sonuçlarında bulunamadı. Hesaplanmış ya da yanlış olabilir; önemli kararlarda ilgili sayfadan kontrol edin.">
+        <span className="mr-1.5 rounded bg-amber-500/20 px-1.5 py-0.5 font-semibold">doğrulanamayan rakam</span>
+        {card.lines.join(" · ")}
+      </div>
+    );
+  }
   const ok = card.tone === "ok";
   return (
     <div className={`rounded-xl border px-3 py-2.5 text-sm ${ok ? "border-emerald-500/30 bg-emerald-500/10" : "border-rose-500/30 bg-rose-500/10"}`}>

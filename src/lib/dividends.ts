@@ -11,9 +11,10 @@ import {
   type AssetType,
   type Mode,
 } from "./assets";
-import { activeTransactions, todayIstanbul, ValidationError } from "./portfolio";
+import { activeTransactions, ConflictError, todayIstanbul, ValidationError } from "./portfolio";
 import { buildPositions } from "./positions";
-import { eligibleDividends, quantityHeldBefore, type DividendEvent } from "./dividendLogic";
+import { eligibleDividends, netOfWithholding, quantityHeldBefore, unadjustForSplits, type DividendEvent, type SplitEvent } from "./dividendLogic";
+import { getDividendWithholding } from "./settings";
 import { yahooSymbolFor } from "./prices";
 import { fxRateOn } from "./fxRates";
 import { politeFetch } from "./http";
@@ -47,10 +48,18 @@ const gh = globalThis as unknown as { __yatirimDivHist?: Map<string, DividendHis
 const memo = () => (gh.__yatirimDivHist ??= new Map());
 
 async function fetchYahooDividends(yahooSymbol: string): Promise<{ currency: string; events: DividendEvent[] }> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=10y&interval=1mo&events=div`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=10y&interval=1mo&events=div%2Csplits`;
   const text = await politeFetch("Yahoo temettü", url, { backoffBaseMs: 60_000 });
   const data = JSON.parse(text) as {
-    chart?: { result?: { meta?: { currency?: string; exchangeTimezoneName?: string }; events?: { dividends?: Record<string, { amount?: number; date?: number }> } }[] | null; error?: unknown };
+    chart?: {
+      result?:
+        | {
+            meta?: { currency?: string; exchangeTimezoneName?: string };
+            events?: { dividends?: Record<string, { amount?: number; date?: number }>; splits?: Record<string, { date?: number; numerator?: number; denominator?: number }> };
+          }[]
+        | null;
+      error?: unknown;
+    };
   };
   const r = data.chart?.result?.[0];
   if (!r) throw new Error("Yahoo temettü yanıtı boş");
@@ -70,7 +79,17 @@ async function fetchYahooDividends(yahooSymbol: string): Promise<{ currency: str
     events.push({ date, amount: e.amount / div });
   }
   events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  return { currency: currency.toUpperCase(), events };
+  const toDate = (t: number) => {
+    try {
+      return new Date(t * 1000).toLocaleDateString("en-CA", { timeZone: tz });
+    } catch {
+      return new Date(t * 1000).toISOString().slice(0, 10);
+    }
+  };
+  const splits: SplitEvent[] = Object.values(r.events?.splits ?? {})
+    .filter((s) => typeof s?.date === "number" && Number(s.numerator) > 0 && Number(s.denominator) > 0)
+    .map((s) => ({ date: toDate(s.date!), ratio: Number(s.numerator) / Number(s.denominator) }));
+  return { currency: currency.toUpperCase(), events: unadjustForSplits(events, splits) };
 }
 
 /** Bir hissenin temettü geçmişi (önbellekli). Hata fırlatmaz; kaynak yoksa error doludur. */
@@ -127,6 +146,9 @@ export interface DividendRecord {
   perShare: number;
   quantity: number;
   amount: number;
+  /** Brüt tutar ve uygulanan stopaj (%); eski kayıtlarda null */
+  grossAmount: number | null;
+  withholdingPct: number | null;
   currency: string;
   fxTry: number | null;
   amountTry: number | null;
@@ -147,6 +169,8 @@ interface DivRow {
   amount: number;
   currency: string;
   fx_try: number | null;
+  gross_amount: number | null;
+  withholding_pct: number | null;
   status: "confirmed" | "dismissed";
   source: string;
   note: string | null;
@@ -164,6 +188,8 @@ const fromRow = (r: DivRow): DividendRecord => {
     perShare: r.per_share,
     quantity: r.quantity,
     amount: r.amount,
+    grossAmount: r.gross_amount,
+    withholdingPct: r.withholding_pct,
     currency: r.currency,
     fxTry: fx,
     amountTry: fx != null ? r.amount * fx : null,
@@ -201,8 +227,13 @@ export interface DividendSuggestion {
   exDate: string;
   perShare: number;
   quantity: number;
+  /** Önerilen tutar = NET (stopaj sonrası) */
   amount: number;
+  grossAmount: number;
+  withholdingPct: number;
   currency: string;
+  /** Tutar bölünmeye göre geri çevrildi (bilgi notu için) */
+  splitAdjusted: boolean;
 }
 
 /** İşlem geçmişindeki (gerçek + sanal) BIST / yabancı hisseler */
@@ -257,8 +288,11 @@ export async function getDividendSuggestions(): Promise<DividendSuggestion[]> {
         exDate: e.date,
         perShare: e.amount,
         quantity: e.quantity,
-        amount: e.total,
+        amount: netOfWithholding(e.total, getDividendWithholding()[a.assetType === "bist" ? "bist" : "foreign"]),
+        grossAmount: e.total,
+        withholdingPct: getDividendWithholding()[a.assetType === "bist" ? "bist" : "foreign"],
         currency: h.currency,
+        splitAdjusted: (e.splitFactor ?? 1) !== 1,
       }));
   });
   return lists.flat().sort((a, b) => (a.exDate < b.exDate ? 1 : a.exDate > b.exDate ? -1 : 0));
@@ -289,7 +323,15 @@ export async function confirmDividend(body: Record<string, unknown>): Promise<Di
   const txs = activeTransactions(ref.mode).filter((t) => t.assetType === ref.assetType && t.symbol === ref.symbol);
   const quantity = quantityHeldBefore(txs, ref.exDate);
   if (quantity <= 0) throw new ValidationError("Hak kullanım tarihinden önce bu hisse elinizde görünmüyor.");
-  let amount = quantity * ev.amount;
+  const existing = getRecord(ref);
+  if (existing?.status === "confirmed" && body.overwrite !== true) {
+    throw new ConflictError(
+      `Bu temettü zaten kaydedilmiş (${existing.amount.toLocaleString("tr-TR", { maximumFractionDigits: 2 })} ${existing.currency}). Tutarı değiştirmek için kayıttaki "Düzenle"yi kullanın.`,
+    );
+  }
+  const gross = quantity * ev.amount;
+  const withholdingPct = getDividendWithholding()[ref.assetType === "bist" ? "bist" : "foreign"];
+  let amount = netOfWithholding(gross, withholdingPct);
   if (body.amount !== undefined && body.amount !== null && body.amount !== "") {
     const a = parseDecimal(body.amount as string | number);
     if (!Number.isFinite(a) || a <= 0) throw new ValidationError("Tutar sıfırdan büyük olmalı.");
@@ -300,13 +342,26 @@ export async function confirmDividend(body: Record<string, unknown>): Promise<Di
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, 300) : null;
   getDb()
     .prepare(
-      `INSERT INTO dividends (mode, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try, status, source, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'otomatik', ?)
+      `INSERT INTO dividends (mode, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try, status, source, note, gross_amount, withholding_pct)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'otomatik', ?, ?, ?)
        ON CONFLICT(mode, asset_type, symbol, ex_date) DO UPDATE SET per_share = excluded.per_share, quantity = excluded.quantity,
-         amount = excluded.amount, currency = excluded.currency, fx_try = excluded.fx_try, status = 'confirmed', note = excluded.note`,
+         amount = excluded.amount, currency = excluded.currency, fx_try = excluded.fx_try, status = 'confirmed', note = excluded.note,
+         gross_amount = excluded.gross_amount, withholding_pct = excluded.withholding_pct`,
     )
-    .run(ref.mode, ref.assetType, ref.symbol, ref.exDate, ev.amount, quantity, amount, h.currency, fx, note);
+    .run(ref.mode, ref.assetType, ref.symbol, ref.exDate, ev.amount, quantity, amount, h.currency, fx, note, gross, withholdingPct);
   return getRecord(ref)!;
+}
+
+/** Onaylanmış temettünün tutarını / notunu açıkça düzenler (örn. hesaba geçen gerçek net tutar). */
+export function updateDividend(id: number, body: Record<string, unknown>): DividendRecord | null {
+  const row = getDb().prepare("SELECT * FROM dividends WHERE id = ?").get(id) as unknown as DivRow | undefined;
+  if (!row) return null;
+  if (row.status !== "confirmed") throw new ValidationError("Yalnızca kaydedilmiş temettüler düzenlenebilir.");
+  const a = parseDecimal((body.amount ?? "") as string | number);
+  if (!Number.isFinite(a) || a <= 0) throw new ValidationError("Tutar sıfırdan büyük olmalı.");
+  const note = typeof body.note === "string" ? body.note.trim().slice(0, 300) || null : row.note;
+  getDb().prepare("UPDATE dividends SET amount = ?, note = ?, source = 'elle' WHERE id = ?").run(a, note, id);
+  return getRecord({ mode: row.mode, assetType: row.asset_type, symbol: row.symbol, exDate: row.ex_date });
 }
 
 /** Öneriyi gizler (bir daha gösterilmez; gelir olarak sayılmaz). */

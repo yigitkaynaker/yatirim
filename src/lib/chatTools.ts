@@ -5,6 +5,7 @@ import { ASSET_TYPES, displaySymbol, isAssetType, isCurrency, normalizeSymbol, t
 import { formatMoney, formatQuantity } from "./format";
 import { todayIstanbul } from "./portfolio";
 import { getLatestReport } from "./news";
+import { getHeadlines } from "./freeNews";
 
 // SOHBET ARAÇLARI
 // Claude'un çağırabildiği araçlar. Hepsi src/lib/actions.ts eylem katmanını
@@ -12,7 +13,8 @@ import { getLatestReport } from "./news";
 // gösterilecek bir "kart" (ne yapıldı, rakamlarla) üretir.
 
 export interface ActionCard {
-  tone: "ok" | "error";
+  /** warn: yanıtta doğrulanamayan rakam uyarısı */
+  tone: "ok" | "error" | "warn";
   title: string;
   lines: string[];
   /** İlgili sayfa */
@@ -164,6 +166,43 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       "Bir BIST hissesinin son KAP (Kamuyu Aydınlatma Platformu) bildirimlerini getirir: şirketin resmi açıklamaları (bilanço, kâr payı, yeni iş, pay geri alımı…), başlık, özet, zaman ve kap.org.tr bağlantısı. Ücretsizdir; bir hisse hakkında güncel gelişme sorulursa web aramasından ÖNCE buna bak. Yalnızca portföy ve izleme listesindeki hisselerin bildirimleri saklanır.",
     input_schema: { type: "object", properties: { symbol: { type: "string", description: "BIST kodu, örn. THYAO" }, hours: { type: "number", description: "Kaç saat geriye (varsayılan 168)" } }, required: ["symbol"] },
   },
+  {
+    name: "get_headlines",
+    description:
+      "Bir varlığın son 1 günlük haber BAŞLIKLARINI getirir (Google Haberler ve yabancı hisse/kripto için Yahoo Finance RSS; ÜCRETSİZ). Her başlık yayıncı, zaman ve bağlantıyla gelir. Güncel haber sorulduğunda web_search'ten ÖNCE bunu kullan; yanıtta haberin bağlantısını ver.",
+    input_schema: { type: "object", properties: { asset_type: assetTypeProp, symbol: { type: "string" } }, required: ["symbol"] },
+  },
+  {
+    name: "create_alarm",
+    description:
+      "İşlem YAPMAYAN bir alarm kurar: koşul sağlanınca kullanıcıya bildirim + push gelir. Türler: price (fiyat eşiği; direction up = üstüne çıkarsa, down = altına inerse; threshold varlığın fiyat biriminde), day_change (bir günde % değişim; threshold yüzde, örn. 5; direction up/down/both), cost_change (pozisyonun TL maliyetine göre % kâr/zarar; mode real/virtual), volume_spike (bugünkü hacim / 20 günlük ortalama; threshold kat, örn. 2), signal_change (teknik özet sinyal değişimi; threshold yok). scope=watchlist: izleme listesindeki herhangi bir varlık (yalnızca day_change, volume_spike, signal_change). repeat: once (tek sefer, varsayılan) ya da every (her seferinde, cooldown_min dakika arayla). Kullanıcı 'haber ver', 'uyar', 'alarm' derse bunu kullan; 'al'/'sat' derse emir (place_order) kullan.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["price", "day_change", "cost_change", "volume_spike", "signal_change"] },
+        scope: { type: "string", enum: ["asset", "watchlist"] },
+        asset_type: assetTypeProp,
+        symbol: { type: "string" },
+        mode: modeProp,
+        direction: { type: "string", enum: ["up", "down", "both"] },
+        threshold: numProp("Eşik: fiyat, yüzde ya da kat"),
+        repeat: { type: "string", enum: ["once", "every"] },
+        cooldown_min: numProp("Her seferinde alarmda iki bildirim arası en az dakika (varsayılan 60)"),
+        note: { type: "string" },
+      },
+      required: ["kind"],
+    },
+  },
+  {
+    name: "list_alarms",
+    description: "Kurulu alarmları (açık/kapalı, koşul, kaç kez çaldı) ve son çalan alarmları listeler.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "delete_alarm",
+    description: "Bir alarmı siler.",
+    input_schema: { type: "object", properties: { alarm_id: { type: "integer" } }, required: ["alarm_id"] },
+  },
 ];
 
 const TOOL_LABELS: Record<string, string> = {
@@ -180,6 +219,10 @@ const TOOL_LABELS: Record<string, string> = {
   get_technical_signals: "Teknik göstergelere bakılıyor",
   list_dividends: "Temettülere bakılıyor",
   get_kap_disclosures: "KAP bildirimlerine bakılıyor",
+  get_headlines: "Haber başlıklarına bakılıyor",
+  create_alarm: "Alarm kuruluyor",
+  list_alarms: "Alarmlara bakılıyor",
+  delete_alarm: "Alarm siliniyor",
   web_search: "Webde aranıyor",
 };
 
@@ -212,6 +255,10 @@ function guessRef(raw: string): { assetType: AssetType; symbol: string } {
   return { assetType: "foreign", symbol: normalizeSymbol("foreign", up) };
 }
 
+/** "20.11.2026 15:40 (İstanbul)" — her rakamın yanında söylenecek veri zamanı */
+const dataTime = (ms: number | null | undefined) =>
+  ms ? `${new Date(ms).toLocaleString("tr-TR", { timeZone: "Europe/Istanbul", dateStyle: "short", timeStyle: "short" })} (İstanbul)` : null;
+
 const opt = <T,>(v: unknown): T | undefined => (v === null || v === undefined || v === "" ? undefined : (v as T));
 const note = (i: Input) => (typeof i.note === "string" && i.note.trim() ? `${i.note.trim()} · ${AI_NOTE}` : AI_NOTE);
 
@@ -243,6 +290,8 @@ const ERROR_TITLES: Record<string, string> = {
   add_transaction: "İşlem eklenemedi",
   place_order: "Emir verilemedi",
   cancel_order: "Emir iptal edilemedi",
+  create_alarm: "Alarm kurulamadı",
+  delete_alarm: "Alarm silinemedi",
 };
 const MUTATING = new Set(Object.keys(ERROR_TITLES));
 
@@ -254,6 +303,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
       return {
         result: {
           portfoy: modeName(mode),
+          veri_zamani: dataTime(p.updatedAt),
           toplam: {
             deger_tl: r(p.totals.valueTry, 2),
             maliyet_tl: r(p.totals.costTry, 2),
@@ -274,6 +324,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
             ...(h.fxEffectTry != null ? { kz_tl_fiyat_etkisi: r(h.priceEffectTry, 2), kz_tl_kur_etkisi: r(h.fxEffectTry, 2) } : {}),
             kz_yuzde: r(h.pnlPct, 2),
             gun: h.days,
+            fiyat_zamani: dataTime(h.sourceTime ?? h.fetchedAt),
             fiyat_eski: h.stale,
           })),
         },
@@ -288,6 +339,9 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
         result: quotes.map((q, k) => ({
           asset_type: list[k].assetType,
           symbol: list[k].symbol,
+          veri_zamani: dataTime(q.sourceTime ?? q.fetchedAt),
+          kaynak: q.source || null,
+          ...(q.delayed ? { gecikmeli_15dk: true } : {}),
           fiyat: r(q.price, 6),
           para_birimi: q.currency || null,
           gunluk_degisim_yuzde: r(q.changePct, 2),
@@ -587,6 +641,65 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           aciklama: items.length === 0 ? "Bu süre içinde saklanmış KAP bildirimi yok (yalnızca portföy ve izleme listesindeki hisseler takip edilir)." : undefined,
         },
       };
+    }
+
+    case "get_headlines": {
+      const a = i.asset_type ? ref(i) : guessRef(String(i.symbol ?? ""));
+      const set = await getHeadlines(a.assetType, a.symbol, { limit: 10 });
+      return {
+        result: {
+          asset_type: a.assetType,
+          symbol: a.symbol,
+          veri_zamani: dataTime(set.fetchedAt),
+          eski: set.stale || undefined,
+          basliklar: set.items.map((h) => ({ baslik: h.title, yayinci: h.publisher, zaman: dataTime(h.publishedAt), baglanti: h.url })),
+          aciklama: set.items.length === 0 ? "Son 1 günde başlık bulunamadı." : "Başlıklar yalnızca başlıktır; haberin tamamını okumadan kesin yorum yapma.",
+        },
+      };
+    }
+
+    case "create_alarm": {
+      const scope = i.scope === "watchlist" ? "watchlist" : "asset";
+      const a = scope === "asset" ? (i.asset_type ? ref(i) : guessRef(String(i.symbol ?? ""))) : null;
+      const alarm = await actions.createAlarm(
+        {
+          kind: i.kind as actions.AlarmKind,
+          scope,
+          ...(a ? { assetType: a.assetType, symbol: a.symbol } : {}),
+          mode: i.mode === "virtual" ? "virtual" : "real",
+          direction: i.direction === "up" || i.direction === "down" ? i.direction : "both",
+          threshold: opt<number>(i.threshold),
+          repeat: i.repeat === "every" ? "every" : "once",
+          cooldownMin: opt<number>(i.cooldown_min),
+          note: typeof i.note === "string" ? i.note : null,
+        },
+        "yapay_zeka",
+      );
+      return {
+        result: { tamam: true, alarm_id: alarm.id, kosul: alarm.description, tekrar: alarm.repeat, acik: alarm.active, calma_sayisi: alarm.fireCount },
+        card: {
+          tone: "ok",
+          title: `Alarm kuruldu #${alarm.id}`,
+          lines: [alarm.description, alarm.repeat === "once" ? "Tek sefer çalar" : `Her seferinde, en az ${alarm.cooldownMin} dk arayla`, "Alarm işlem yapmaz; yalnızca bildirim gönderir."],
+          href: "/alarmlar",
+        },
+      };
+    }
+
+    case "list_alarms": {
+      return {
+        result: {
+          alarmlar: actions.listAlarms().map((x) => ({ alarm_id: x.id, kosul: x.description, tekrar: x.repeat, bekleme_dk: x.cooldownMin, acik: x.active, calma_sayisi: x.fireCount, son_calma: x.lastFiredAt ? new Date(x.lastFiredAt).toISOString() : null })),
+          son_calanlar: actions.listAlarmEvents(10).map((e) => ({ zaman_utc: new Date(e.firedAt).toISOString(), mesaj: e.message })),
+        },
+      };
+    }
+
+    case "delete_alarm": {
+      const id = Number(i.alarm_id);
+      if (!Number.isInteger(id) || id <= 0) throw new actions.ValidationError("Alarm numarası geçersiz.");
+      if (!actions.deleteAlarm(id)) throw new actions.ValidationError(`#${id} numaralı alarm bulunamadı.`);
+      return { result: { tamam: true, alarm_id: id }, card: { tone: "ok", title: `Alarm silindi #${id}`, lines: [], href: "/alarmlar" } };
     }
 
     default:

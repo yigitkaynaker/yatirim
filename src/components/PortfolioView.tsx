@@ -14,6 +14,7 @@ import { TransactionForm, toInput, today } from "./TransactionForm";
 import { Card, Modal, ModeTabs, PriceMeta, PrimaryButton, StaleBadge } from "./ui";
 import { positionHref } from "./PositionDetailView";
 import { VirtualEntryForm } from "./VirtualEntryForm";
+import { DailySummaryCard, PortfolioAnalytics } from "./PortfolioInsights";
 
 export function PortfolioView() {
   const [mode, setMode] = useState<Mode>("real");
@@ -50,13 +51,25 @@ export function PortfolioView() {
 
       {error && <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-300">{error}</p>}
 
+      <DailySummaryCard />
+
       <Summary summary={summary} mode={mode} />
 
       <DividendHint mode={mode} />
 
+      {summary?.holdings.some((h) => h.assetType === "gold" && h.ask != null) && (
+        <p className="rounded-xl border border-line/70 bg-bg/40 px-3 py-2 text-xs text-slate-400">
+          <span className="text-slate-200">Altın değeri:</span> Elinizdeki altın kuyumcunun <b>alış</b> fiyatıyla (bugün satsanız elinize geçecek tutarla) değerlenir.
+          Alırken ödediğiniz <b>satış</b> fiyatı daha yüksektir; aradaki fark (makas) yüzünden altın alır almaz küçük bir zarar görünür. Gram altın fiyatı ons ve dolar
+          kurundan hesaplanır ve makas içermez.
+        </p>
+      )}
+
       {summary && summary.allocation.length > 0 && <AllocationDonut summary={summary} />}
 
       <PortfolioHistory mode={mode} />
+
+      <PortfolioAnalytics mode={mode} />
 
       <Holdings summary={summary} mode={mode} onConvert={setConverting} onAdd={() => setAdding(true)} />
 
@@ -204,12 +217,12 @@ function DayChange({ h, stacked = false }: { h: Holding; stacked?: boolean }) {
   );
 }
 
-/** Altın: kuyumcu alış fiyatı (satarsanız alacağınız) */
+/** Altın: fiyat kuyumcu alış fiyatıdır (satarsanız alacağınız); alırken ödenen satış fiyatı da gösterilir */
 function GoldBid({ h }: { h: Holding }) {
-  if (h.assetType !== "gold" || h.bid == null) return null;
+  if (h.assetType !== "gold" || h.bid == null || h.ask == null) return null;
   return (
-    <span className="block text-[11px] text-slate-500" title="Gösterilen fiyat kuyumcunun satış fiyatıdır. Altını satarsanız kuyumcu alış fiyatını öder; aradaki fark makastır.">
-      satarsanız {formatMoney(h.bid, "TRY")}
+    <span className="block text-[11px] text-slate-500" title="Gösterilen fiyat kuyumcunun alış fiyatıdır: bugün satsanız elinize geçecek tutar. Altın alırken satış fiyatını ödersiniz; aradaki fark makastır.">
+      alırken {formatMoney(h.ask, "TRY")}
     </span>
   );
 }

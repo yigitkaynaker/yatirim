@@ -15,6 +15,15 @@ export function DividendsView() {
   const { data, error, loading, lastSuccess, reload } = usePolling<DividendOverview>("/api/dividends", 10 * 60_000);
   const [openYear, setOpenYear] = useState<string | null>(null);
 
+  async function editAmount(r: DividendRecord) {
+    const v = prompt(`${r.symbol} ${formatDate(r.exDate)}: hesabınıza geçen net tutar (${r.currency})`, String(r.amount).replace(".", ","));
+    if (v == null) return;
+    const res = await fetch(`/api/dividends/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amount: v }) });
+    if (res.status === 401) return goToLogin();
+    if (!res.ok) alert(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Kaydedilemedi.");
+    void reload();
+  }
+
   async function undo(r: DividendRecord) {
     if (!confirm(`${r.symbol} ${formatDate(r.exDate)} temettü kaydı silinsin mi? Gerçekleşen K/Z'den düşülür.`)) return;
     const res = await fetch(`/api/dividends/${r.id}`, { method: "DELETE" });
@@ -89,8 +98,14 @@ export function DividendsView() {
                                 </span>
                               </span>
                               <span className="flex items-center gap-2">
-                                <span className="text-emerald-300">{formatMoney(r.amount, r.currency)}</span>
+                                <span className="text-emerald-300" title={r.grossAmount != null ? `Brüt ${formatMoney(r.grossAmount, r.currency)}, stopaj %${r.withholdingPct ?? 0}` : "Net tutar"}>
+                                  {formatMoney(r.amount, r.currency)}
+                                </span>
+                                {r.grossAmount != null && <span className="text-xs text-slate-500">brüt {formatMoney(r.grossAmount, r.currency)}</span>}
                                 {r.currency !== "TRY" && <span className="text-xs text-slate-500">≈ {formatMoney(r.amountTry)}</span>}
+                                <button onClick={() => editAmount(r)} className="text-xs text-slate-500 hover:text-white" title="Hesabınıza geçen tutarı düzenleyin">
+                                  Düzenle
+                                </button>
                                 <button onClick={() => undo(r)} className="text-xs text-slate-500 hover:text-rose-300" title="Kaydı geri al">
                                   ✕
                                 </button>

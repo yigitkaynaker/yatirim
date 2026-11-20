@@ -51,7 +51,7 @@ export function markSuccess(provider: string) {
 export async function politeFetch(
   provider: string,
   url: string,
-  init: { method?: "GET" | "POST"; json?: unknown; timeoutMs?: number; backoffBaseMs?: number; backoffMaxMs?: number } = {},
+  init: { method?: "GET" | "POST"; json?: unknown; timeoutMs?: number; backoffBaseMs?: number; backoffMaxMs?: number; xml?: boolean } = {},
 ): Promise<string> {
   const b = backoffs().get(provider);
   if (b && Date.now() < b.until) throw new BackoffError(provider, b.until);
@@ -60,7 +60,7 @@ export async function politeFetch(
       method: init.method ?? (init.json !== undefined ? "POST" : "GET"),
       headers: {
         "User-Agent": BROWSER_UA,
-        Accept: "application/json, text/plain, */*",
+        Accept: init.xml ? "application/rss+xml, application/xml, text/xml, */*" : "application/json, text/plain, */*",
         "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
         ...(init.json !== undefined ? { "Content-Type": "application/json" } : {}),
       },
@@ -71,7 +71,8 @@ export async function politeFetch(
     const text = await res.text();
     if (!res.ok) throw new Error(`${provider} HTTP ${res.status}`);
     // Bot koruması / yanlış istek: JSON yerine HTML sayfası
-    if (/^\s*</.test(text)) throw new Error(`${provider} beklenmeyen yanıt (HTML)`);
+    // (xml: RSS beslemesi beklenir; içinde <rss>/<feed> yoksa hata sayılır)
+    if (init.xml ? !/<rss[\s>]|<feed[\s>]/.test(text.slice(0, 3000)) : /^\s*</.test(text)) throw new Error(`${provider} beklenmeyen yanıt (HTML)`);
     markSuccess(provider);
     return text;
   } catch (err) {

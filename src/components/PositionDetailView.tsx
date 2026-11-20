@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { ASSET_TYPE_INFO, displaySymbol, isCurrency, parseInstrumentId, quantityUnit, type Mode } from "@/lib/assets";
+import { ASSET_TYPE_INFO, displaySymbol, GOLD_SPREAD_EXPLAIN, isCurrency, parseInstrumentId, quantityUnit, type Mode } from "@/lib/assets";
 import { formatDate, formatMoney, formatPercent, formatQuantity, formatSigned, pnlClass } from "@/lib/format";
 import type { ChartData, ChartRange } from "@/lib/market";
 import type { PositionDetail } from "@/lib/positionDetail";
@@ -12,6 +12,8 @@ import { fetchJson, goToLogin, UnauthorizedError, usePolling } from "@/lib/usePo
 import { DividendSuggestionRow, KapItem } from "./AssetPanels";
 import { detailHref } from "./MarketView";
 import { OrderForm } from "./OrdersView";
+import { AlarmForm } from "./AlarmsView";
+import { HeadlinesPanel, SincePurchase, WhyMovingButton } from "./AssetInsights";
 import { PriceChart, type ChartMarkerIn } from "./PriceChart";
 import { SignalBadge } from "./TechnicalPanel";
 import { TransactionForm, toInput, today } from "./TransactionForm";
@@ -30,7 +32,7 @@ export function positionHref(mode: Mode, instrument: string) {
   return `/portfoy/pozisyon?mod=${mode === "real" ? "gercek" : "sanal"}&id=${encodeURIComponent(instrument)}`;
 }
 
-type Action = "convert" | "sellVirtual" | "buy" | "sell" | "order" | null;
+type Action = "convert" | "sellVirtual" | "buy" | "sell" | "order" | "alarm" | null;
 
 /** Pozisyonun tutulduğu süreye uygun grafik aralığı */
 function autoRange(days: number): ChartRange {
@@ -162,8 +164,13 @@ export function PositionDetailView() {
         <Card className={`p-4 md:p-6 ${virtual ? "border-violet-500/30" : ""}`}>
           <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
             <div>
-              <div className="text-xs text-slate-500">Güncel fiyat</div>
+              <div className="text-xs text-slate-500">{h.ask != null && h.bid != null ? "Alış fiyatı (bugün satsanız)" : "Güncel fiyat"}</div>
               <div className="num text-2xl font-semibold tracking-tight">{formatMoney(h.price, cur, 4)}</div>
+              {h.ask != null && h.bid != null && (
+                <div className="num text-xs text-slate-500" title={GOLD_SPREAD_EXPLAIN}>
+                  Satış fiyatı (alırken): {formatMoney(h.ask, cur, 4)} · değer alış fiyatıyla hesaplanır
+                </div>
+              )}
               <div className="num text-sm">
                 <span className={pnlClass(h.changePct)}>
                   {ref.type === "fund" ? "Son gün" : "Bugün"} {formatPercent(h.changePct)}
@@ -231,7 +238,7 @@ export function PositionDetailView() {
         </Card>
       )}
 
-      <div className={`grid gap-2 ${virtual ? "grid-cols-3" : "grid-cols-3"}`}>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {virtual ? (
           <>
             <ActionButton tone="violet" disabled={!h} onClick={() => setAction("convert")}>
@@ -253,6 +260,9 @@ export function PositionDetailView() {
         )}
         <ActionButton tone="outline" onClick={() => setAction("order")}>
           Emir ver
+        </ActionButton>
+        <ActionButton tone="outline" onClick={() => setAction("alarm")}>
+          Alarm kur
         </ActionButton>
       </div>
 
@@ -339,6 +349,10 @@ export function PositionDetailView() {
           )}
         </Card>
       )}
+
+      {h && <WhyMovingButton instrument={id} changePct={h.changePct} />}
+
+      {d && d.transactions.some((t) => t.side === "buy") && <SincePurchase mode={mode} instrument={id} />}
 
       <Card className="p-4 md:p-6">
         <div className="flex items-center justify-between gap-2">
@@ -431,6 +445,8 @@ export function PositionDetailView() {
         </Card>
       )}
 
+      <HeadlinesPanel instrument={id} name={h?.name ?? null} />
+
       {d?.news && (
         <Card className="p-4 md:p-6">
           <div className="flex items-center justify-between">
@@ -501,7 +517,8 @@ export function PositionDetailView() {
               symbol: ref.symbol,
               side: action === "buy" ? "buy" : "sell",
               quantity: action === "buy" ? "" : toInput(h?.quantity),
-              price: h?.price != null ? toInput(h.price, 6) : "",
+              // Altında alışta kuyumcu satış (ask), satışta alış (bid) fiyatı önerilir.
+              price: action === "buy" && h?.ask != null ? toInput(h.ask, 6) : h?.price != null ? toInput(h.price, 6) : "",
               currency: isCurrency(cur) ? cur : "TRY",
               date: today(),
             }}
@@ -512,6 +529,18 @@ export function PositionDetailView() {
       {action === "order" && (
         <Modal title="Yeni emir" onClose={() => setAction(null)}>
           <OrderForm initialAssetType={ref.type} initialSymbol={ref.symbol} initialMode={mode} onSaved={() => done("Emir kaydedildi.")} />
+        </Modal>
+      )}
+      {action === "alarm" && (
+        <Modal title="Alarm kur" onClose={() => setAction(null)}>
+          <AlarmForm
+            initialAssetType={ref.type}
+            initialSymbol={ref.symbol}
+            initialMode={h ? mode : undefined}
+            currentPrice={h?.price}
+            currency={cur}
+            onSaved={() => done("Alarm kuruldu. Alarmlar sayfasından yönetebilirsiniz.")}
+          />
         </Modal>
       )}
     </div>

@@ -1,5 +1,5 @@
 import { pathCandles } from "../sampleData";
-import { C, THYAO } from "../shared";
+import { C, detailHref } from "../shared";
 import type { Lesson } from "../types";
 
 const zones = pathCandles(
@@ -99,9 +99,9 @@ export const rsiDersi: Lesson = {
   ],
   tryIt: [
     {
-      href: THYAO,
+      href: detailHref("bist:THYAO", "Türk Hava Yolları", { katman: ["rsi"], aralik: "3A" }),
       label: "THYAO grafiğinde RSI",
-      hint: "Varlık detayında RSI paneli varsayılan olarak açıktır (değilse \"Grafikte göster\" bölümünden RSI'ı aç). 3A aralığında RSI'ın 70 ya da 30 çizgisine yaklaştığı yerleri bul.",
+      hint: "Bağlantı grafiği 3 aylık aralıkta, altta RSI paneliyle açar. Bu aralıkta RSI'ın 70 ya da 30 çizgisine yaklaştığı yerleri bul.",
     },
     {
       href: "/sinyaller",

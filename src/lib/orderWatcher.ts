@@ -44,6 +44,8 @@ export function startOrderWatcher() {
     void runScheduledNews();
     void runSignalAlerts();
     void runKapPoll();
+    void runAlarms();
+    void runDailySummary();
   }, ORDER_CHECK_MS);
   timer.unref?.();
   g.__yatirimOrderWatcher = { timer, running: false };
@@ -68,6 +70,27 @@ async function runSignalAlerts() {
     await maybeRunSignalAlerts();
   } catch (err) {
     console.error("[teknik] zamanlayıcı hatası", err);
+  }
+}
+
+/** Alarmlar: fiyat/değişim/maliyet her turda, hacim/sinyal 15 dk'da bir (alarms.ts). */
+async function runAlarms() {
+  try {
+    const { checkAlarms } = await import("./alarms");
+    const r = await checkAlarms();
+    if (r.fired > 0) console.log(`[alarm] ${r.fired} alarm çaldı`);
+  } catch (err) {
+    console.error("[alarm] kontrol hatası", err);
+  }
+}
+
+/** Günlük özet: hafta içi 18:45 (İstanbul) sonrasında bir kez (dailySummary.ts). */
+async function runDailySummary() {
+  try {
+    const { maybeRunDailySummary } = await import("./dailySummary");
+    await maybeRunDailySummary();
+  } catch (err) {
+    console.error("[özet] zamanlayıcı hatası", err);
   }
 }
 

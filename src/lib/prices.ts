@@ -594,3 +594,21 @@ export const DEFAULT_WATCHLIST: InstrumentRef[] = [
   { type: "gold", symbol: GOLD_SYMBOL },
   { type: "crypto", symbol: "BTC" },
 ];
+
+/** Günlük açıklanan fiyatın (fon) en fazla kaç gün eski olabileceği (hafta sonu + bir tatil günü) */
+export const DAILY_MAX_AGE_DAYS = 4;
+
+/**
+ * Fiyat otomatik bir karar (emir gerçekleştirme, alarm) için kullanılabilir mi?
+ * Bayat (son bilinen) fiyat kullanılmaz. Günlük fiyatlarda (fon) son başarılı çekim
+ * yeni olsa bile kaynağın verdiği fiyat günü birkaç günden eskiyse (TEFAS eski NAV
+ * döndürdüyse) fiyat güncel sayılmaz.
+ */
+export function quoteUsable(q: Pick<Quote, "price" | "stale" | "daily" | "sourceTime">, now = Date.now()): boolean {
+  if (q.price == null || !(q.price > 0) || q.stale) return false;
+  if (q.daily) {
+    if (q.sourceTime == null) return false;
+    if (now - q.sourceTime > DAILY_MAX_AGE_DAYS * 86_400_000) return false;
+  }
+  return true;
+}

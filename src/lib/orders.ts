@@ -12,7 +12,7 @@ import {
   type Side,
 } from "./assets";
 import { formatMoney, formatQuantity, parseDecimal } from "./format";
-import { getQuotes } from "./prices";
+import { getQuotes, quoteUsable } from "./prices";
 import { parseSizing, priceAtMarket, recordTransaction, todayIstanbul, ValidationError } from "./portfolio";
 import { sendPushToAll } from "./push";
 
@@ -316,7 +316,8 @@ export async function checkPendingOrders(): Promise<{ checked: number; executed:
   let executed = 0;
   for (let i = 0; i < pending.length; i++) {
     const q = quotes[i];
-    if (q.price == null || q.stale) continue; // eski fiyatla emir gerçekleştirme
+    // Eski fiyatla emir gerçekleştirme (fonda kaynağın fiyat günü de yeni olmalı)
+    if (!quoteUsable(q) || q.price == null) continue;
     if (!conditionMet(pending[i], q.price)) continue;
     await executeOrder(pending[i]);
     if (getOrder(pending[i].id)?.status === "executed") executed++;

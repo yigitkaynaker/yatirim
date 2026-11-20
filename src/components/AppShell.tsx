@@ -14,6 +14,8 @@ const NAV: { href: string; label: string; short: string; icon: string; mobile?: 
   { href: "/", label: "Portföy", short: "Portföy", primary: true, icon: "M3 13h4v8H3zM10 8h4v13h-4zM17 3h4v18h-4z" },
   { href: "/piyasa", label: "Piyasa", short: "Piyasa", primary: true, icon: "M3 17l5-5 4 4 8-9M14 7h6v6" },
   { href: "/sinyaller", label: "Sinyaller", short: "Sinyaller", icon: "M3 12h4l3-8 4 16 3-8h4" },
+  { href: "/egitim", label: "Eğitim", short: "Eğitim", icon: "M2 9l10-5 10 5-10 5zM6 11v5c3 2 9 2 12 0v-5M22 9v6" },
+  { href: "/alarmlar", label: "Alarmlar", short: "Alarmlar", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8zM10 20a2 2 0 0 0 4 0" },
   { href: "/temettu", label: "Temettü", short: "Temettü", icon: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM14.5 9.5c-.4-1-1.4-1.5-2.5-1.5-1.5 0-2.5.8-2.5 2s1.1 1.6 2.5 2 2.5.8 2.5 2-1 2-2.5 2c-1.1 0-2.1-.5-2.5-1.5M12 6.5V8M12 16v1.5" },
   { href: "/kap", label: "KAP", short: "KAP", icon: "M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h7" },
   { href: "/islemler", label: "İşlemler", short: "İşlemler", icon: "M4 6h16M4 12h16M4 18h10" },

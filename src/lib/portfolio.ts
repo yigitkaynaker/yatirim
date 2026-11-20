@@ -130,6 +130,9 @@ export function getTransaction(id: number): Transaction | null {
 
 export class ValidationError extends Error {}
 
+/** Kayıt zaten var / çakışma (API'de 409). */
+export class ConflictError extends ValidationError {}
+
 export function todayIstanbul(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Istanbul" });
 }
@@ -418,8 +421,10 @@ export interface Holding {
   delayed: boolean;
   daily: boolean;
   approx: boolean;
-  /** Altın: kuyumcu alış fiyatı (satarsanız alacağınız), fiyat = satış fiyatı */
+  /** Altın: kuyumcu alış fiyatı (satarsanız alacağınız). Varsa price = bid (değerleme bununla) */
   bid: number | null;
+  /** Altın: kuyumcu satış fiyatı (alırken ödediğiniz) */
+  ask: number | null;
   /** Kaynaktan gelen ad (fon unvanı) */
   name: string | null;
   /** "Bugün" (son seans) değişimi: önceki kapanışa göre, TL ve % */
@@ -481,6 +486,16 @@ export interface PortfolioSummary {
   updatedAt: number;
 }
 
+/**
+ * Pozisyon değerlemesinde kullanılacak fiyat: altında kuyumcu alış (bid) fiyatı varsa o,
+ * önceki kapanış da aynı oranla ölçeklenir. Diğer varlıklarda fiyat aynen kalır.
+ */
+export function holdingQuote(type: AssetType, q: Quote): Quote {
+  if (type !== "gold" || q.bid == null || !(q.bid > 0) || q.price == null || !(q.price > 0)) return q;
+  const ratio = q.bid / q.price;
+  return { ...q, price: q.bid, prevClose: q.prevClose != null ? q.prevClose * ratio : null };
+}
+
 function daysSince(date: string): number {
   const start = Date.parse(`${date}T00:00:00Z`);
   const today = Date.parse(`${todayIstanbul()}T00:00:00Z`);
@@ -523,7 +538,10 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
   let dayBase = 0;
   let dayMissing = false;
   for (const p of positions) {
-    const q = quoteById.get(instrumentId(p.assetType, p.symbol))!;
+    const rawQ = quoteById.get(instrumentId(p.assetType, p.symbol))!;
+    // Altın: elinizdekinin değeri kuyumcunun ALIŞ fiyatıyladır (satsanız eline geçen).
+    // Kaynak satış (ask) fiyatı verir; alış (bid) varsa değerleme onunla yapılır.
+    const q = holdingQuote(p.assetType, rawQ);
     const realizedTry = Number.isFinite(p.realizedTry) ? p.realizedTry : null;
     if (realizedTry != null) realizedTotal += realizedTry;
     if (p.quantity <= 1e-12) continue; // tamamen satılmış
@@ -561,6 +579,7 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
       daily: q.daily,
       approx: !!q.approx,
       bid: q.bid ?? null,
+      ask: p.assetType === "gold" ? rawQ.price : null,
       name: q.name ?? null,
       dayChangeTry: day?.changeTry ?? null,
       dayChangePct: day && day.baseTry > 0 ? (day.changeTry / day.baseTry) * 100 : null,

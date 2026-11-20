@@ -12,6 +12,9 @@ import { getReport, maybeRunScheduledScan, startNewsScan } from "../src/lib/news
 import { setSignalAlertsEnabled, updateAiSettings } from "../src/lib/settings";
 import { maybeRunSignalAlerts } from "../src/lib/technical";
 import { getVapidKeys, listSubscriptions, removeSubscription, saveSubscription } from "../src/lib/push";
+import * as actions from "../src/lib/actions";
+import { checkAlarms } from "../src/lib/alarms";
+import { generateDailySummary, maybeRunDailySummary, whyMoving } from "../src/lib/dailySummary";
 
 if (!process.env.YATIRIM_DATA_DIR) {
   console.error("YATIRIM_DATA_DIR ayarlanmalı (test, gerçek veritabanını değiştirmesin).");
@@ -224,35 +227,44 @@ ok(`rapor #${rep.id} kaydedildi, önem 5 → bildirim oluştu (maliyet ~$${rep.c
 
 // ---- 6) Bütçe ve zamanlayıcı ----------------------------------------------------------------
 console.log("Bütçe ve zamanlayıcı");
-// Çarşamba 2026-11-18 09:50 İstanbul = 06:50 UTC
-const wed = new Date("2026-11-18T06:50:00Z");
+// Zamanlayıcı testleri İÇİNDE BULUNULAN AYIN ilk çarşambasını kullanır: bütçe ay bazında
+// hesaplandığından sabit bir tarih (örn. geçen ay) bu ayın harcamasını görmez ve test
+// ay değişince bozulurdu. Önceki çalıştırmalardan kalan dilim kayıtları da silinir.
+const ym = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Istanbul" }).slice(0, 7);
+let wedDay = 1;
+while (new Date(`${ym}-${String(wedDay).padStart(2, "0")}T12:00:00Z`).getUTCDay() !== 3) wedDay++;
+const WED = `${ym}-${String(wedDay).padStart(2, "0")}`;
+const sat = `${ym}-${String(wedDay + 3).padStart(2, "0")}`;
+const at = (date: string, utc: string) => new Date(`${date}T${utc}:00Z`);
+db.prepare("DELETE FROM scheduled_runs WHERE slot LIKE ?").run(`${WED}%`);
+const wed = at(WED, "06:50"); // 09:50 İstanbul
 updateAiSettings({ budgetUsd: 0.000001 });
 assert.ok(getBudgetStatus().overBudget);
 const r1 = await maybeRunScheduledScan(wed, fake as AiClient);
 assert.deepEqual(r1, { ran: false, reason: "butce" });
 ok("bütçe dolu → otomatik tarama atlandı");
-updateAiSettings({ budgetUsd: 10 });
+updateAiSettings({ budgetUsd: 1000 }); // kopyalanmış veritabanında bu ayın gerçek harcaması olabilir
 const r2 = await maybeRunScheduledScan(wed, fake as AiClient);
 assert.deepEqual(r2, { ran: false, reason: "zaten_calisti" });
 ok("aynı zaman dilimi ikinci kez çalışmaz");
 script = [{ content: [toolUse("submit_news_report", { market_summary: "Sakin.", items: [] })], stop_reason: "tool_use" }];
-const r3 = await maybeRunScheduledScan(new Date("2026-11-18T10:05:00Z"), fake as AiClient); // 13:05 İstanbul
+const r3 = await maybeRunScheduledScan(at(WED, "10:05"), fake as AiClient); // 13:05 İstanbul
 assert.equal(r3.ran, true);
 ok("bütçe uygunken 13:00 dilimi çalıştı");
-assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-21T06:50:00Z"), fake as AiClient), { ran: false, reason: "hafta_sonu" });
-assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-18T08:00:00Z"), fake as AiClient), { ran: false, reason: "zamani_degil" });
+assert.deepEqual(await maybeRunScheduledScan(at(sat, "06:50"), fake as AiClient), { ran: false, reason: "hafta_sonu" });
+assert.deepEqual(await maybeRunScheduledScan(at(WED, "08:00"), fake as AiClient), { ran: false, reason: "zamani_degil" });
 ok("hafta sonu ve saat dışı atlanır");
 // Hata veren tarama: aynı dilimde 10 dk sonra yalnızca bir kez yeniden denenir
 script = []; // sahte istemci hata fırlatır → rapor "error"
-const t1830 = new Date("2026-11-18T15:31:00Z"); // 18:31 İstanbul
+const t1830 = at(WED, "15:31"); // 18:31 İstanbul
 const f1 = await maybeRunScheduledScan(t1830, fake as AiClient);
 assert.equal(f1.ran, false);
 assert.equal(!f1.ran && f1.reason, "hata");
-assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-18T15:35:00Z"), fake as AiClient), { ran: false, reason: "zaten_calisti" }, "10 dk dolmadan tekrar yok");
+assert.deepEqual(await maybeRunScheduledScan(at(WED, "15:35"), fake as AiClient), { ran: false, reason: "zaten_calisti" }, "10 dk dolmadan tekrar yok");
 script = [{ content: [toolUse("submit_news_report", { market_summary: "Toparlandı.", items: [] })], stop_reason: "tool_use" }];
-const f2 = await maybeRunScheduledScan(new Date("2026-11-18T15:42:00Z"), fake as AiClient);
+const f2 = await maybeRunScheduledScan(at(WED, "15:42"), fake as AiClient);
 assert.equal(f2.ran, true, JSON.stringify(f2));
-assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-18T15:55:00Z"), fake as AiClient), { ran: false, reason: "zaten_calisti" }, "ikinci tekrar yok");
+assert.deepEqual(await maybeRunScheduledScan(at(WED, "15:55"), fake as AiClient), { ran: false, reason: "zaten_calisti" }, "ikinci tekrar yok");
 ok("hata veren dilim 10 dk sonra bir kez yeniden denendi, sonra çift çalışma yok");
 
 // ---- 6b) Günlük teknik sinyal değişimi uyarısı ----------------------------------------------
@@ -281,6 +293,124 @@ assert.ok(btcChange && btcChange.from === fakePrev && btcChange.to === btcPrev, 
 assert.equal(count("SELECT COUNT(*) c FROM notifications WHERE kind='signal_change'"), sigBefore + s2.changes.length);
 const sigNote = db.prepare("SELECT title, body FROM notifications WHERE kind='signal_change' ORDER BY id DESC LIMIT 1").get() as { title: string; body: string };
 ok(`sinyal değişimi → bildirim: "${sigNote.title}: ${sigNote.body.split(".")[0]}"`);
+
+// ---- 6c) Alarmlar ----------------------------------------------------------------------------
+console.log("Alarmlar");
+db.prepare("DELETE FROM alarms").run();
+const alarmNotes = () => count("SELECT COUNT(*) c FROM notifications WHERE kind='alarm'");
+const n0 = alarmNotes();
+const every = await actions.createAlarm({ kind: "price", assetType: "crypto", symbol: "BTC", direction: "up", threshold: 1, repeat: "every", cooldownMin: 60 });
+assert.equal(actions.listAlarms().find((a) => a.id === every.id)?.fireCount, 1, "koşul zaten sağlanıyor → kurulunca bir kez çalar");
+assert.equal(alarmNotes(), n0 + 1);
+await checkAlarms();
+await checkAlarms();
+assert.equal(alarmNotes(), n0 + 1, "koşul sürdükçe tekrar çalmaz");
+// Koşul bozulup yeniden oluşmuş gibi: yeniden kur, ama son çalma 10 dk önce → bekleme süresi (60 dk) engeller
+const setState = (id: number, st: unknown) => db.prepare("UPDATE alarms SET state = ? WHERE id = ?").run(JSON.stringify(st), id);
+setState(every.id, { "crypto:BTC": { armed: true, lastFiredAt: Date.now() - 10 * 60_000 } });
+await checkAlarms();
+assert.equal(alarmNotes(), n0 + 1, "bekleme süresi dolmadan çalmaz");
+setState(every.id, { "crypto:BTC": { armed: true, lastFiredAt: Date.now() - 61 * 60_000 } });
+await checkAlarms();
+assert.equal(alarmNotes(), n0 + 2, "bekleme süresi dolunca çalar");
+ok("her seferinde alarmı: bir kez çaldı, koşul sürerken ve bekleme süresinde sustu, süre dolunca yeniden çaldı");
+
+const once = await actions.createAlarm({ kind: "price", assetType: "crypto", symbol: "BTC", direction: "up", threshold: 1, repeat: "once" });
+assert.equal(actions.listAlarms().find((a) => a.id === once.id)?.active, false, "tek sefer alarm çalınca kapanır");
+actions.addToWatchlist({ assetType: "crypto", symbol: "ETH" });
+const wl = await actions.createAlarm({ kind: "day_change", scope: "watchlist", direction: "both", threshold: 0.0001, repeat: "every", cooldownMin: 30 });
+const ev = actions.listAlarmEvents(10).filter((e) => e.alarmId === wl.id);
+assert.ok(ev.some((e) => e.instrument === "crypto:ETH"), "izleme listesi alarmı ETH için çalmalı: " + JSON.stringify(ev));
+await assert.rejects(() => actions.createAlarm({ kind: "price", scope: "watchlist", threshold: 5, direction: "up" }), /İzleme listesi alarmı/);
+await assert.rejects(() => actions.createAlarm({ kind: "cost_change", assetType: "bist", symbol: "THYAO", threshold: 10 }), /pozisyonu yok/);
+ok(`tek sefer kapanır, izleme listesi alarmı çalıştı (${ev[0].message.slice(0, 60)}…), geçersiz alarmlar Türkçe hata verir`);
+
+script = [
+  { content: [toolUse("create_alarm", { kind: "day_change", asset_type: "crypto", symbol: "BTC", direction: "both", threshold: 5 })], stop_reason: "tool_use" },
+  { content: [text("BTC bir günde %5 hareket ederse haber vereceğim.")], stop_reason: "end_turn" },
+];
+const ca = await chat("BTC bir günde %5 oynarsa haber ver");
+const alarmCard = ca.events.find((e) => e.type === "card")?.card;
+assert.ok(alarmCard?.title.startsWith("Alarm kuruldu"), JSON.stringify(ca.events));
+assert.ok(actions.listAlarms().some((a) => a.source === "yapay_zeka" && a.kind === "day_change"));
+ok(`sohbet create_alarm → ${alarmCard!.lines[0]}`);
+
+// ---- 6d) Rakam son kontrolü (sohbet) -----------------------------------------------------------
+console.log("Yapay zeka güvenilirliği");
+script = [
+  { content: [toolUse("get_quote", { instruments: [{ asset_type: "crypto", symbol: "BTC" }] })], stop_reason: "tool_use" },
+  { content: [text("BTC şu an 12.345.678,9 USD; hedef 999.999 USD olabilir.")], stop_reason: "end_turn" },
+];
+const cv = await chat("BTC kaç para?");
+const warn = cv.events.find((e) => e.type === "card" && e.card?.tone === "warn")?.card;
+assert.ok(warn && warn.lines.includes("12.345.678,9") && warn.lines.includes("999.999"), JSON.stringify(cv.events));
+const quoteResult = JSON.parse((calls[calls.length - 1].messages.at(-1)!.content as Anthropic.ToolResultBlockParam[])[0].content as string) as { veri_zamani: string; fiyat: number }[];
+assert.ok(quoteResult[0].veri_zamani, "get_quote veri zamanı döndürmeli");
+// Doğru rakam işaretlenmez
+const realPrice = quoteResult[0].fiyat;
+script = [
+  { content: [toolUse("get_quote", { instruments: [{ asset_type: "crypto", symbol: "BTC" }] })], stop_reason: "tool_use" },
+  { content: [text(`BTC ${realPrice.toLocaleString("tr-TR", { maximumFractionDigits: 2 })} USD (${quoteResult[0].veri_zamani} itibarıyla).`)], stop_reason: "end_turn" },
+];
+const cv2 = await chat("BTC kaç para?", cv.conversationId);
+assert.ok(!cv2.events.some((e) => e.type === "card" && e.card?.tone === "warn"), JSON.stringify(cv2.events));
+const shown = getDisplayMessages(cv.conversationId!);
+assert.ok(shown.some((m) => m.cards.some((c) => c.tone === "warn")), "uyarı kartı geçmişte de görünmeli");
+assert.match(String(calls[calls.length - 1].system), /RAKAM KURALI/);
+ok(`uydurma rakam → "doğrulanamayan rakam" (${warn!.lines.join(", ")}); araç rakamı işaretlenmedi`);
+
+// Haber raporu: senaryolar, güven, ücretsiz başlık sayımı ve kaynaklar
+script = [
+  {
+    content: [
+      toolUse("submit_news_report", {
+        market_summary: "Sakin.",
+        items: [{ asset_type: "crypto", symbol: "BTC", sentiment: "nötr", importance: 2, summary: "Fiyat 123.456.789 USD oldu.", position_impact: "Etkisi sınırlı olabilir.", scenario_positive: "Yükseliş sürebilir.", scenario_negative: "Düşüş gelebilir.", confidence: "düşük", sources: [] }],
+      }),
+    ],
+    stop_reason: "tool_use",
+  },
+];
+const nr = getReport((await startNewsScan({ trigger: "manuel", wait: true, client: fake as AiClient })).id)!;
+const sys = String(calls[calls.length - 1].system);
+assert.match(sys, /ÜCRETSİZ kaynakları/);
+assert.equal(nr.items[0].confidence, "düşük");
+assert.equal(nr.items[0].scenarioNegative, "Düşüş gelebilir.");
+assert.ok(nr.freeHeadlines >= 0 && nr.searchesSaved >= 0);
+ok(`haber raporu: senaryo + güven kaydedildi, ücretsiz başlık ${nr.freeHeadlines}, tasarruf edilen arama ${nr.searchesSaved}${nr.items[0].unverified ? `, doğrulanamayan: ${nr.items[0].unverified.join(",")}` : ""}`);
+
+// ---- 6e) Günlük özet ve "Neden hareket ediyor?" ---------------------------------------------------
+console.log("Günlük özet");
+setAiClientOverride(null);
+const savedKey = process.env.ANTHROPIC_API_KEY;
+delete process.env.ANTHROPIC_API_KEY;
+db.prepare("DELETE FROM settings WHERE key = 'anthropic_api_key'").run();
+const det = await generateDailySummary();
+assert.equal(det.ai, false);
+assert.match(det.text, /yatırım tavsiyesi değildir/);
+ok(`anahtarsız kurallı özet: "${det.text.split("\n")[0]}"`);
+db.prepare("DELETE FROM scheduled_runs WHERE slot LIKE 'ozet %'").run();
+script = [{ content: [text("- Portföyünüz bugün sakin.\n- Yatırım tavsiyesi değildir.")], stop_reason: "end_turn" }];
+assert.deepEqual(await maybeRunDailySummary(at(WED, "15:00"), fake as AiClient), { ran: false, reason: "zamani_degil" }); // 18:00 İstanbul
+assert.deepEqual(await maybeRunDailySummary(at(sat, "16:00"), fake as AiClient), { ran: false, reason: "hafta_sonu" });
+const sumNotes = count("SELECT COUNT(*) c FROM notifications WHERE kind='daily_summary'");
+const sr = await maybeRunDailySummary(at(WED, "15:50"), fake as AiClient); // 18:50 İstanbul
+assert.deepEqual(sr, { ran: true, ai: true });
+assert.deepEqual(await maybeRunDailySummary(at(WED, "16:30"), fake as AiClient), { ran: false, reason: "zaten_calisti" });
+assert.equal(count("SELECT COUNT(*) c FROM notifications WHERE kind='daily_summary'"), sumNotes + 1);
+const sumCall = calls[calls.length - 1];
+assert.ok(!sumCall.tools, "günlük özet web araması / araç kullanmamalı");
+assert.match(JSON.stringify(sumCall.messages), /portfoyler/);
+ok("18:45 sonrası bir kez (yapay zekalı, araçsız) çalıştı ve bildirim üretti; hafta sonu / saat dışı atlanır");
+
+const why = await whyMoving("crypto:BTC", { force: true });
+assert.equal(why.ai, false);
+assert.match(why.text, /BTC bugün/);
+script = [{ content: [text("Olası neden: başlıklara göre piyasa genelinde satış var. Olumlu senaryo: toparlanabilir. Olumsuz senaryo: düşüş sürebilir. Güven: düşük")], stop_reason: "end_turn" }];
+const why2 = await whyMoving("crypto:BTC", { force: true, client: fake as AiClient });
+assert.ok(why2.headlines.length === 0 || why2.ai, "başlık varsa ucuz yapay zeka özeti");
+ok(`"Neden hareket ediyor?": yapay zekasız ${why.headlines.length} başlık; stub ile ai=${why2.ai}`);
+if (savedKey) process.env.ANTHROPIC_API_KEY = savedKey;
 
 // ---- 7) Anahtarsız durum ve hata mesajları -------------------------------------------------------
 console.log("Anahtar yok");

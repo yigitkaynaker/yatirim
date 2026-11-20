@@ -95,7 +95,8 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   model: "ekonomik",
   scheduleEnabled: true,
   scheduleTimes: ["09:45", "13:00", "18:30"],
-  maxSearches: 3,
+  // Ücretsiz RSS + KAP bağlamı önce kullanıldığından varsayılan 2 arama yeterli.
+  maxSearches: 2,
   budgetUsd: 10,
 };
 
@@ -190,4 +191,38 @@ export function getKapNotifyScope(): KapNotifyScope {
 export function setKapNotifyScope(v: unknown) {
   if (!(KAP_NOTIFY_SCOPES as readonly unknown[]).includes(v)) throw new ValidationError("KAP bildirim ayarı geçersiz.");
   setSetting(KAP_NOTIFY_KEY, v as string);
+}
+
+// ---- Temettü stopajı (vergi kesintisi) ----------------------------------------------
+
+export interface DividendWithholding {
+  /** BIST hisseleri (%); Türkiye'de bireysel yatırımcı için kâr payı stopajı */
+  bist: number;
+  /** Yabancı hisseler (%); ABD'de W-8BEN formuyla genelde %15 */
+  foreign: number;
+}
+
+export const DEFAULT_WITHHOLDING: DividendWithholding = { bist: 15, foreign: 15 };
+const WITHHOLDING_KEY = "dividend_withholding";
+
+export function getDividendWithholding(): DividendWithholding {
+  try {
+    const raw = getSetting(WITHHOLDING_KEY);
+    return raw ? { ...DEFAULT_WITHHOLDING, ...(JSON.parse(raw) as Partial<DividendWithholding>) } : { ...DEFAULT_WITHHOLDING };
+  } catch {
+    return { ...DEFAULT_WITHHOLDING };
+  }
+}
+
+export function setDividendWithholding(body: unknown): DividendWithholding {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const cur = getDividendWithholding();
+  for (const k of ["bist", "foreign"] as const) {
+    if (b[k] === undefined) continue;
+    const n = parseDecimal(b[k] as string | number);
+    if (!Number.isFinite(n) || n < 0 || n > 60) throw new ValidationError("Stopaj oranı 0 ile 60 arasında olmalı.");
+    cur[k] = n;
+  }
+  setSetting(WITHHOLDING_KEY, JSON.stringify(cur));
+  return cur;
 }

@@ -6,6 +6,7 @@ import { getAiSettings } from "./settings";
 import { CHAT_TOOLS, executeChatTool, toolLabel, type ActionCard } from "./chatTools";
 import { todayIstanbul } from "./portfolio";
 import { kapContext, tickersOfInterest } from "./kap";
+import { unverifiedNumbers } from "./numberCheck";
 
 // SOHBET
 // Claude ile araç kullanan sohbet. Mesajlar API içerik blokları olarak
@@ -70,11 +71,29 @@ function createConversation(firstMessage: string): number {
   return Number(getDb().prepare("INSERT INTO chat_conversations (title) VALUES (?)").run(title).lastInsertRowid);
 }
 
-function insertMessage(conversationId: number, role: "user" | "assistant", content: unknown, cards?: ActionCard[]) {
-  getDb()
+function insertMessage(conversationId: number, role: "user" | "assistant", content: unknown, cards?: ActionCard[]): number {
+  const res = getDb()
     .prepare("INSERT INTO chat_messages (conversation_id, role, content, cards) VALUES (?, ?, ?, ?)")
     .run(conversationId, role, JSON.stringify(content), cards && cards.length ? JSON.stringify(cards) : null);
   getDb().prepare("UPDATE chat_conversations SET updated_at = datetime('now') WHERE id = ?").run(conversationId);
+  return Number(res.lastInsertRowid);
+}
+
+/**
+ * Rakam son kontrolü: bu turdaki asistan metnindeki rakamlar sohbetin araç sonuçlarında,
+ * kullanıcı mesajlarında ya da sistem bağlamında geçiyor mu? Geçmeyenler için uyarı kartı
+ * (engellemez). Kart son asistan mesajına kaydedilir, böylece geçmişte de görünür.
+ */
+function verifyNumbers(conversationId: number, turnText: string, system: string): ActionCard | null {
+  if (!turnText.trim()) return null;
+  const sources = [system];
+  for (const r of rowsFor(conversationId)) {
+    if (r.role !== "user") continue;
+    sources.push(r.content); // araç sonuçları (JSON) ve kullanıcı metinleri
+  }
+  const bad = unverifiedNumbers(turnText, sources);
+  if (bad.length === 0) return null;
+  return { tone: "warn", title: "Doğrulanamayan rakam", lines: bad.slice(0, 8) };
 }
 
 function rowsFor(conversationId: number): MsgRow[] {
@@ -150,6 +169,8 @@ function systemPrompt(): string {
     "- Her zaman Türkçe, sade ve kısa yaz. Teknik terimleri (ör. K/Z, ortalama maliyet, volatilite) ilk geçtiğinde bir cümleyle açıkla.",
     "- Sayıları Türkçe biçimde yaz (10.000 TL, %2,5).",
     "- Haber ya da güncel olay iddiasında bulunduğunda kaynağını (site adı ve bağlantı) mutlaka belirt. Kaynağın yoksa bunu açıkça söyle; asla uydurma.",
+    "- RAKAM KURALI: Hiçbir fiyat, K/Z, yüzde, tutar ya da gösterge değerini kendi bilginden yazma. Her rakam bu turdaki bir araç sonucundan ya da aşağıdaki bağlam bloklarından gelmeli. Rakamı verirken veri zamanını da söyle (araç sonucundaki veri_zamani / fiyat_zamani alanı; örn. \"20.11.2026 15:40 itibarıyla\"). Aracı çağıramadıysan rakam verme, bunu söyle. Uygulama, araç sonuçlarında bulunmayan rakamları kullanıcıya \"doğrulanamayan rakam\" olarak işaretler.",
+    "- Bir varlık hakkında analiz/yorum istenirse: kısa bir olumlu senaryo ve olumsuz senaryo yaz, güven düzeyini (düşük/orta/yüksek) belirt. Doğrudan \"al\" ya da \"sat\" deme; kararı kullanıcıya bırak.",
     "- Hiçbir şeyi garanti edilmiş öneri gibi sunma. Analiz, yorum ya da öneri içeren yanıtları kısa bir \"Bu bir yatırım tavsiyesi değildir.\" notuyla bitir.",
     "",
     "Araçlar ve işlemler:",
@@ -161,7 +182,8 @@ function systemPrompt(): string {
     "- Emirlerde tetik fiyatı varlığın kendi fiyat biriminde olmalı: BIST ve gram altın TL, kripto ve yabancı hisse USD, döviz TL. Kullanıcı \"BTC 60.000$'a düşerse 5.000 TL'lik al\" derse: side=buy, condition=lte, trigger_price=60000, amount=5000, amount_currency=TRY.",
     "- Emirler yalnızca bu uygulamanın içinde gerçekleşir; aracı kuruma emir gitmez, gerçek para hareketi olmaz. Gerekirse bunu hatırlat.",
     "- Bir araç hata döndürürse hatayı sade dille açıkla ve ne yapılabileceğini söyle.",
-    "- Güncel haber gerekiyorsa önce get_latest_news_report'a bak; yetmezse web_search kullan.",
+    "- Güncel haber gerekiyorsa önce ÜCRETSİZ kaynaklara bak: get_headlines (RSS başlıkları), get_kap_disclosures (BIST) ve get_latest_news_report. web_search ücretlidir; yalnızca bunlar yetersizse kullan.",
+    "- Kullanıcı \"haber ver\", \"uyar\", \"alarm kur\" derse create_alarm kullan (işlem yapmaz). \"al\"/\"sat\" derse emir (place_order) kullan.",
     "- Teknik analiz (RSI, MACD, hareketli ortalamalar, al/sat sinyali) sorulursa get_technical_signals kullan; göstergeleri sade dille açıkla ve teknik sinyallerin geleceği garanti etmediğini belirt.",
     "- Bir BIST hissesiyle ilgili güncel gelişme sorulursa önce aşağıdaki KAP bildirimlerine ve get_kap_disclosures aracına bak (ücretsiz, resmi kaynak); yetmezse web_search kullan. KAP bildirimini anlatırken bağlantısını ver.",
     "- Temettü (kâr payı) sorulursa list_dividends kullan. Temettü, şirketin kârından hissedarlara dağıttığı paradır; tutarlar brüttür, BIST'te stopaj kesilebilir.",
@@ -239,6 +261,8 @@ export async function runChatTurn(opts: {
     ...(maxSearches > 0 ? [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: maxSearches }] : []),
   ];
   const system = systemPrompt();
+  let turnText = "";
+  let lastAssistantId: number | null = null;
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -256,6 +280,7 @@ export async function runChatTurn(opts: {
       );
       for await (const event of stream) {
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          turnText += event.delta.text;
           emit({ type: "text", delta: event.delta.text });
         } else if (event.type === "content_block_start") {
           const b = event.content_block;
@@ -271,7 +296,7 @@ export async function runChatTurn(opts: {
       }
       const toolUses = msg.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
       if (toolUses.length === 0 || msg.stop_reason === "refusal") {
-        insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
+        lastAssistantId = insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
         if (msg.stop_reason === "refusal") emit({ type: "warning", message: "Yapay zeka bu isteği yanıtlamadı." });
         if (msg.stop_reason === "max_tokens") emit({ type: "warning", message: "Yanıt uzunluk sınırına ulaştı ve kesildi." });
         break;
@@ -317,6 +342,15 @@ export async function runChatTurn(opts: {
       emit({ type: "done" });
       return { conversationId: null };
     }
+  }
+  try {
+    const warn = verifyNumbers(conversationId, turnText, system);
+    if (warn) {
+      emit({ type: "card", card: warn });
+      if (lastAssistantId != null) getDb().prepare("UPDATE chat_messages SET cards = ? WHERE id = ?").run(JSON.stringify([warn]), lastAssistantId);
+    }
+  } catch (err) {
+    console.warn("[sohbet] rakam kontrolü yapılamadı", err);
   }
   emit({ type: "done" });
   return { conversationId };

@@ -10,8 +10,10 @@ interface SettingsData {
   settings: { model: "ekonomik" | "gelismis"; scheduleEnabled: boolean; scheduleTimes: string[]; maxSearches: number; budgetUsd: number };
   models: { key: string; id: string; label: string; inputPerMTok: number; outputPerMTok: number }[];
   budget: { spentUsd: number; budgetUsd: number; overBudget: boolean; searches: number; calls: number };
+  savings?: { searches: number; usd: number };
   signalAlerts: boolean;
   kapNotify: "real" | "all" | "off";
+  withholding?: { bist: number; foreign: number };
 }
 
 type Msg = { ok: boolean; text: string } | null;
@@ -71,6 +73,7 @@ export function SettingsView() {
           <AiSettingsSection key={JSON.stringify(data.settings)} data={data} onChange={setData} />
           <SignalAlertsSection data={data} onChange={setData} />
           <KapSection data={data} onChange={setData} />
+          <WithholdingSection data={data} onChange={setData} />
         </>
       )}
       <PushSection />
@@ -306,6 +309,12 @@ function AiSettingsSection({ data, onChange }: { data: SettingsData; onChange: (
         <p className="text-xs text-slate-500">
           Bu ay {data.budget.calls} istek, {data.budget.searches} web araması.
         </p>
+        {data.savings && (
+          <p className="text-xs text-emerald-300" title="Haber taramasında önce ücretsiz Google Haberler / Yahoo başlıkları ve KAP bildirimleri kullanılır; bu sayede yapılmayan ücretli aramaların tahmini tutarı.">
+            Bu ay ücretsiz kaynaklarla tasarruf: ~$
+            {data.savings.usd.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({data.savings.searches} ücretli arama yapılmadı)
+          </p>
+        )}
 
         <Note msg={msg} />
         <PrimaryButton type="submit" tone="virtual" disabled={busy}>
@@ -402,6 +411,57 @@ function KapSection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
       </div>
       <p className="text-xs text-slate-500">Bildirim kapalı olsa da açıklamalar KAP sayfasında ve varlık detayında görünmeye devam eder.</p>
       <Note msg={msg} />
+    </Card>
+  );
+}
+
+// ---- Temettü stopajı -------------------------------------------------------------------
+
+function WithholdingSection({ data, onChange }: { data: SettingsData; onChange: (d: SettingsData) => void }) {
+  const w = data.withholding ?? { bist: 15, foreign: 15 };
+  const [bist, setBist] = useState(String(w.bist).replace(".", ","));
+  const [foreign, setForeign] = useState(String(w.foreign).replace(".", ","));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      onChange((await send("/api/settings", "PUT", { withholding: { bist, foreign } })) as SettingsData);
+      setMsg({ ok: true, text: "Stopaj oranları kaydedildi." });
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="p-4 md:p-6">
+      <form onSubmit={save} className="space-y-3">
+        <div>
+          <span className="block font-semibold">Temettü stopajı</span>
+          <span className="mt-1 block text-sm text-slate-500">
+            Stopaj, temettü ödenirken kaynağında kesilen vergidir. Temettü önerileri brüt tutardan bu oran düşülerek NET (hesabınıza geçecek) tutarla gösterilir.
+            Türkiye&apos;de bireysel yatırımcı için kâr payı stopajı genelde %15, ABD hisselerinde W-8BEN formu varsa %15&apos;tir. Oranlar değişebilir; kendi
+            durumunuza göre düzenleyin.
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="BIST hisseleri (%)">
+            <input value={bist} onChange={(e) => setBist(e.target.value)} className={inputCls} inputMode="decimal" />
+          </Field>
+          <Field label="Yabancı hisseler (%)">
+            <input value={foreign} onChange={(e) => setForeign(e.target.value)} className={inputCls} inputMode="decimal" />
+          </Field>
+        </div>
+        <Note msg={msg} />
+        <PrimaryButton type="submit" disabled={busy}>
+          {busy ? "Kaydediliyor…" : "Kaydet"}
+        </PrimaryButton>
+      </form>
     </Card>
   );
 }

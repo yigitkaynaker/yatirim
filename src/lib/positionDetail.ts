@@ -94,7 +94,7 @@ export async function getPositionDetail(mode: Mode, type: AssetType, symbol: str
     name: holding?.name ?? displaySymbol(type, symbol),
     holding,
     transactions: [...txs].sort((a, b) => (a.date === b.date ? b.id - a.id : a.date < b.date ? 1 : -1)),
-    orders: listOrders("pending").filter((o) => o.assetType === type && o.symbol === symbol),
+    orders: listOrders("pending").filter((o) => o.mode === mode && o.assetType === type && o.symbol === symbol),
     dividends: listDividendRecords({ mode, status: "confirmed" }).filter((d) => d.assetType === type && d.symbol === symbol),
     dividendSuggestions: suggestions.filter((s) => s.mode === mode && s.assetType === type && s.symbol === symbol),
     kap: type === "bist" ? listKap({ ticker: symbol, limit: 5 }) : [],

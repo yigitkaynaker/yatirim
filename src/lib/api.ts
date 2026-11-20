@@ -1,6 +1,6 @@
 import "server-only";
 import { NextResponse } from "next/server";
-import { ValidationError } from "./portfolio";
+import { ConflictError, ValidationError } from "./portfolio";
 
 /** Route handler sarmalayıcı: ValidationError → 400 (Türkçe mesaj). */
 export async function handle(fn: () => unknown | Promise<unknown>, status = 200): Promise<NextResponse> {
@@ -9,6 +9,7 @@ export async function handle(fn: () => unknown | Promise<unknown>, status = 200)
     if (result instanceof NextResponse) return result;
     return NextResponse.json(result, { status });
   } catch (err) {
+    if (err instanceof ConflictError) return NextResponse.json({ error: err.message }, { status: 409 });
     if (err instanceof ValidationError) return NextResponse.json({ error: err.message }, { status: 400 });
     console.error(err);
     return NextResponse.json({ error: "Sunucu hatası." }, { status: 500 });
