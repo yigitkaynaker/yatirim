@@ -6,6 +6,7 @@ cd /d "%~dp0"
 rem --- Motor zaten calisiyorsa ikinci kez baslatma, sadece uygulamayi ac ---
 netstat -ano | findstr /R /C:":3000 .*LISTENING" >nul
 if %errorlevel%==0 (
+  if /i "%~1"=="/arkaplan" exit /b
   echo Motor zaten calisiyor. Uygulama aciliyor...
   start http://localhost:3000
   timeout /t 3 >nul
@@ -34,9 +35,9 @@ if defined HEAD (echo %HEAD%)>".next\YATIRIM_SURUM"
 
 :run
 echo.
-echo Uygulama baslatiliyor. Tarayici birazdan acilacak.
+echo Uygulama baslatiliyor.
 echo Bu pencere acik kaldigi surece uygulama ve nobetci calisir.
 echo.
-start "" cmd /c "timeout /t 5 >nul && start http://localhost:3000"
+if /i not "%~1"=="/arkaplan" start "" cmd /c "timeout /t 5 >nul && start http://localhost:3000"
 call npm start
 pause
