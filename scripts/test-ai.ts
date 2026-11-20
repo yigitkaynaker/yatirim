@@ -9,7 +9,8 @@ import { getDb } from "../src/lib/db";
 import { aiErrorMessage, getBudgetStatus, setAiClientOverride, type AiClient } from "../src/lib/aiClient";
 import { getDisplayMessages, runChatTurn } from "../src/lib/chat";
 import { getReport, maybeRunScheduledScan, startNewsScan } from "../src/lib/news";
-import { updateAiSettings } from "../src/lib/settings";
+import { setSignalAlertsEnabled, updateAiSettings } from "../src/lib/settings";
+import { maybeRunSignalAlerts } from "../src/lib/technical";
 import { getVapidKeys, listSubscriptions, removeSubscription, saveSubscription } from "../src/lib/push";
 
 if (!process.env.YATIRIM_DATA_DIR) {
@@ -156,6 +157,22 @@ const tr = calls[calls.length - 1].messages.at(-1)!.content as Anthropic.ToolRes
 assert.equal(tr[0].is_error, true);
 ok(`geçersiz işlem → hata kartı: ${errCard!.lines[0]}`);
 
+// Teknik sinyal aracı (asset_type verilmeden, sembolden tahmin)
+script = [
+  { content: [toolUse("get_technical_signals", { symbol: "BTCUSDT" })], stop_reason: "tool_use" },
+  { content: [text("BTC'nin teknik görünümü şöyle.")], stop_reason: "end_turn" },
+];
+await chat("BTC teknik olarak nasıl görünüyor?", c1.conversationId);
+const techResults = calls[calls.length - 1].messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
+assert.notEqual(techResults[0].is_error, true, String(techResults[0].content));
+const tech = JSON.parse(techResults[0].content as string) as { asset_type: string; sinyal: string; puan: number; gostergeler: { rsi14: number; macd: number }; nedenler: { aciklama: string }[]; uyari: string };
+assert.equal(tech.asset_type, "crypto");
+assert.ok(["Güçlü Al", "Al", "Nötr", "Sat", "Güçlü Sat"].includes(tech.sinyal));
+assert.ok(tech.gostergeler.rsi14 > 0 && tech.gostergeler.rsi14 < 100);
+assert.ok(tech.nedenler.every((n) => n.aciklama.length > 10));
+assert.match(tech.uyari, /yatırım tavsiyesi değildir/);
+ok(`get_technical_signals → BTC: ${tech.sinyal} (puan ${tech.puan}, RSI ${tech.gostergeler.rsi14})`);
+
 const display = getDisplayMessages(c1.conversationId!);
 assert.ok(display.some((m) => m.role === "assistant" && m.cards.length > 0));
 ok(`sohbet geçmişi kaydedildi (${display.length} görünen mesaj)`);
@@ -200,6 +217,8 @@ assert.equal(rep.sources[0]?.url, "https://example.com/btc-haber");
 assert.ok(rep.costUsd > 0 && rep.webSearches === 1);
 const prompt = calls[calls.length - 1];
 assert.ok(JSON.stringify(prompt.messages).includes("symbol=BTC"), "BTC taramaya girmeli");
+assert.match(JSON.stringify(prompt.messages), /symbol=BTC[^"]*teknik sinyal (Güçlü Al|Al|Nötr|Sat|Güçlü Sat)/, "istemde teknik sinyal özeti olmalı");
+assert.match(String(prompt.system), /teknik sinyal/);
 assert.equal(count("SELECT COUNT(*) c FROM notifications WHERE kind='news_alert'"), notifBefore + 1, "önem 5 → bildirim");
 ok(`rapor #${rep.id} kaydedildi, önem 5 → bildirim oluştu (maliyet ~$${rep.costUsd.toFixed(4)})`);
 
@@ -223,6 +242,33 @@ ok("bütçe uygunken 13:00 dilimi çalıştı");
 assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-21T06:50:00Z"), fake as AiClient), { ran: false, reason: "hafta_sonu" });
 assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-18T08:00:00Z"), fake as AiClient), { ran: false, reason: "zamani_degil" });
 ok("hafta sonu ve saat dışı atlanır");
+
+// ---- 6b) Günlük teknik sinyal değişimi uyarısı ----------------------------------------------
+console.log("Teknik sinyal uyarıları");
+db.prepare("DELETE FROM scheduled_runs WHERE slot LIKE 'teknik %'").run();
+db.prepare("DELETE FROM technical_signals").run();
+const day1 = new Date("2026-11-18T17:00:00Z"); // 20:00 İstanbul
+setSignalAlertsEnabled(false);
+assert.deepEqual(await maybeRunSignalAlerts(day1), { ran: false, reason: "kapali" });
+setSignalAlertsEnabled(true);
+assert.deepEqual(await maybeRunSignalAlerts(new Date("2026-11-18T12:00:00Z")), { ran: false, reason: "zamani_degil" });
+const sigBefore = count("SELECT COUNT(*) c FROM notifications WHERE kind='signal_change'");
+const s1 = await maybeRunSignalAlerts(day1);
+assert.ok(s1.ran && s1.changes.length === 0, "ilk kontrol yalnızca kaydeder: " + JSON.stringify(s1));
+assert.ok(count("SELECT COUNT(*) c FROM technical_signals WHERE instrument='crypto:BTC'") === 1);
+assert.deepEqual(await maybeRunSignalAlerts(new Date("2026-11-18T20:00:00Z")), { ran: false, reason: "zaten_calisti" });
+ok(`kapalı / saat dışı / aynı gün ikinci kez çalışmaz (${s1.checked} varlık kaydedildi)`);
+// Değişimi taklit et: BTC'nin kayıtlı sinyalini farklı bir değere çevir
+const btcPrev = (db.prepare("SELECT label FROM technical_signals WHERE instrument='crypto:BTC'").get() as { label: string }).label;
+const fakePrev = btcPrev === "Güçlü Sat" ? "Güçlü Al" : "Güçlü Sat";
+db.prepare("UPDATE technical_signals SET label = ? WHERE instrument='crypto:BTC'").run(fakePrev);
+const s2 = await maybeRunSignalAlerts(new Date("2026-11-19T17:00:00Z"));
+assert.ok(s2.ran);
+const btcChange = s2.changes.find((c) => c.instrument === "crypto:BTC");
+assert.ok(btcChange && btcChange.from === fakePrev && btcChange.to === btcPrev, JSON.stringify(s2));
+assert.equal(count("SELECT COUNT(*) c FROM notifications WHERE kind='signal_change'"), sigBefore + s2.changes.length);
+const sigNote = db.prepare("SELECT title, body FROM notifications WHERE kind='signal_change' ORDER BY id DESC LIMIT 1").get() as { title: string; body: string };
+ok(`sinyal değişimi → bildirim: "${sigNote.title}: ${sigNote.body.split(".")[0]}"`);
 
 // ---- 7) Anahtarsız durum ve hata mesajları -------------------------------------------------------
 console.log("Anahtar yok");

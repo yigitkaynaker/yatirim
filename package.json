@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "icons": "node scripts/generate-icons.mjs",
-    "test:ai": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-ai.ts"
+    "test:ai": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-ai.ts",
+    "test:indicators": "node --import ./scripts/ts-hooks.mjs scripts/test-indicators.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.11.0",

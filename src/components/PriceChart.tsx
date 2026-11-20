@@ -3,9 +3,12 @@
 import { useEffect, useRef } from "react";
 import type { IChartApi, ISeriesApi, Time, UTCTimestamp } from "lightweight-charts";
 
+type ChartLib = typeof import("lightweight-charts");
+
 // lightweight-charts sarmalayıcısı (alan grafiği). Kütüphane yalnızca tarayıcıda
 // yüklenir. Zaman ekseni UTC çizdiği için noktalar İstanbul saatine (UTC+3)
-// kaydırılır; etiketler Türkçe biçimlenir.
+// kaydırılır; etiketler Türkçe biçimlenir. İsteğe bağlı olarak gösterge
+// çizgileri (overlays: SMA, Bollinger) ve altta ayrı bir RSI paneli çizer.
 
 export interface ChartPointIn {
   /** Unix saniye (UTC) */
@@ -13,7 +16,16 @@ export interface ChartPointIn {
   value: number;
 }
 
+/** Fiyat grafiğinin üstüne çizilen gösterge çizgisi */
+export interface ChartOverlay {
+  id: string;
+  color: string;
+  points: ChartPointIn[];
+  dashed?: boolean;
+}
+
 const IST_OFFSET_S = 3 * 3600;
+const RSI_PANE_HEIGHT = 120;
 
 const COLORS = {
   up: { line: "#34d399", top: "rgba(52,211,153,0.28)", bottom: "rgba(52,211,153,0.02)" },
@@ -37,6 +49,8 @@ export function PriceChart({
   intraday = false,
   tone = "auto",
   height = 280,
+  overlays = [],
+  rsi = null,
 }: {
   points: ChartPointIn[];
   currency?: string;
@@ -45,18 +59,28 @@ export function PriceChart({
   /** auto: ilk ve son değere göre yeşil / kırmızı */
   tone?: "auto" | "neutral";
   height?: number;
+  /** Fiyatın üstüne çizilecek gösterge çizgileri (grafiğin zaman aralığına kırpılır) */
+  overlays?: ChartOverlay[];
+  /** Verilirse altta 0–100 ölçekli RSI paneli (30 / 70 çizgileriyle) */
+  rsi?: ChartPointIn[] | null;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
-  const propsRef = useRef({ points, currency, intraday, tone });
-  propsRef.current = { points, currency, intraday, tone };
+  const libRef = useRef<ChartLib | null>(null);
+  const overlayRefs = useRef(new Map<string, ISeriesApi<"Line">>());
+  const rsiRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const propsRef = useRef({ points, currency, intraday, tone, overlays, rsi, height });
+  propsRef.current = { points, currency, intraday, tone, overlays, rsi, height };
 
   // Grafiği bir kez oluştur.
   useEffect(() => {
     let disposed = false;
-    void import("lightweight-charts").then(({ createChart, AreaSeries, ColorType, LineStyle, TickMarkType }) => {
+    const overlaySeries = overlayRefs.current;
+    void import("lightweight-charts").then((lib) => {
+      const { createChart, AreaSeries, ColorType, LineStyle, TickMarkType } = lib;
       if (disposed || !boxRef.current) return;
+      libRef.current = lib;
       const chart = createChart(boxRef.current, {
         autoSize: true,
         layout: {
@@ -109,7 +133,11 @@ export function PriceChart({
       chartRef.current?.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      overlaySeries.clear();
+      rsiRef.current = null;
     };
+    // Grafik yalnızca bir kez oluşturulur; apply güncel değerleri propsRef'ten okur.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function apply() {
@@ -123,11 +151,75 @@ export function PriceChart({
     series.applyOptions({ lineColor: c.line, topColor: c.top, bottomColor: c.bottom });
     series.setData(pts.map((p) => ({ time: (p.time + IST_OFFSET_S) as UTCTimestamp, value: p.value })));
     chart.applyOptions({ timeScale: { timeVisible: propsRef.current.intraday, secondsVisible: false } });
+    applyIndicators(chart, pts);
     chart.timeScale().fitContent();
   }
 
-  // Veri değişince güncelle.
-  useEffect(apply, [points, currency, intraday, tone]);
+  /** Gösterge çizgilerini ve RSI panelini ekler / günceller / kaldırır. */
+  function applyIndicators(chart: IChartApi, pts: ChartPointIn[]) {
+    const lib = libRef.current;
+    if (!lib) return;
+    const { overlays: ovs, rsi: rsiPts, height: h } = propsRef.current;
+    // Göstergeler günlük; grafiğin gösterdiği aralığın dışına taşmasın (yoksa zaman ekseni genişler).
+    const minT = pts[0]?.time ?? Infinity;
+    const maxT = pts[pts.length - 1]?.time ?? -Infinity;
+    const clip = (list: ChartPointIn[]) =>
+      list.filter((p) => p.time >= minT && p.time <= maxT).map((p) => ({ time: (p.time + IST_OFFSET_S) as UTCTimestamp, value: p.value }));
 
-  return <div ref={boxRef} style={{ height }} className="w-full touch-pan-y" aria-label={`Fiyat grafiği (${currency})`} role="img" />;
+    const wanted = new Set(ovs.map((o) => o.id));
+    for (const [id, s] of overlayRefs.current) {
+      if (!wanted.has(id)) {
+        chart.removeSeries(s);
+        overlayRefs.current.delete(id);
+      }
+    }
+    for (const o of ovs) {
+      let s = overlayRefs.current.get(o.id);
+      if (!s) {
+        s = chart.addSeries(lib.LineSeries, {
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        overlayRefs.current.set(o.id, s);
+      }
+      s.applyOptions({ color: o.color, lineStyle: o.dashed ? lib.LineStyle.Dashed : lib.LineStyle.Solid, lineWidth: o.dashed ? 1 : 2 });
+      s.setData(clip(o.points));
+    }
+
+    if (rsiPts && rsiPts.length > 0) {
+      if (!rsiRef.current) {
+        const s = chart.addSeries(
+          lib.LineSeries,
+          {
+            color: "#a78bfa",
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+          },
+          1,
+        );
+        for (const level of [30, 70]) {
+          s.createPriceLine({ price: level, color: "rgba(148,163,184,0.6)", lineWidth: 1, lineStyle: lib.LineStyle.Dashed, axisLabelVisible: true, title: "" });
+        }
+        rsiRef.current = s;
+      }
+      rsiRef.current.setData(clip(rsiPts));
+      const panes = chart.panes();
+      panes[0]?.setStretchFactor(h);
+      panes[1]?.setStretchFactor(RSI_PANE_HEIGHT);
+    } else if (rsiRef.current) {
+      chart.removeSeries(rsiRef.current);
+      rsiRef.current = null;
+      if (chart.panes().length > 1) chart.removePane(1);
+    }
+  }
+
+  // Veri değişince güncelle.
+  useEffect(apply, [points, currency, intraday, tone, overlays, rsi]);
+
+  const total = height + (rsi && rsi.length > 0 ? RSI_PANE_HEIGHT : 0);
+  return <div ref={boxRef} style={{ height: total }} className="w-full touch-pan-y" aria-label={`Fiyat grafiği (${currency})`} role="img" />;
 }

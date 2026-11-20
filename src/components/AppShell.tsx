@@ -2,18 +2,22 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import { NotificationBell } from "./NotificationBell";
 
 // Gezinme öğeleri. Masaüstünde üst menü, küçük ekranda alt sekme çubuğu.
 // short: alt çubukta sığması için kısa ad. mobile: false olanlar menüde değil,
-// üst çubukta simge olarak görünür (Ayarlar). Yeni sayfa için buraya satır eklemek yeterli.
-const NAV: { href: string; label: string; short: string; icon: string; mobile?: boolean }[] = [
-  { href: "/", label: "Portföy", short: "Portföy", icon: "M3 13h4v8H3zM10 8h4v13h-4zM17 3h4v18h-4z" },
-  { href: "/piyasa", label: "Piyasa", short: "Piyasa", icon: "M3 17l5-5 4 4 8-9M14 7h6v6" },
+// üst çubukta simge olarak görünür (Ayarlar). primary: telefonda alt çubukta ve
+// orta genişlikte üst menüde doğrudan görünür; diğerleri "Daha fazla" menüsündedir
+// (geniş ekranda hepsi üst menüde). Yeni sayfa için buraya satır eklemek yeterli.
+const NAV: { href: string; label: string; short: string; icon: string; mobile?: boolean; primary?: boolean }[] = [
+  { href: "/", label: "Portföy", short: "Portföy", primary: true, icon: "M3 13h4v8H3zM10 8h4v13h-4zM17 3h4v18h-4z" },
+  { href: "/piyasa", label: "Piyasa", short: "Piyasa", primary: true, icon: "M3 17l5-5 4 4 8-9M14 7h6v6" },
+  { href: "/sinyaller", label: "Sinyaller", short: "Sinyaller", icon: "M3 12h4l3-8 4 16 3-8h4" },
   { href: "/islemler", label: "İşlemler", short: "İşlemler", icon: "M4 6h16M4 12h16M4 18h10" },
-  { href: "/emirler", label: "Emirler", short: "Emirler", icon: "M12 3v18M5 10l7-7 7 7M5 21h14" },
+  { href: "/emirler", label: "Emirler", short: "Emirler", primary: true, icon: "M12 3v18M5 10l7-7 7 7M5 21h14" },
   { href: "/hesaplayicilar", label: "Hesaplayıcılar", short: "Hesapla", icon: "M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 7h8M8 12h2M14 12h2M8 16h2M14 16h2" },
-  { href: "/sohbet", label: "Sohbet", short: "Sohbet", icon: "M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" },
+  { href: "/sohbet", label: "Sohbet", short: "Sohbet", primary: true, icon: "M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" },
   { href: "/analizler", label: "Analizler", short: "Analiz", icon: "M4 5h16v14H4zM8 9h8M8 13h8M8 17h5" },
   {
     href: "/ayarlar",
@@ -25,7 +29,10 @@ const NAV: { href: string; label: string; short: string; icon: string; mobile?: 
 ];
 
 const MAIN_NAV = NAV.filter((n) => n.mobile !== false);
+const PRIMARY_NAV = MAIN_NAV.filter((n) => n.primary);
+const MORE_NAV = MAIN_NAV.filter((n) => !n.primary);
 const SETTINGS = NAV.find((n) => n.href === "/ayarlar")!;
+const MORE_ICON = "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z";
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -41,6 +48,8 @@ function NavIcon({ d }: { d: string }) {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreActive = MORE_NAV.some((n) => isActive(pathname, n.href)) || isActive(pathname, SETTINGS.href);
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -61,13 +70,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={n.href}
                 href={n.href}
-                className={`rounded-lg px-2.5 py-1.5 lg:px-3 text-sm transition ${
+                className={`rounded-lg px-2.5 py-1.5 lg:px-3 text-sm transition ${n.primary ? "" : "hidden xl:block"} ${
                   isActive(pathname, n.href) ? "bg-surface-2 text-white" : "text-slate-400 hover:text-white"
                 }`}
               >
                 {n.label}
               </Link>
             ))}
+            <div className="relative xl:hidden">
+              <button
+                type="button"
+                onClick={() => setMoreOpen((o) => !o)}
+                aria-expanded={moreOpen}
+                className={`rounded-lg px-2.5 py-1.5 text-sm transition lg:px-3 ${
+                  MORE_NAV.some((n) => isActive(pathname, n.href)) ? "bg-surface-2 text-white" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Daha fazla ▾
+              </button>
+              {moreOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)} />
+                  <div className="absolute top-10 left-0 z-50 w-56 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-2xl">
+                    {MORE_NAV.map((n) => (
+                      <Link
+                        key={n.href}
+                        href={n.href}
+                        onClick={() => setMoreOpen(false)}
+                        className={`flex items-center gap-3 px-3 py-2 text-sm ${isActive(pathname, n.href) ? "text-accent" : "text-slate-300 hover:bg-surface-2 hover:text-white"}`}
+                      >
+                        <NavIcon d={n.icon} />
+                        {n.label}
+                      </Link>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </nav>
           <div className="ml-auto flex items-center gap-1">
             <NotificationBell />
@@ -89,11 +128,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main className="mx-auto max-w-6xl px-4 pt-4 pb-28 md:px-6 md:pt-6 md:pb-10">{children}</main>
 
       <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-line/70 bg-bg/95 backdrop-blur md:hidden">
-        <div className="grid" style={{ gridTemplateColumns: `repeat(${MAIN_NAV.length}, minmax(0, 1fr))` }}>
-          {MAIN_NAV.map((n) => (
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${PRIMARY_NAV.length + 1}, minmax(0, 1fr))` }}>
+          {PRIMARY_NAV.map((n) => (
             <Link
               key={n.href}
               href={n.href}
+              onClick={() => setMoreOpen(false)}
               aria-label={n.label}
               className={`flex min-w-0 flex-col items-center gap-1 py-2.5 text-[11px] leading-none ${
                 isActive(pathname, n.href) ? "text-accent" : "text-slate-400"
@@ -103,8 +143,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="max-w-full truncate px-0.5">{n.short}</span>
             </Link>
           ))}
+          <button
+            type="button"
+            onClick={() => setMoreOpen((o) => !o)}
+            aria-expanded={moreOpen}
+            aria-label="Daha fazla"
+            className={`flex min-w-0 flex-col items-center gap-1 py-2.5 text-[11px] leading-none ${moreActive || moreOpen ? "text-accent" : "text-slate-400"}`}
+          >
+            <NavIcon d={MORE_ICON} />
+            <span className="max-w-full truncate px-0.5">Daha fazla</span>
+          </button>
         </div>
       </nav>
+
+      {moreOpen && (
+        <div className="fixed inset-0 z-20 bg-black/50 md:hidden" onClick={() => setMoreOpen(false)}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-line bg-surface px-3 pt-3 pb-[calc(4.5rem+env(safe-area-inset-bottom))] shadow-2xl"
+          >
+            <div className="grid grid-cols-3 gap-2">
+              {[...MORE_NAV, SETTINGS].map((n) => (
+                <Link
+                  key={n.href}
+                  href={n.href}
+                  onClick={() => setMoreOpen(false)}
+                  className={`flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3 text-xs ${
+                    isActive(pathname, n.href) ? "border-accent/50 text-accent" : "border-line text-slate-300 active:bg-surface-2"
+                  }`}
+                >
+                  <NavIcon d={n.icon} />
+                  {n.label}
+                </Link>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

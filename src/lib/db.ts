@@ -198,6 +198,16 @@ const MIGRATIONS: string[] = [
     fail_count  INTEGER NOT NULL DEFAULT 0
   );
   `,
+  `
+  -- Günlük teknik sinyal kontrolünün son sonucu (varlık başına). Sinyal değişince bildirim üretilir.
+  CREATE TABLE technical_signals (
+    instrument    TEXT PRIMARY KEY,
+    label         TEXT    NOT NULL,
+    score         INTEGER NOT NULL,
+    checked_date  TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
 ];
 
 function open(): DatabaseSync {

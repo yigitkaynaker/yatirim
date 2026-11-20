@@ -8,6 +8,8 @@ Kişisel (tek kullanıcılı) yatırım uygulaması. Bilgisayarınızda çalış
 
 **Aşama 3 içeriği:** Claude yapay zekası ile işlem yapabilen Sohbet, otomatik ve elle haber analizi (Analizler sayfası), Ayarlar sayfası (API anahtarı, model, tarama takvimi, aylık bütçe) ve telefona/masaüstüne anlık (push) bildirimler.
 
+**Aşama 4 içeriği:** teknik analiz sinyalleri (RSI, MACD, hareketli ortalamalar, Bollinger, hacim), varlık detayında Teknik Analiz bölümü ve grafik katmanları, Sinyaller sayfası, günlük sinyal değişimi bildirimleri, sohbette ve haber analizinde teknik sinyaller.
+
 > **Güncellemeden sonra:** kod değiştiyse sunucuyu durdurup `npm run build` ile yeniden derleyin, sonra `npm start`. Eski derleme (`.next`) yeni sayfaları içermez.
 
 ## Kurulum ve çalıştırma
@@ -25,7 +27,7 @@ Geliştirme modu için `npm run dev` kullanın. İki komut da `0.0.0.0:3000` adr
 
 Veriler `data/yatirim.db` dosyasında tutulur. Yedeklemek için sunucuyu durdurup bu dosyayı kopyalayın.
 
-Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run icons` (ikonları yeniden üretir), `npm run test:ai` (yapay zeka katmanının sahte istemciyle testi; `YATIRIM_DATA_DIR` ile ayrı bir veri klasörü gösterin, gerçek API çağrısı yapmaz).
+Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run test:indicators` (gösterge motorunun birim testleri), `npm run icons` (ikonları yeniden üretir), `npm run test:ai` (yapay zeka katmanının sahte istemciyle testi; `YATIRIM_DATA_DIR` ile ayrı bir veri klasörü gösterin, gerçek API çağrısı yapmaz).
 
 Çalışan sunucuya dokunmadan test derlemesi için: `NEXT_DIST_DIR=.next-test npm run build` (çıktı `.next-test` klasörüne yazılır). `YATIRIM_DATA_DIR` ile farklı bir veri klasörü kullanılabilir.
 
@@ -107,6 +109,15 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 - **Anlık bildirimler:** Ayarlar › *Bildirimleri aç* bu cihazı abone eder (birden fazla cihaz olabilir). Emir gerçekleşince/başarısız olunca ve önemli haberlerde gönderilir. VAPID anahtarları ilk kullanımda üretilip veritabanında saklanır. Tarayıcılar bunun için HTTPS ister: bilgisayarda `localhost` çalışır, telefonda `tailscale serve` ile açılan https adresini kullanın (iPhone'da önce ana ekrana ekleyin).
 - Yanıtlar ve analizler yatırım tavsiyesi değildir.
 
+### Teknik sinyaller (Aşama 4)
+- **Göstergeler** (günlük kapanışlarla, ~2 yıllık veri, 30 dk önbellek): SMA ve EMA 20/50/200, RSI(14), MACD(12,26,9), Bollinger(20,2), son hacmin 20 günlük ortalamaya oranı. Hisse/döviz/altın: Yahoo, kripto: Binance.
+- **Özet sinyal:** RSI bölgeleri, MACD kesişimi, fiyatın SMA50/SMA200'e göre yeri, altın/ölüm kesişimi, Bollinger bandına temas ve hacim teyidi puanlanır; toplam puana göre **Güçlü Al / Al / Nötr / Sat / Güçlü Sat**. Kurallar, puanlar ve eşikler tek dosyadadır: `src/lib/signalRules.ts` (`RULES`).
+- **Varlık detayı:** *Teknik Analiz* bölümü (rozet, nedenler, gösterge değerleri ve sade açıklamaları); grafikte SMA 50 / SMA 200 / Bollinger katmanları ve altta RSI paneli.
+- **Sinyaller sayfası:** gerçek + sanal pozisyonlar ve izleme listesindeki varlıklar; sinyal, RSI, değişim ya da ada göre sıralanır. Telefonda alt çubuktaki *Daha fazla* menüsünde, Piyasa sayfasında da bağlantısı var.
+- **Sinyal uyarıları:** her gün 19:00'dan sonra (İstanbul) emir izleyici döngüsü sinyalleri bir kez kontrol eder (`technical_signals` tablosu, `scheduled_runs` ile çift çalışma engellenir). Bir varlığın özeti değişirse bildirim + push. Ayarlar'dan kapatılabilir.
+- **Yapay zeka:** sohbette `get_technical_signals` aracı; haber analizi istemine varlık başına teknik özet eklenir.
+- Teknik sinyaller geçmiş fiyatlara dayanır, geleceği garanti etmez; yatırım tavsiyesi değildir.
+
 ### Canlı fiyatlar
 - **Hisse, döviz ve altın:** Yahoo Finance. BIST sembolleri `THYAO` gibi girilir, `.IS` eki otomatik eklenir. Döviz için `USDTRY=X` kullanılır. Gram altın = ons (GC=F) × USDTRY / 31,1035.
 - **Kripto:** Binance (örn. `BTC` → BTCUSDT).
@@ -121,6 +132,7 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 | `src/lib/orders.ts`, `src/lib/orderWatcher.ts` | Emirler, bildirimler, emir izleyici (`src/instrumentation.ts` içinden bir kez başlatılır) |
 | `src/lib/prices.ts` | Fiyat servisi (Yahoo + Binance, önbellek, "eski" fiyat desteği) |
 | `src/lib/market.ts` | İzleme listesi, sembol arama, grafik verisi (eylemler: `listWatchlist`, `addToWatchlist`, `searchSymbols`, `getPriceChart`) |
+| `src/lib/indicators.ts`, `src/lib/signalRules.ts`, `src/lib/technical.ts` | Gösterge motoru (saf, testli), sinyal kuralları, günlük mumlar + analiz + günlük sinyal uyarısı (eylemler: `getTechnicalSignals`, `listTechnicalSignals`) |
 | `src/lib/snapshots.ts` | Günlük portföy değeri kayıtları (`getPortfolioHistory`) |
 | `src/lib/db.ts` | SQLite bağlantısı ve sürümlü şema geçişleri. Yeni tablo eklemek için `MIGRATIONS` dizisine yeni bir adım ekleyin. |
 | `src/lib/auth.ts`, `src/proxy.ts` | İmzalı oturum çerezi ve sayfa/API koruması |

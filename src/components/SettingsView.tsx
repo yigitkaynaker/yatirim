@@ -10,6 +10,7 @@ interface SettingsData {
   settings: { model: "ekonomik" | "gelismis"; scheduleEnabled: boolean; scheduleTimes: string[]; maxSearches: number; budgetUsd: number };
   models: { key: string; id: string; label: string; inputPerMTok: number; outputPerMTok: number }[];
   budget: { spentUsd: number; budgetUsd: number; overBudget: boolean; searches: number; calls: number };
+  signalAlerts: boolean;
 }
 
 type Msg = { ok: boolean; text: string } | null;
@@ -67,6 +68,7 @@ export function SettingsView() {
         <>
           <KeySection data={data} onChange={setData} />
           <AiSettingsSection key={JSON.stringify(data.settings)} data={data} onChange={setData} />
+          <SignalAlertsSection data={data} onChange={setData} />
         </>
       )}
       <PushSection />
@@ -312,6 +314,49 @@ function AiSettingsSection({ data, onChange }: { data: SettingsData; onChange: (
   );
 }
 
+// ---- Teknik sinyal uyarıları ---------------------------------------------------------
+
+function SignalAlertsSection({ data, onChange }: { data: SettingsData; onChange: (d: SettingsData) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg>(null);
+
+  async function toggle(on: boolean) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      onChange((await send("/api/settings", "PUT", { signalAlerts: on })) as SettingsData);
+      setMsg({ ok: true, text: on ? "Sinyal uyarıları açıldı." : "Sinyal uyarıları kapatıldı." });
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="space-y-3 p-4 md:p-6">
+      <label className="flex items-center justify-between gap-3">
+        <span>
+          <span className="block font-semibold">Teknik sinyal uyarıları</span>
+          <span className="mt-1 block text-sm text-slate-500">
+            Her gün 19:00&apos;dan sonra (İstanbul) portföy ve izleme listenizdeki varlıkların teknik sinyali kontrol edilir. Bir varlığın özeti
+            değişirse (örn. Nötr → Al) bildirim ve anlık bildirim gönderilir. Sunucu çalışırken yapılır.
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          checked={data.signalAlerts}
+          disabled={busy}
+          onChange={(e) => toggle(e.target.checked)}
+          className="h-5 w-5 shrink-0 accent-emerald-500"
+        />
+      </label>
+      <p className="text-xs text-slate-500">Teknik sinyaller geçmiş fiyatlara dayanır, geleceği garanti etmez; yatırım tavsiyesi değildir.</p>
+      <Note msg={msg} />
+    </Card>
+  );
+}
+
 // ---- Bildirimler (Web Push) ------------------------------------------------------------
 
 function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
@@ -426,7 +471,7 @@ function PushSection() {
       <div>
         <h2 className="font-semibold">Bildirimler</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Emir gerçekleşince ya da başarısız olunca ve önemli (4–5) haberlerde bu cihaza anlık bildirim gönderilir. Uygulama içi zil aynı şekilde çalışmaya devam eder.
+          Emir gerçekleşince ya da başarısız olunca, önemli (4–5) haberlerde ve teknik sinyal değişince bu cihaza anlık bildirim gönderilir. Uygulama içi zil aynı şekilde çalışmaya devam eder.
         </p>
       </div>
 

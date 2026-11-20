@@ -19,6 +19,7 @@ import { getAiSettings } from "./settings";
 import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
 import { formatNumber } from "./format";
+import { technicalContext } from "./technical";
 
 // HABER ANALİZİ
 // Gerçek + sanal pozisyonlar, izleme listesi ve bekleyen emirlerdeki varlıklar
@@ -213,7 +214,7 @@ function istanbulNow(): string {
   return new Date().toLocaleString("tr-TR", { timeZone: "Europe/Istanbul", dateStyle: "full", timeStyle: "short" });
 }
 
-function buildPrompt(assets: ScanAsset[], maxSearches: number): { system: string; user: string } {
+function buildPrompt(assets: ScanAsset[], maxSearches: number, technical: Map<string, string> = new Map()): { system: string; user: string } {
   const system = [
     "Sen kişisel bir yatırım uygulamasında çalışan haber analisti yardımcısısın. Kullanıcı yatırıma yeni başlayan biri.",
     maxSearches > 0
@@ -227,10 +228,13 @@ function buildPrompt(assets: ScanAsset[], maxSearches: number): { system: string
     "- importance 4 ve 5 yalnızca kullanıcının pozisyonunu ya da emrini doğrudan etkileyebilecek ciddi gelişmeler için (bilanço sürprizi, büyük düzenleme, sert fiyat hareketi, iflas/birleşme vb.).",
     "- Dil sade Türkçe olsun; teknik terim kullanırsan kısaca açıkla.",
     "- Kesin al/sat tavsiyesi verme; olası etkileri \"olabilir\" diliyle anlat.",
+    "- Bazı varlıklar için günlük fiyatlardan hesaplanan teknik sinyal özeti (RSI, MACD, hareketli ortalamalar) verildi. Uygunsa position_impact içinde haberi bu teknik görünümle birleştir (örn. \"olumsuz haber, teknik sinyal de Sat yönünde\" ya da \"haber olumlu ama RSI aşırı alım bölgesinde\"). Teknik sinyallerin geçmiş fiyatlara dayandığını, geleceği garanti etmediğini unutma.",
   ].join("\n");
 
   const lines = assets.map(
-    (a) => `- asset_type=${a.assetType} symbol=${a.symbol} (${displaySymbol(a.assetType, a.symbol)}) — ${a.notes.join("; ")}`,
+    (a) =>
+      `- asset_type=${a.assetType} symbol=${a.symbol} (${displaySymbol(a.assetType, a.symbol)}) — ${a.notes.join("; ")}` +
+      (technical.has(a.instrument) ? ` — ${technical.get(a.instrument)}` : ""),
   );
   const user = [
     `Şu an (İstanbul): ${istanbulNow()}`,
@@ -369,7 +373,8 @@ async function runScan(reportId: number, client: AiClient, only?: { type: AssetT
     if (assets.length === 0) {
       throw new actions.ValidationError("Analiz edilecek varlık yok. Portföyünüze, izleme listesine ya da emirlere varlık ekleyin.");
     }
-    const { system, user } = buildPrompt(assets, maxSearches);
+    const technical = await technicalContext(assets);
+    const { system, user } = buildPrompt(assets, maxSearches, technical);
     const tools: Anthropic.ToolUnion[] = maxSearches > 0 ? [webSearchTool(maxSearches), SUBMIT_TOOL] : [SUBMIT_TOOL];
     const messages: Anthropic.MessageParam[] = [{ role: "user", content: user }];
 

@@ -161,6 +161,7 @@ function systemPrompt(): string {
     "- Emirler yalnızca bu uygulamanın içinde gerçekleşir; aracı kuruma emir gitmez, gerçek para hareketi olmaz. Gerekirse bunu hatırlat.",
     "- Bir araç hata döndürürse hatayı sade dille açıkla ve ne yapılabileceğini söyle.",
     "- Güncel haber gerekiyorsa önce get_latest_news_report'a bak; yetmezse web_search kullan.",
+    "- Teknik analiz (RSI, MACD, hareketli ortalamalar, al/sat sinyali) sorulursa get_technical_signals kullan; göstergeleri sade dille açıkla ve teknik sinyallerin geleceği garanti etmediğini belirt.",
     "",
     `Bugünün tarihi (İstanbul): ${todayIstanbul()}.`,
   ].join("\n");

@@ -4,6 +4,7 @@ import * as portfolio from "./portfolio";
 import * as orders from "./orders";
 import * as market from "./market";
 import * as snapshots from "./snapshots";
+import * as technical from "./technical";
 import { runOrderCheck } from "./orderWatcher";
 import { getQuotes, type InstrumentRef } from "./prices";
 
@@ -181,4 +182,22 @@ export function getPriceChart(instrument: InstrumentRef, range: market.ChartRang
 /** Portföyün günlük değer geçmişi (ilk anlık görüntüden itibaren). */
 export function getPortfolioHistory(mode: Mode) {
   return snapshots.listSnapshots(mode);
+}
+
+// ---- Teknik analiz ------------------------------------------------------------------
+
+export type { TechnicalAnalysis, SignalRow } from "./technical";
+
+/**
+ * Bir varlığın teknik göstergeleri (SMA/EMA, RSI, MACD, Bollinger, hacim) ve
+ * Güçlü Al … Güçlü Sat özet sinyali, nedenleri ve sade açıklamalarıyla.
+ * overlays: true → grafik katmanları için seriler de döner.
+ */
+export function getTechnicalSignals(instrument: InstrumentRef, opts: { overlays?: boolean; name?: string | null } = {}) {
+  return technical.getTechnicalAnalysis(instrument.type, instrument.symbol, opts);
+}
+
+/** Tüm pozisyon (gerçek + sanal) ve izleme listesi varlıklarının güncel teknik sinyali. */
+export function listTechnicalSignals() {
+  return technical.listSignals();
 }

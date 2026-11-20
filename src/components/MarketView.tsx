@@ -70,6 +70,17 @@ export function MarketView() {
 
       {prices.error && <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-300">{prices.error}</p>}
 
+      <Link
+        href="/sinyaller"
+        className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-surface px-4 py-3 text-sm transition hover:border-slate-500/60 active:bg-surface-2"
+      >
+        <span>
+          <span className="font-medium text-slate-100">Teknik sinyaller</span>
+          <span className="block text-xs text-slate-500">Portföy ve izleme listenizdeki varlıklar için Al / Nötr / Sat özeti</span>
+        </span>
+        <span className="text-slate-400">›</span>
+      </Link>
+
       <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 md:gap-3">
         {OVERVIEW.map((o) => {
           const q = byId.get(o.id);

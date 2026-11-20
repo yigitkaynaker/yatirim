@@ -5,6 +5,9 @@ import { useState } from "react";
 import type { AppNotification } from "@/lib/orders";
 import { usePolling } from "@/lib/usePolling";
 
+/** Bildirim türüne göre ilgili sayfa */
+const LINKS: Record<string, string> = { news_alert: "/analizler", signal_change: "/sinyaller" };
+
 /** Uygulama içi bildirimler (emir gerçekleşti, önemli haber vb.). */
 export function NotificationBell() {
   const { data, reload } = usePolling<{ items: AppNotification[]; unread: number }>("/api/notifications");
@@ -43,9 +46,9 @@ export function NotificationBell() {
               <ul className="divide-y divide-line/70">
                 {data.items.map((n) => (
                   <li key={n.id} className={`px-4 py-3 ${n.readAt ? "" : "bg-sky-500/5"}`}>
-                    <div className={`text-sm font-medium ${n.kind === "order_failed" ? "text-rose-300" : n.kind === "news_alert" ? "text-amber-200" : ""}`}>
-                      {n.kind === "news_alert" ? (
-                        <Link href="/analizler" onClick={() => setOpen(false)} className="hover:underline">
+                    <div className={`text-sm font-medium ${n.kind === "order_failed" ? "text-rose-300" : n.kind === "news_alert" ? "text-amber-200" : n.kind === "signal_change" ? "text-sky-200" : ""}`}>
+                      {LINKS[n.kind] ? (
+                        <Link href={LINKS[n.kind]} onClick={() => setOpen(false)} className="hover:underline">
                           {n.title}
                         </Link>
                       ) : (

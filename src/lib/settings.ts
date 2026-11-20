@@ -161,3 +161,16 @@ export function updateAiSettings(body: Record<string, unknown>): AiSettings {
   setSetting(AI_SETTINGS_KEY, JSON.stringify(next));
   return next;
 }
+
+// ---- Teknik sinyal uyarıları --------------------------------------------------------
+
+const SIGNAL_ALERTS_KEY = "signal_alerts";
+
+/** Günlük teknik sinyal değişimi bildirimi açık mı (varsayılan: açık) */
+export function getSignalAlertsEnabled(): boolean {
+  return getSetting(SIGNAL_ALERTS_KEY) !== "0";
+}
+
+export function setSignalAlertsEnabled(on: boolean) {
+  setSetting(SIGNAL_ALERTS_KEY, on ? "1" : "0");
+}

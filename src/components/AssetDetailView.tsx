@@ -2,16 +2,18 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ASSET_TYPE_INFO, displaySymbol, isCurrency, parseInstrumentId } from "@/lib/assets";
 import { formatPercent, formatTime, pnlClass } from "@/lib/format";
 import type { ChartData, ChartRange, WatchItem } from "@/lib/market";
 import type { Quote } from "@/lib/prices";
+import type { TechnicalAnalysis } from "@/lib/technical";
 import { fetchJson, goToLogin, UnauthorizedError, usePolling } from "@/lib/usePolling";
 import { formatQuotePrice, isIndex, OVERVIEW } from "./MarketView";
 import { AssetNewsPanel } from "./AssetNewsPanel";
 import { OrderForm } from "./OrdersView";
-import { PriceChart } from "./PriceChart";
+import { PriceChart, type ChartOverlay } from "./PriceChart";
+import { SignalBadge, TechnicalPanel } from "./TechnicalPanel";
 import { TransactionForm, toInput } from "./TransactionForm";
 import { Card, Modal, Segmented, StaleBadge } from "./ui";
 import { VirtualEntryForm } from "./VirtualEntryForm";
@@ -36,6 +38,16 @@ const RANGE_HINT: Record<ChartRange, string> = {
 
 type Action = "virtual" | "order" | "tx" | null;
 
+type Layer = "sma50" | "sma200" | "bb" | "rsi";
+
+/** Grafik katman düğmeleri: renk ve kısa açıklama */
+const LAYERS: { key: Layer; label: string; color: string; hint: string }[] = [
+  { key: "sma50", label: "SMA 50", color: "#fbbf24", hint: "son 50 günün ortalama fiyatı (sarı çizgi). Fiyat üstündeyse orta vadeli eğilim yukarı." },
+  { key: "sma200", label: "SMA 200", color: "#f472b6", hint: "son 200 günün ortalama fiyatı (pembe çizgi). Uzun vadeli eğilimi gösterir." },
+  { key: "bb", label: "Bollinger", color: "#60a5fa", hint: "olağan fiyat aralığı (mavi kesikli çizgiler). Fiyat çoğu zaman bu bantların arasında kalır." },
+  { key: "rsi", label: "RSI", color: "#a78bfa", hint: "alttaki panel. 70 üstü: kısa sürede çok yükseldi, 30 altı: kısa sürede çok düştü." },
+];
+
 export function AssetDetailView() {
   const params = useSearchParams();
   const router = useRouter();
@@ -47,6 +59,8 @@ export function AssetDetailView() {
   const [chart, setChart] = useState<{ key: string; data: ChartData | null; error?: string } | null>(null);
   const [action, setAction] = useState<Action>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [tech, setTech] = useState<{ id: string; data: TechnicalAnalysis | null; error: string | null } | null>(null);
+  const [layers, setLayers] = useState<Record<Layer, boolean>>({ sma50: false, sma200: false, bb: false, rsi: true });
 
   const price = usePolling<{ quotes: Quote[] }>(`/api/prices?ids=${encodeURIComponent(id || "fx:USD")}`);
   const watch = usePolling<{ items: WatchItem[] }>("/api/watchlist", 120_000);
@@ -67,6 +81,35 @@ export function AssetDetailView() {
       alive = false;
     };
   }, [id, range]);
+
+  useEffect(() => {
+    if (!id) return;
+    let alive = true;
+    fetchJson<TechnicalAnalysis>(`/api/technical?id=${encodeURIComponent(id)}`)
+      .then((data) => alive && setTech({ id, data, error: null }))
+      .catch((err: unknown) => {
+        if (err instanceof UnauthorizedError) return goToLogin();
+        if (alive) setTech({ id, data: null, error: "Teknik analiz için fiyat verisi alınamadı." });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+
+  const techData = tech && tech.id === id ? tech.data : null;
+  const overlays = useMemo<ChartOverlay[]>(() => {
+    const o = techData?.overlays;
+    if (!o) return [];
+    const out: ChartOverlay[] = [];
+    if (layers.sma50) out.push({ id: "sma50", color: "#fbbf24", points: o.sma50 });
+    if (layers.sma200) out.push({ id: "sma200", color: "#f472b6", points: o.sma200 });
+    if (layers.bb) {
+      out.push({ id: "bbUpper", color: "#60a5fa", points: o.bbUpper, dashed: true });
+      out.push({ id: "bbLower", color: "#60a5fa", points: o.bbLower, dashed: true });
+    }
+    return out;
+  }, [techData, layers.sma50, layers.sma200, layers.bb]);
+  const rsiPoints = layers.rsi ? (techData?.overlays?.rsi ?? null) : null;
 
   if (!ref) {
     return (
@@ -158,7 +201,7 @@ export function AssetDetailView() {
         </div>
 
         <div className="relative mt-3">
-          <PriceChart points={points} currency={currency} intraday={!!current?.data?.intraday} />
+          <PriceChart points={points} currency={currency} intraday={!!current?.data?.intraday} overlays={overlays} rsi={rsiPoints} />
           {(!current || current.error || points.length === 0) && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">
               {!current ? "Grafik yükleniyor…" : current.error ? <span className="text-rose-400">{current.error}</span> : "Bu aralık için veri yok."}
@@ -168,6 +211,45 @@ export function AssetDetailView() {
         <p className="mt-2 text-xs text-slate-500">
           {index ? "Endeks puanı" : `Fiyat birimi: ${currency}`}. Parmağınızı grafikte gezdirerek o andaki değeri görebilirsiniz.
         </p>
+
+        <div className="mt-4 border-t border-line/70 pt-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">Grafikte göster:</span>
+            {LAYERS.map((l) => {
+              const on = layers[l.key];
+              return (
+                <button
+                  key={l.key}
+                  type="button"
+                  aria-pressed={on}
+                  disabled={!techData}
+                  onClick={() => setLayers((cur) => ({ ...cur, [l.key]: !cur[l.key] }))}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
+                    on ? "border-slate-500 bg-surface-2 text-white" : "border-line text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <span className="h-2 w-2 rounded-full" style={{ background: on ? l.color : "transparent", boxShadow: `inset 0 0 0 1.5px ${l.color}` }} />
+                  {l.label}
+                </button>
+              );
+            })}
+            {techData && (
+              <span className="ml-auto">
+                <SignalBadge label={techData.summary.label} score={techData.summary.insufficient ? null : techData.summary.score} />
+              </span>
+            )}
+          </div>
+          {LAYERS.some((l) => layers[l.key]) && (
+            <ul className="mt-2 space-y-0.5 text-xs text-slate-500">
+              {LAYERS.filter((l) => layers[l.key]).map((l) => (
+                <li key={l.key}>
+                  <span style={{ color: l.color }}>●</span> <span className="text-slate-300">{l.label}:</span> {l.hint}
+                </li>
+              ))}
+              <li>Göstergeler günlük kapanışlarla hesaplanır; en anlamlı görünüm 3A ve 1Y aralığındadır.</li>
+            </ul>
+          )}
+        </div>
       </Card>
 
       {!index && (
@@ -189,6 +271,8 @@ export function AssetDetailView() {
           {toast}
         </p>
       )}
+
+      <TechnicalPanel data={techData} error={tech && tech.id === id ? tech.error : null} />
 
       <AssetNewsPanel instrument={id} />
 

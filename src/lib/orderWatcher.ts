@@ -4,7 +4,7 @@ import { maybeRecordSnapshots } from "./snapshots";
 
 // Sunucu çalıştığı sürece bekleyen emirleri ~30 sn'de bir kontrol eder,
 // günlük portföy değeri anlık görüntüsünü (gerçek / sanal) kaydeder ve
-// zamanı gelen otomatik haber taramasını başlatır.
+// zamanı gelen otomatik haber taramasını ve günlük teknik sinyal kontrolünü başlatır.
 // instrumentation.ts'den bir kez başlatılır; dev modda çift başlatmaya karşı
 // globalThis üzerinde korunur.
 
@@ -42,6 +42,7 @@ export function startOrderWatcher() {
   const timer = setInterval(() => {
     void runOrderCheck();
     void runScheduledNews();
+    void runSignalAlerts();
   }, ORDER_CHECK_MS);
   timer.unref?.();
   g.__yatirimOrderWatcher = { timer, running: false };
@@ -56,5 +57,15 @@ async function runScheduledNews() {
     await maybeRunScheduledScan();
   } catch (err) {
     console.error("[haber] zamanlayıcı hatası", err);
+  }
+}
+
+/** Günlük teknik sinyal kontrolü (günde bir kez; çift çalışma technical.ts içinde engellenir). */
+async function runSignalAlerts() {
+  try {
+    const { maybeRunSignalAlerts } = await import("./technical");
+    await maybeRunSignalAlerts();
+  } catch (err) {
+    console.error("[teknik] zamanlayıcı hatası", err);
   }
 }

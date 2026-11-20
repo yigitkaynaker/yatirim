@@ -146,6 +146,12 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
     description: "Uygulamanın son haber analizi raporunu getirir (varlık başına duygu, önem, özet, kaynaklar). symbol verilirse yalnızca o varlığın maddesi döner.",
     input_schema: { type: "object", properties: { asset_type: assetTypeProp, symbol: { type: "string" } } },
   },
+  {
+    name: "get_technical_signals",
+    description:
+      "Bir varlığın teknik analizini getirir: günlük kapanışlarla RSI(14), MACD(12,26,9), SMA/EMA 20/50/200, Bollinger(20,2), hacim oranı ve bunlardan çıkan özet sinyal (Güçlü Al / Al / Nötr / Sat / Güçlü Sat) ile nedenleri. Kullanıcıya anlatırken sade dil kullan ve teknik sinyallerin geleceği garanti etmediğini, yatırım tavsiyesi olmadığını belirt. asset_type verilmezse sembolden tahmin edilir (THYAO.IS → bist, BTCUSDT → crypto, diğerleri → foreign).",
+    input_schema: { type: "object", properties: { asset_type: assetTypeProp, symbol: { type: "string" } }, required: ["symbol"] },
+  },
 ];
 
 const TOOL_LABELS: Record<string, string> = {
@@ -159,6 +165,7 @@ const TOOL_LABELS: Record<string, string> = {
   cancel_order: "Emir iptal ediliyor",
   list_orders: "Emirlere bakılıyor",
   get_latest_news_report: "Haber raporuna bakılıyor",
+  get_technical_signals: "Teknik göstergelere bakılıyor",
   web_search: "Webde aranıyor",
 };
 
@@ -179,6 +186,16 @@ function ref(i: Input): { assetType: AssetType; symbol: string } {
   const symbol = normalizeSymbol(i.asset_type, String(i.symbol ?? ""));
   if (!symbol) throw new actions.ValidationError("symbol eksik.");
   return { assetType: i.asset_type, symbol };
+}
+
+/** asset_type verilmediğinde sembolden tahmin: THYAO.IS → bist, BTCUSDT → crypto, diğerleri → foreign */
+function guessRef(raw: string): { assetType: AssetType; symbol: string } {
+  const up = raw.trim().toLocaleUpperCase("en-US");
+  if (!up) throw new actions.ValidationError("symbol eksik.");
+  if (up.endsWith(".IS")) return { assetType: "bist", symbol: normalizeSymbol("bist", up) };
+  if (/USDT$/.test(up)) return { assetType: "crypto", symbol: normalizeSymbol("crypto", up) };
+  if (up === "GRAM" || up === "ALTIN") return { assetType: "gold", symbol: "GRAM" };
+  return { assetType: "foreign", symbol: normalizeSymbol("foreign", up) };
 }
 
 const opt = <T,>(v: unknown): T | undefined => (v === null || v === undefined || v === "" ? undefined : (v as T));
@@ -460,6 +477,43 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
               pozisyona_etkisi: x.positionImpact,
               kaynaklar: x.sources,
             })),
+        },
+      };
+    }
+
+    case "get_technical_signals": {
+      const a = i.asset_type ? ref(i) : guessRef(String(i.symbol ?? ""));
+      const t = await actions.getTechnicalSignals({ type: a.assetType, symbol: a.symbol });
+      const s = t.snapshot;
+      return {
+        result: {
+          asset_type: t.assetType,
+          symbol: t.symbol,
+          son_kapanis: r(s.close, 6),
+          para_birimi: t.currency,
+          veri_tarihi_utc: t.asOf ? new Date(t.asOf * 1000).toISOString().slice(0, 10) : null,
+          gun_sayisi: s.bars,
+          sinyal: t.summary.label,
+          puan: t.summary.score,
+          sinyal_aciklamasi: t.labelExplain,
+          nedenler: t.summary.reasons.map((x) => ({ neden: x.title, puan: x.points, aciklama: x.explain })),
+          gostergeler: {
+            rsi14: r(s.rsi, 2),
+            macd: r(s.macd, 6),
+            macd_sinyal: r(s.macdSignal, 6),
+            macd_histogram: r(s.macdHist, 6),
+            sma20: r(s.sma20, 6),
+            sma50: r(s.sma50, 6),
+            sma200: r(s.sma200, 6),
+            ema20: r(s.ema20, 6),
+            ema50: r(s.ema50, 6),
+            ema200: r(s.ema200, 6),
+            bollinger_ust: r(s.bbUpper, 6),
+            bollinger_orta: r(s.bbMiddle, 6),
+            bollinger_alt: r(s.bbLower, 6),
+            hacim_ortalama_orani: r(s.volumeRatio, 2),
+          },
+          uyari: "Teknik sinyaller geçmiş fiyatlara dayanır, geleceği garanti etmez; yatırım tavsiyesi değildir.",
         },
       };
     }
