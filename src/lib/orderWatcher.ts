@@ -1,7 +1,9 @@
 import "server-only";
 import { checkPendingOrders } from "./orders";
+import { maybeRecordSnapshots } from "./snapshots";
 
-// Sunucu çalıştığı sürece bekleyen emirleri ~30 sn'de bir kontrol eder.
+// Sunucu çalıştığı sürece bekleyen emirleri ~30 sn'de bir kontrol eder ve
+// günlük portföy değeri anlık görüntüsünü (gerçek / sanal) kaydeder.
 // instrumentation.ts'den bir kez başlatılır; dev modda çift başlatmaya karşı
 // globalThis üzerinde korunur.
 
@@ -24,6 +26,11 @@ export async function runOrderCheck() {
     if (r.executed > 0) console.log(`[emirler] ${r.executed} emir gerçekleşti`);
   } catch (err) {
     console.error("[emirler] kontrol hatası", err);
+  }
+  try {
+    await maybeRecordSnapshots();
+  } catch (err) {
+    console.error("[anlık görüntü] hata", err);
   } finally {
     if (s) s.running = false;
   }

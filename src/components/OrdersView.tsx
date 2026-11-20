@@ -135,10 +135,19 @@ function OrderRow({ o, onCancel }: { o: Order; onCancel?: () => void }) {
   );
 }
 
-function OrderForm({ onSaved }: { onSaved: () => void }) {
+export function OrderForm({
+  onSaved,
+  initialAssetType = "bist",
+  initialSymbol = "",
+}: {
+  onSaved: () => void;
+  /** Piyasa detayından açılınca varlık önceden seçili gelir */
+  initialAssetType?: AssetType;
+  initialSymbol?: string;
+}) {
   const [mode, setMode] = useState<Mode>("virtual");
-  const [assetType, setAssetType] = useState<AssetType>("bist");
-  const [symbol, setSymbol] = useState("");
+  const [assetType, setAssetType] = useState<AssetType>(initialAssetType);
+  const [symbol, setSymbol] = useState(initialSymbol);
   const [side, setSide] = useState<Side>("buy");
   const [condition, setCondition] = useState<OrderCondition>("lte");
   const [triggerPrice, setTriggerPrice] = useState("");

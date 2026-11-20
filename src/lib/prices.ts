@@ -58,6 +58,11 @@ function state(): ServiceState {
   return g.__yatirimPrices;
 }
 
+/** Paylaşılan yahoo-finance2 örneği (grafik ve arama için). */
+export function yahooClient() {
+  return state().yf;
+}
+
 // ---- Kaynak anahtarları -------------------------------------------------
 
 type SourceKey = `yahoo:${string}` | `binance:${string}`;

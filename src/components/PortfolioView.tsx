@@ -6,6 +6,7 @@ import { formatDate, formatMoney, formatPercent, formatQuantity, formatSigned, f
 import type { Holding, PortfolioSummary } from "@/lib/portfolio";
 import { usePolling } from "@/lib/usePolling";
 import { MarketStrip } from "./MarketStrip";
+import { AllocationDonut, PortfolioHistory } from "./PortfolioCharts";
 import { TransactionForm, toInput, today } from "./TransactionForm";
 import { Card, Modal, ModeTabs, PrimaryButton, StaleBadge } from "./ui";
 import { VirtualEntryForm } from "./VirtualEntryForm";
@@ -47,7 +48,9 @@ export function PortfolioView() {
 
       <Summary summary={summary} mode={mode} />
 
-      {summary && summary.allocation.length > 0 && <Allocation summary={summary} />}
+      {summary && summary.allocation.length > 0 && <AllocationDonut summary={summary} />}
+
+      <PortfolioHistory mode={mode} />
 
       <Holdings summary={summary} mode={mode} onConvert={setConverting} onAdd={() => setAdding(true)} />
 
@@ -143,29 +146,6 @@ function Summary({ summary, mode }: { summary: PortfolioSummary | null; mode: Mo
         <p className="mt-3 text-xs text-amber-300">Bazı varlıkların fiyatı alınamadığı için toplamlara dahil edilmedi.</p>
       )}
       <p className="mt-3 text-xs text-slate-500">Döviz cinsinden varlıklar güncel kurla TL’ye çevrilir.</p>
-    </Card>
-  );
-}
-
-function Allocation({ summary }: { summary: PortfolioSummary }) {
-  return (
-    <Card className="p-4 md:p-6">
-      <h2 className="mb-3 text-sm font-medium text-slate-300">Varlık dağılımı</h2>
-      <div className="flex h-3 overflow-hidden rounded-full bg-surface-2">
-        {summary.allocation.map((a) => (
-          <div key={a.assetType} style={{ width: `${a.pct}%`, background: ASSET_TYPE_INFO[a.assetType].color }} title={ASSET_TYPE_INFO[a.assetType].label} />
-        ))}
-      </div>
-      <ul className="num mt-4 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
-        {summary.allocation.map((a) => (
-          <li key={a.assetType} className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ background: ASSET_TYPE_INFO[a.assetType].color }} />
-            <span className="text-slate-300">{ASSET_TYPE_INFO[a.assetType].label}</span>
-            <span className="ml-auto text-slate-400">{formatMoney(a.valueTry)}</span>
-            <span className="w-16 text-right font-medium">%{a.pct.toLocaleString("tr-TR", { maximumFractionDigits: 1 })}</span>
-          </li>
-        ))}
-      </ul>
     </Card>
   );
 }

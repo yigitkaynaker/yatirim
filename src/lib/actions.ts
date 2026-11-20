@@ -2,6 +2,8 @@ import "server-only";
 import type { AssetType, Currency, Mode, Side } from "./assets";
 import * as portfolio from "./portfolio";
 import * as orders from "./orders";
+import * as market from "./market";
+import * as snapshots from "./snapshots";
 import { runOrderCheck } from "./orderWatcher";
 import { getQuotes, type InstrumentRef } from "./prices";
 
@@ -144,4 +146,39 @@ export function cancelOrder(id: number) {
 
 export function markNotificationsRead() {
   orders.markNotificationsRead();
+}
+
+// ---- Piyasa -----------------------------------------------------------------
+
+export type { WatchItem, SearchResult, ChartData, ChartRange } from "./market";
+export type { SnapshotPoint } from "./snapshots";
+
+/** Kullanıcının izleme listesi (eklenme sırasıyla). */
+export function listWatchlist() {
+  return market.listWatchlist();
+}
+
+/** İzleme listesine varlık ekler (zaten varsa mevcut kaydı döndürür). */
+export function addToWatchlist(p: { assetType: AssetType; symbol: string; name?: string | null }) {
+  return market.addWatch(p.assetType, p.symbol, p.name);
+}
+
+/** İzleme listesinden çıkarır. Bulunamazsa false. */
+export function removeFromWatchlist(id: number) {
+  return market.removeWatch(id);
+}
+
+/** Sembol arama: Yahoo Finance + Binance USDT pariteleri + Türkçe hazır eşleşmeler. */
+export function searchSymbols(query: string) {
+  return market.searchSymbols(query);
+}
+
+/** Fiyat grafiği verisi. range: 1G, 1H, 1A, 3A, 1Y, 5Y */
+export function getPriceChart(instrument: InstrumentRef, range: market.ChartRange) {
+  return market.getChart(instrument.type, instrument.symbol, range);
+}
+
+/** Portföyün günlük değer geçmişi (ilk anlık görüntüden itibaren). */
+export function getPortfolioHistory(mode: Mode) {
+  return snapshots.listSnapshots(mode);
 }

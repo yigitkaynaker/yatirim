@@ -22,9 +22,18 @@ type EntryBy = "amount" | "quantity";
  * Sanal pozisyon açma: tutar (örn. 10.000 TL) ya da adet girilir; kayıt anında
  * sunucu güncel canlı fiyatı alır ve adedi hesaplar.
  */
-export function VirtualEntryForm({ onSaved }: { onSaved: () => void }) {
-  const [assetType, setAssetType] = useState<AssetType>("bist");
-  const [symbol, setSymbol] = useState("");
+export function VirtualEntryForm({
+  onSaved,
+  initialAssetType = "bist",
+  initialSymbol = "",
+}: {
+  onSaved: () => void;
+  /** Piyasa detayından açılınca varlık önceden seçili gelir */
+  initialAssetType?: AssetType;
+  initialSymbol?: string;
+}) {
+  const [assetType, setAssetType] = useState<AssetType>(initialAssetType);
+  const [symbol, setSymbol] = useState(initialSymbol);
   const [entryBy, setEntryBy] = useState<EntryBy>("amount");
   const [amount, setAmount] = useState("");
   const [amountCurrency, setAmountCurrency] = useState<Currency>("TRY");

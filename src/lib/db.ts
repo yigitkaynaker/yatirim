@@ -6,7 +6,8 @@ import path from "node:path";
 // Node'un yerleşik SQLite modülü: yerel derleme gerektirmez.
 // Veritabanı dosyası: data/yatirim.db (git'e eklenmez).
 
-const DATA_DIR = path.join(process.cwd(), "data");
+// YATIRIM_DATA_DIR: test sunucusu gibi durumlarda farklı bir veri klasörü kullanmak için.
+const DATA_DIR = process.env.YATIRIM_DATA_DIR || path.join(process.cwd(), "data");
 const DB_PATH = path.join(DATA_DIR, "yatirim.db");
 
 /**
@@ -97,6 +98,29 @@ const MIGRATIONS: string[] = [
     read_at     TEXT
   );
   CREATE INDEX idx_notifications_unread ON notifications (read_at, id);
+  `,
+  `
+  -- Piyasa sayfasındaki kullanıcı izleme listesi
+  CREATE TABLE watchlist (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_type  TEXT    NOT NULL,
+    symbol      TEXT    NOT NULL,
+    -- aramadan gelen görünen ad (isteğe bağlı)
+    name        TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (asset_type, symbol)
+  );
+
+  -- Günlük portföy değeri (gerçek ve sanal ayrı). Gün başına mod başına tek satır;
+  -- gün içinde izleyici tarafından güncellenir, gün bitince son değer kalır.
+  CREATE TABLE portfolio_snapshots (
+    date        TEXT    NOT NULL,
+    mode        TEXT    NOT NULL CHECK (mode IN ('real','virtual')),
+    value_try   REAL    NOT NULL,
+    cost_try    REAL    NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (date, mode)
+  );
   `,
 ];
 
