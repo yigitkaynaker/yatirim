@@ -4,7 +4,9 @@ Kişisel (tek kullanıcılı) yatırım uygulaması. Bilgisayarınızda çalış
 
 **Aşama 1 içeriği:** şifreli giriş, gerçek ve sanal portföy, canlı fiyatlar, koşullu al/sat emirleri, uygulama içi bildirimler, kurulabilir PWA.
 
-**Aşama 2 içeriği:** Piyasa sayfası (genel bakış, izleme listesi, fiyat grafikleri), portföy grafikleri (dağılım halkası, günlük değer çizgisi), Hesaplayıcılar sayfası ve 6 sekmeli mobil alt menü. Sohbet sayfası şimdilik yalnızca yer tutucu.
+**Aşama 2 içeriği:** Piyasa sayfası (genel bakış, izleme listesi, fiyat grafikleri), portföy grafikleri (dağılım halkası, günlük değer çizgisi), Hesaplayıcılar sayfası ve mobil alt menü.
+
+**Aşama 3 içeriği:** Claude yapay zekası ile işlem yapabilen Sohbet, otomatik ve elle haber analizi (Analizler sayfası), Ayarlar sayfası (API anahtarı, model, tarama takvimi, aylık bütçe) ve telefona/masaüstüne anlık (push) bildirimler.
 
 > **Güncellemeden sonra:** kod değiştiyse sunucuyu durdurup `npm run build` ile yeniden derleyin, sonra `npm start`. Eski derleme (`.next`) yeni sayfaları içermez.
 
@@ -23,7 +25,7 @@ Geliştirme modu için `npm run dev` kullanın. İki komut da `0.0.0.0:3000` adr
 
 Veriler `data/yatirim.db` dosyasında tutulur. Yedeklemek için sunucuyu durdurup bu dosyayı kopyalayın.
 
-Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run icons` (ikonları yeniden üretir).
+Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run icons` (ikonları yeniden üretir), `npm run test:ai` (yapay zeka katmanının sahte istemciyle testi; `YATIRIM_DATA_DIR` ile ayrı bir veri klasörü gösterin, gerçek API çağrısı yapmaz).
 
 Çalışan sunucuya dokunmadan test derlemesi için: `NEXT_DIST_DIR=.next-test npm run build` (çıktı `.next-test` klasörüne yazılır). `YATIRIM_DATA_DIR` ile farklı bir veri klasörü kullanılabilir.
 
@@ -42,7 +44,7 @@ Sonra sunucuyu yeniden başlatın. `SESSION_SECRET` değerini değiştirirseniz 
 node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ```
 
-`ANTHROPIC_API_KEY` alanı sonraki aşamadaki yapay zeka özellikleri için ayrılmıştır; şimdilik kullanılmıyor.
+`ANTHROPIC_API_KEY` doldurulursa yapay zeka bu anahtarı kullanır. Boş bırakıp anahtarı **Ayarlar** sayfasından da yapıştırabilirsiniz; ikisi de varsa .env önceliklidir.
 
 ## Telefona kurulum (Tailscale)
 
@@ -95,6 +97,16 @@ Sayı girerken ondalık için virgül, binlik için nokta kullanın: `12,5` ve `
 ### Hesaplayıcılar
 Mevduat getirisi (stopajlı net), birikim planı (bileşik getiri, yıllık tablo ve grafik), ortalama maliyet ve başabaş fiyatı, enflasyona göre reel getiri, canlı kurlarla döviz/altın çevirici. Her birinde yeni başlayanlar için açıklama vardır.
 
+### Yapay zeka (Aşama 3)
+Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ayarlar'dan ekleyin" uyarısı gösterir; uygulamanın geri kalanı normal çalışır.
+
+- **Ayarlar** (üst çubuktaki dişli simgesi): API anahtarı (console.anthropic.com › Billing'den kredi yükleyin, API Keys'ten anahtar oluşturun, yapıştırın). Anahtar veritabanında saklanır, maskeli gösterilir, silinebilir. *Bağlantıyı test et* çok küçük bir istekle anahtarı ve krediyi dener. Model: **Ekonomik** (Claude Haiku 5.5, varsayılan) ya da **Gelişmiş** (Claude Sonnet 5.5, ~20 kat pahalı). Otomatik tarama saatleri (varsayılan hafta içi 09:45, 13:00, 18:30, İstanbul saati; kapatılabilir), tarama başına en fazla web araması (varsayılan 3) ve aylık bütçe (varsayılan 10 $).
+- **Maliyet:** her API çağrısı `ai_usage` tablosuna token, arama ve tahmini maliyetle yazılır; "Bu ay tahmini harcama" Ayarlar ve Analizler'de görünür. Web araması (~0,01 $/arama) maliyetin büyük kısmıdır. Bütçe dolunca otomatik taramalar durur; sohbet ve elle analiz uyarıyla çalışmaya devam eder.
+- **Sohbet:** yanıtlar akış hâlinde gelir, sohbetler kaydedilir (*Geçmiş*, *Yeni sohbet*). Asistan portföyü, fiyatları, emirleri ve son haber raporunu okuyabilir, gerekirse webde arar. Açıkça istediğinizde işlemi **onay sormadan yapar**: sanal pozisyon açma, sanalı gerçeğe alma, işlem ekleme, emir verme/iptal. Her işlem sohbette rakamlarıyla bir kart olarak görünür. Yapay zekanın verdiği emirlerin kaynağı `yapay_zeka`, eklediği işlemlerin notu "Yapay zeka sohbetiyle" olur. Belirsiz talimatlarda (hangi pozisyon, ne kadar) önce sorar.
+- **Analizler:** gerçek + sanal pozisyonlar, izleme listesi ve bekleyen emirlerdeki varlıklar (en fazla 20) için haber taraması. Varlık başına duygu (olumlu/olumsuz/nötr), önem (1–5), kısa özet, pozisyona olası etki ve kaynak bağlantıları; ayrıca genel piyasa özeti. *Şimdi analiz et* (tümü) ya da varlık detay sayfasındaki *Bu varlığı analiz et*. Önemi 4+ olan maddeler bildirim üretir. Otomatik tarama yalnızca sunucu çalışırken yapılır (saatten sonra en geç 60 dk içinde).
+- **Anlık bildirimler:** Ayarlar › *Bildirimleri aç* bu cihazı abone eder (birden fazla cihaz olabilir). Emir gerçekleşince/başarısız olunca ve önemli haberlerde gönderilir. VAPID anahtarları ilk kullanımda üretilip veritabanında saklanır. Tarayıcılar bunun için HTTPS ister: bilgisayarda `localhost` çalışır, telefonda `tailscale serve` ile açılan https adresini kullanın (iPhone'da önce ana ekrana ekleyin).
+- Yanıtlar ve analizler yatırım tavsiyesi değildir.
+
 ### Canlı fiyatlar
 - **Hisse, döviz ve altın:** Yahoo Finance. BIST sembolleri `THYAO` gibi girilir, `.IS` eki otomatik eklenir. Döviz için `USDTRY=X` kullanılır. Gram altın = ons (GC=F) × USDTRY / 31,1035.
 - **Kripto:** Binance (örn. `BTC` → BTCUSDT).
@@ -112,7 +124,11 @@ Mevduat getirisi (stopajlı net), birikim planı (bileşik getiri, yıllık tabl
 | `src/lib/snapshots.ts` | Günlük portföy değeri kayıtları (`getPortfolioHistory`) |
 | `src/lib/db.ts` | SQLite bağlantısı ve sürümlü şema geçişleri. Yeni tablo eklemek için `MIGRATIONS` dizisine yeni bir adım ekleyin. |
 | `src/lib/auth.ts`, `src/proxy.ts` | İmzalı oturum çerezi ve sayfa/API koruması |
+| `src/lib/settings.ts`, `src/lib/aiClient.ts` | Ayarlar, API anahtarı, Claude istemcisi, kullanım/maliyet kaydı ve bütçe, Türkçe hata mesajları |
+| `src/lib/chat.ts`, `src/lib/chatTools.ts` | Sohbet döngüsü (akış, araç kullanımı, kayıt) ve eylem katmanını saran araçlar |
+| `src/lib/news.ts` | Haber analizi, raporlar, zamanlanmış tarama (emir izleyici döngüsünden çağrılır) |
+| `src/lib/push.ts` | Web Push (VAPID, abonelikler, gönderim) |
 | `src/components/AppShell.tsx` | Menü. Yeni sayfalar için `NAV` dizisine bir satır eklemeniz yeterli. |
-| `public/sw.js` | Service worker. Push bildirimleri ileride buraya eklenecek. |
+| `public/sw.js` | Service worker; push ve bildirime dokunma işleyicileri dahil. |
 
 Veri modeli yapay zeka analizine uygun tutuldu. Her işlemde `mode` (real/virtual), sanal girişte tutar ve fiyat zamanı, dönüştürme bağlantıları (`source_id`, `converted_to_id`) ve oluşturan emir (`order_id`) bulunur. Emirlerin `source` alanı `manuel` ya da `yapay_zeka` değerini alır.

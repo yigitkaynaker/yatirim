@@ -122,6 +122,82 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (date, mode)
   );
   `,
+  `
+  -- Uygulama ayarları (anahtar/değer). API anahtarı, model, tarama takvimi, bütçe, VAPID anahtarları.
+  CREATE TABLE settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Her Claude API çağrısı: token, web araması ve tahmini maliyet (USD)
+  CREATE TABLE ai_usage (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind                TEXT    NOT NULL,             -- sohbet | haber | test
+    model               TEXT    NOT NULL,
+    input_tokens        INTEGER NOT NULL DEFAULT 0,
+    output_tokens       INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+    web_searches        INTEGER NOT NULL DEFAULT 0,
+    cost_usd            REAL    NOT NULL DEFAULT 0,
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_ai_usage_created ON ai_usage (created_at);
+
+  -- Sohbetler ve mesajlar. content: API'ye geri gönderilen içerik blokları (JSON).
+  -- cards: o mesajdaki araç çağrılarının kullanıcıya gösterilen özet kartları (JSON).
+  CREATE TABLE chat_conversations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE chat_messages (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id  INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    role             TEXT    NOT NULL CHECK (role IN ('user','assistant')),
+    content          TEXT    NOT NULL,
+    cards            TEXT,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_chat_messages_conv ON chat_messages (conversation_id, id);
+
+  -- Haber analizi raporları. items: varlık başına yapılandırılmış sonuç (JSON).
+  CREATE TABLE news_reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger         TEXT    NOT NULL,                 -- otomatik | manuel | varlik
+    scope           TEXT,                             -- tek varlık analizinde enstrüman kimliği
+    status          TEXT    NOT NULL DEFAULT 'running' CHECK (status IN ('running','ok','error')),
+    model           TEXT,
+    market_summary  TEXT,
+    items           TEXT,
+    sources         TEXT,
+    error           TEXT,
+    web_searches    INTEGER NOT NULL DEFAULT 0,
+    cost_usd        REAL    NOT NULL DEFAULT 0,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    finished_at     TEXT
+  );
+
+  -- Otomatik taramanın her zaman dilimi yalnızca bir kez çalışsın diye (örn. "2026-11-20 09:45")
+  CREATE TABLE scheduled_runs (
+    slot        TEXT PRIMARY KEY,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Web Push abonelikleri (cihaz başına bir satır)
+  CREATE TABLE push_subscriptions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint    TEXT    NOT NULL UNIQUE,
+    p256dh      TEXT    NOT NULL,
+    auth        TEXT    NOT NULL,
+    user_agent  TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_ok_at  TEXT,
+    fail_count  INTEGER NOT NULL DEFAULT 0
+  );
+  `,
 ];
 
 function open(): DatabaseSync {

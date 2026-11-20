@@ -2,8 +2,9 @@ import "server-only";
 import { checkPendingOrders } from "./orders";
 import { maybeRecordSnapshots } from "./snapshots";
 
-// Sunucu çalıştığı sürece bekleyen emirleri ~30 sn'de bir kontrol eder ve
-// günlük portföy değeri anlık görüntüsünü (gerçek / sanal) kaydeder.
+// Sunucu çalıştığı sürece bekleyen emirleri ~30 sn'de bir kontrol eder,
+// günlük portföy değeri anlık görüntüsünü (gerçek / sanal) kaydeder ve
+// zamanı gelen otomatik haber taramasını başlatır.
 // instrumentation.ts'den bir kez başlatılır; dev modda çift başlatmaya karşı
 // globalThis üzerinde korunur.
 
@@ -38,9 +39,22 @@ export async function runOrderCheck() {
 
 export function startOrderWatcher() {
   if (g.__yatirimOrderWatcher) return;
-  const timer = setInterval(() => void runOrderCheck(), ORDER_CHECK_MS);
+  const timer = setInterval(() => {
+    void runOrderCheck();
+    void runScheduledNews();
+  }, ORDER_CHECK_MS);
   timer.unref?.();
   g.__yatirimOrderWatcher = { timer, running: false };
   setTimeout(() => void runOrderCheck(), 5_000).unref?.();
   console.log("[emirler] izleyici başlatıldı");
+}
+
+/** Zamanlanmış haber taraması (uzun sürer; emir kontrolünü bekletmesin diye ayrı). */
+async function runScheduledNews() {
+  try {
+    const { maybeRunScheduledScan } = await import("./news");
+    await maybeRunScheduledScan();
+  } catch (err) {
+    console.error("[haber] zamanlayıcı hatası", err);
+  }
 }

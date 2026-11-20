@@ -9,14 +9,17 @@
     "start": "next start -H 0.0.0.0 -p 3000",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "icons": "node scripts/generate-icons.mjs"
+    "icons": "node scripts/generate-icons.mjs",
+    "test:ai": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-ai.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.11.0",
     "lightweight-charts": "^5.3.0",
     "next": "^16.4.6",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "server-only": "^0.0.1",
+    "web-push": "^4.0.0",
     "yahoo-finance2": "^4.0.6"
   },
   "devDependencies": {
@@ -24,6 +27,7 @@
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/web-push": "^3.6.4",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.4.6",
     "tailwindcss": "^4.3.5",

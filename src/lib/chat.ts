@@ -1,0 +1,305 @@
+import "server-only";
+import type Anthropic from "@anthropic-ai/sdk";
+import { getDb } from "./db";
+import { aiErrorMessage, currentModel, getAiClient, getBudgetStatus, recordUsage, type AiClient } from "./aiClient";
+import { getAiSettings } from "./settings";
+import { CHAT_TOOLS, executeChatTool, toolLabel, type ActionCard } from "./chatTools";
+import { todayIstanbul } from "./portfolio";
+
+// SOHBET
+// Claude ile araç kullanan sohbet. Mesajlar API içerik blokları olarak
+// chat_messages tablosunda saklanır ve her turda geri gönderilir. Yanıt
+// istemciye NDJSON olayları olarak akıtılır (bkz. ChatEvent).
+
+export interface Conversation {
+  id: number;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DisplayMessage {
+  id: number;
+  role: "user" | "assistant";
+  text: string;
+  cards: ActionCard[];
+  sources: { url: string; title: string }[];
+}
+
+export type ChatEvent =
+  | { type: "conversation"; id: number }
+  | { type: "text"; delta: string }
+  | { type: "status"; text: string }
+  | { type: "card"; card: ActionCard }
+  | { type: "warning"; message: string }
+  | { type: "error"; message: string }
+  | { type: "done" };
+
+interface MsgRow {
+  id: number;
+  conversation_id: number;
+  role: "user" | "assistant";
+  content: string;
+  cards: string | null;
+  created_at: string;
+}
+
+// ---- Saklama ----------------------------------------------------------------------
+
+export function listConversations(limit = 50): Conversation[] {
+  const rows = getDb().prepare("SELECT * FROM chat_conversations ORDER BY updated_at DESC, id DESC LIMIT ?").all(limit) as unknown as {
+    id: number;
+    title: string;
+    created_at: string;
+    updated_at: string;
+  }[];
+  return rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at }));
+}
+
+export function getConversation(id: number): Conversation | null {
+  return listConversations(1000).find((c) => c.id === id) ?? null;
+}
+
+export function deleteConversation(id: number): boolean {
+  return Number(getDb().prepare("DELETE FROM chat_conversations WHERE id = ?").run(id).changes) > 0;
+}
+
+function createConversation(firstMessage: string): number {
+  const title = firstMessage.replace(/\s+/g, " ").trim().slice(0, 60) || "Yeni sohbet";
+  return Number(getDb().prepare("INSERT INTO chat_conversations (title) VALUES (?)").run(title).lastInsertRowid);
+}
+
+function insertMessage(conversationId: number, role: "user" | "assistant", content: unknown, cards?: ActionCard[]) {
+  getDb()
+    .prepare("INSERT INTO chat_messages (conversation_id, role, content, cards) VALUES (?, ?, ?, ?)")
+    .run(conversationId, role, JSON.stringify(content), cards && cards.length ? JSON.stringify(cards) : null);
+  getDb().prepare("UPDATE chat_conversations SET updated_at = datetime('now') WHERE id = ?").run(conversationId);
+}
+
+function rowsFor(conversationId: number): MsgRow[] {
+  return getDb().prepare("SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY id").all(conversationId) as unknown as MsgRow[];
+}
+
+type Block = { type: string; text?: string; citations?: { type: string; url?: string; title?: string | null }[] | null };
+
+/** Kullanıcıya gösterilecek mesajlar: metinler, işlem kartları, kaynaklar. Araç sonucu mesajları kart olarak birleşir. */
+export function getDisplayMessages(conversationId: number): DisplayMessage[] {
+  const out: DisplayMessage[] = [];
+  for (const r of rowsFor(conversationId)) {
+    const content = JSON.parse(r.content) as string | Block[];
+    const blocks: Block[] = typeof content === "string" ? [{ type: "text", text: content }] : content;
+    const text = blocks
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("")
+      .trim();
+    const cards = r.cards ? (JSON.parse(r.cards) as ActionCard[]) : [];
+    const sources = new Map<string, string>();
+    for (const b of blocks) {
+      for (const c of b.citations ?? []) if (c.url && !sources.has(c.url)) sources.set(c.url, c.title ?? c.url);
+    }
+    const isToolResults = r.role === "user" && blocks.some((b) => b.type === "tool_result");
+    if (isToolResults) {
+      // Araç sonuçları: kartları bir önceki asistan mesajına ekle
+      const prev = out[out.length - 1];
+      if (cards.length) {
+        if (prev && prev.role === "assistant") prev.cards.push(...cards);
+        else out.push({ id: r.id, role: "assistant", text: "", cards, sources: [] });
+      }
+      continue;
+    }
+    if (!text && !cards.length && r.role === "assistant") continue;
+    const prev = out[out.length - 1];
+    if (r.role === "assistant" && prev?.role === "assistant") {
+      // Aynı yanıtın devamı (araç çağrısından sonra)
+      prev.text = [prev.text, text].filter(Boolean).join("\n\n");
+      prev.cards.push(...cards);
+      for (const [url, title] of sources) if (!prev.sources.some((s) => s.url === url)) prev.sources.push({ url, title });
+      continue;
+    }
+    out.push({ id: r.id, role: r.role, text, cards, sources: [...sources].map(([url, title]) => ({ url, title })) });
+  }
+  return out;
+}
+
+const MAX_HISTORY_ROWS = 60;
+
+/** API'ye gönderilecek geçmiş. Uzunsa, bir kullanıcı metin mesajından başlayacak şekilde kırpılır. */
+function historyFor(conversationId: number): Anthropic.MessageParam[] {
+  let rows = rowsFor(conversationId);
+  if (rows.length > MAX_HISTORY_ROWS) {
+    const tail = rows.slice(-MAX_HISTORY_ROWS);
+    const start = tail.findIndex((r) => {
+      if (r.role !== "user") return false;
+      const c = JSON.parse(r.content) as string | Block[];
+      return typeof c === "string" || !c.some((b) => b.type === "tool_result");
+    });
+    rows = start >= 0 ? tail.slice(start) : tail;
+  }
+  return rows.map((r) => ({ role: r.role, content: JSON.parse(r.content) }));
+}
+
+// ---- Sistem istemi ------------------------------------------------------------------
+
+function systemPrompt(): string {
+  return [
+    "Sen \"Yatırım\" adlı kişisel yatırım uygulamasının Türkçe yapay zeka asistanısın. Tek bir kullanıcın var ve yatırıma yeni başlıyor.",
+    "",
+    "Nasıl konuşursun:",
+    "- Her zaman Türkçe, sade ve kısa yaz. Teknik terimleri (ör. K/Z, ortalama maliyet, volatilite) ilk geçtiğinde bir cümleyle açıkla.",
+    "- Sayıları Türkçe biçimde yaz (10.000 TL, %2,5).",
+    "- Haber ya da güncel olay iddiasında bulunduğunda kaynağını (site adı ve bağlantı) mutlaka belirt. Kaynağın yoksa bunu açıkça söyle; asla uydurma.",
+    "- Hiçbir şeyi garanti edilmiş öneri gibi sunma. Analiz, yorum ya da öneri içeren yanıtları kısa bir \"Bu bir yatırım tavsiyesi değildir.\" notuyla bitir.",
+    "",
+    "Araçlar ve işlemler:",
+    "- Kullanıcının portföy, fiyat ve emir bilgilerini tahmin etme; araçlarla kontrol et.",
+    "- Kullanıcı açıkça bir işlem istediğinde (sanal pozisyon aç, sanalı gerçeğe al, işlem ekle, emir ver, emri iptal et) ONAY SORMADAN ilgili aracı çağırıp işlemi yap. Uygulama yapılan işlemi kullanıcıya ayrıca kart olarak gösterir; sen de sonucu rakamlarla bir iki cümleyle özetle.",
+    "- Talimat belirsizse tahmin etme, kısa bir soruyla netleştir. Örnekler: hangi varlık/pozisyon kastedildiği belli değilse; tutar ya da adet söylenmemişse; birden fazla eşleşen pozisyon ya da emir varsa; sembol bulunamıyorsa (önce search_symbol dene).",
+    "- Portföy belirtilmemiş emir ve işlemlerde gerçek portföyü kullan ve yanıtında bunu belirt. 'Sanal' derse sanal portföyü kullan.",
+    "- \"Sanaldaki X'i gerçeğe al\" denirse promote_sanal_to_gercek kullan. Kullanıcı ödediği fiyatı ya da adedi söylemediyse sanal adet ve güncel piyasa fiyatı kullanılır; bunu yanıtında belirt.",
+    "- Emirlerde tetik fiyatı varlığın kendi fiyat biriminde olmalı: BIST ve gram altın TL, kripto ve yabancı hisse USD, döviz TL. Kullanıcı \"BTC 60.000$'a düşerse 5.000 TL'lik al\" derse: side=buy, condition=lte, trigger_price=60000, amount=5000, amount_currency=TRY.",
+    "- Emirler yalnızca bu uygulamanın içinde gerçekleşir; aracı kuruma emir gitmez, gerçek para hareketi olmaz. Gerekirse bunu hatırlat.",
+    "- Bir araç hata döndürürse hatayı sade dille açıkla ve ne yapılabileceğini söyle.",
+    "- Güncel haber gerekiyorsa önce get_latest_news_report'a bak; yetmezse web_search kullan.",
+    "",
+    `Bugünün tarihi (İstanbul): ${todayIstanbul()}.`,
+  ].join("\n");
+}
+
+// ---- Tur çalıştırma -------------------------------------------------------------------
+
+const MAX_STEPS = 10;
+
+/**
+ * Kullanıcı mesajını işler: Claude'u akış modunda çağırır, araçları çalıştırır,
+ * her şeyi kaydeder. Olaylar emit ile istemciye iletilir. Hata fırlatmaz.
+ */
+export async function runChatTurn(opts: {
+  conversationId?: number | null;
+  message: string;
+  emit: (e: ChatEvent) => void;
+  client?: AiClient;
+  signal?: AbortSignal;
+}): Promise<{ conversationId: number | null }> {
+  const { emit } = opts;
+  const text = opts.message.trim().slice(0, 8000);
+  if (!text) {
+    emit({ type: "error", message: "Mesaj boş." });
+    emit({ type: "done" });
+    return { conversationId: opts.conversationId ?? null };
+  }
+
+  let client: AiClient;
+  try {
+    client = opts.client ?? getAiClient();
+  } catch (err) {
+    emit({ type: "error", message: aiErrorMessage(err) });
+    emit({ type: "done" });
+    return { conversationId: opts.conversationId ?? null };
+  }
+
+  let conversationId = opts.conversationId ?? null;
+  if (conversationId != null && !getConversation(conversationId)) conversationId = null;
+  const isNew = conversationId == null;
+  if (conversationId == null) conversationId = createConversation(text);
+  emit({ type: "conversation", id: conversationId });
+
+  const budget = getBudgetStatus();
+  if (budget.overBudget) {
+    emit({
+      type: "warning",
+      message: `Bu ayki yapay zeka bütçesi doldu ($${budget.spentUsd.toFixed(2)} / $${budget.budgetUsd}). Sohbet yine de çalışır; otomatik taramalar durduruldu.`,
+    });
+  }
+
+  insertMessage(conversationId, "user", [{ type: "text", text }]);
+
+  const model = currentModel();
+  const { maxSearches } = getAiSettings();
+  const tools: Anthropic.ToolUnion[] = [
+    ...CHAT_TOOLS,
+    ...(maxSearches > 0 ? [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: maxSearches }] : []),
+  ];
+  const system = systemPrompt();
+
+  try {
+    for (let step = 0; step < MAX_STEPS; step++) {
+      const stream = client.messages.stream(
+        {
+          model: model.id,
+          max_tokens: 8000,
+          system,
+          tools,
+          messages: historyFor(conversationId),
+          output_config: { effort: "medium" },
+          cache_control: { type: "ephemeral" },
+        },
+        { signal: opts.signal },
+      );
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          emit({ type: "text", delta: event.delta.text });
+        } else if (event.type === "content_block_start") {
+          const b = event.content_block;
+          if (b.type === "server_tool_use" || b.type === "tool_use") emit({ type: "status", text: `${toolLabel(b.name)}…` });
+        }
+      }
+      const msg = await stream.finalMessage();
+      recordUsage("sohbet", model.id, msg.usage);
+
+      if (msg.stop_reason === "pause_turn") {
+        insertMessage(conversationId, "assistant", msg.content);
+        continue;
+      }
+      const toolUses = msg.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+      if (toolUses.length === 0 || msg.stop_reason === "refusal") {
+        insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
+        if (msg.stop_reason === "refusal") emit({ type: "warning", message: "Yapay zeka bu isteği yanıtlamadı." });
+        if (msg.stop_reason === "max_tokens") emit({ type: "warning", message: "Yanıt uzunluk sınırına ulaştı ve kesildi." });
+        break;
+      }
+      if (msg.stop_reason === "max_tokens") {
+        // Araç girdisi yarım kalmış olabilir: çalıştırma.
+        insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
+        emit({ type: "warning", message: "Yanıt uzunluk sınırına ulaştı; işlem yapılmadı. Lütfen tekrar deneyin." });
+        break;
+      }
+
+      // Araçları sırayla çalıştır (değişiklikler birbirini etkileyebilir).
+      const results: Anthropic.ToolResultBlockParam[] = [];
+      const cards: ActionCard[] = [];
+      for (const t of toolUses) {
+        const outcome = await executeChatTool(t.name, t.input);
+        results.push({ type: "tool_result", tool_use_id: t.id, content: JSON.stringify(outcome.result), is_error: outcome.isError || undefined });
+        if (outcome.card) {
+          cards.push(outcome.card);
+          emit({ type: "card", card: outcome.card });
+        }
+      }
+      const db = getDb();
+      db.exec("BEGIN");
+      try {
+        insertMessage(conversationId, "assistant", msg.content);
+        insertMessage(conversationId, "user", results, cards);
+        db.exec("COMMIT");
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+      if (step === MAX_STEPS - 1) emit({ type: "warning", message: "Çok fazla adım gerekti; yanıt burada durduruldu." });
+    }
+  } catch (err) {
+    if (!opts.signal?.aborted) {
+      console.error("[sohbet] hata", err);
+      emit({ type: "error", message: aiErrorMessage(err) });
+    }
+    // İlk mesajda hiç yanıt alınamadıysa boş sohbeti geçmişte bırakma.
+    if (isNew && !rowsFor(conversationId).some((r) => r.role === "assistant")) {
+      deleteConversation(conversationId);
+      emit({ type: "done" });
+      return { conversationId: null };
+    }
+  }
+  emit({ type: "done" });
+  return { conversationId };
+}

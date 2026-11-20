@@ -14,6 +14,7 @@ import {
 import { formatMoney, formatQuantity, parseDecimal } from "./format";
 import { getQuotes } from "./prices";
 import { parseSizing, priceAtMarket, recordTransaction, todayIstanbul, ValidationError } from "./portfolio";
+import { sendPushToAll } from "./push";
 
 // Koşullu al/sat emirleri. YALNIZCA uygulama içinde gerçekleşir: koşul
 // sağlanınca ilgili portföye (gerçek/sanal) işlem kaydı düşülür. Aracı kurum ya
@@ -180,7 +181,7 @@ export interface AppNotification {
   readAt: string | null;
 }
 
-function addNotification(n: { kind: string; title: string; body: string; orderId?: number; data?: unknown }) {
+export function addNotification(n: { kind: string; title: string; body: string; orderId?: number; data?: unknown }) {
   getDb()
     .prepare("INSERT INTO notifications (kind, title, body, order_id, data) VALUES (?, ?, ?, ?, ?)")
     .run(n.kind, n.title, n.body, n.orderId ?? null, n.data === undefined ? null : JSON.stringify(n.data));
@@ -277,24 +278,28 @@ async function executeOrder(o: Order): Promise<void> {
       // Örn. eldekinden fazla satış: emir başarısız olarak kapanır.
       const msg = err instanceof ValidationError ? err.message : "İşlem kaydedilemedi.";
       db.prepare("UPDATE orders SET status = 'failed', executed_at = NULL, executed_price = NULL, error = ? WHERE id = ?").run(msg, o.id);
-      addNotification({
+      const failedNote = {
         kind: "order_failed",
         title: `Emir gerçekleşemedi: ${name}`,
         body: `${sideLabel(o.side)} emri (#${o.id}) tetiklendi ama kaydedilemedi: ${msg}`,
         orderId: o.id,
-      });
+      };
+      addNotification(failedNote);
       db.exec("COMMIT");
+      void sendPushToAll({ title: failedNote.title, body: failedNote.body, url: "/emirler", tag: `emir-${o.id}` });
       return;
     }
     db.prepare("UPDATE orders SET executed_tx_id = ? WHERE id = ?").run(txId, o.id);
-    addNotification({
+    const doneNote = {
       kind: "order_executed",
       title: `Emir gerçekleşti: ${name} ${sideLabel(o.side).toLocaleLowerCase("tr-TR")}`,
       body: `${formatQuantity(pricing.quantity)} adet, ${formatMoney(pricing.quotePrice, pricing.quoteCurrency, 4)} fiyatından ${modeLabel(o.mode)} portföye işlendi.`,
       orderId: o.id,
       data: { orderId: o.id, transactionId: txId, price: pricing.quotePrice, quantity: pricing.quantity },
-    });
+    };
+    addNotification(doneNote);
     db.exec("COMMIT");
+    void sendPushToAll({ title: doneNote.title, body: doneNote.body, url: "/emirler", tag: `emir-${o.id}` });
   } catch (err) {
     try {
       db.exec("ROLLBACK");

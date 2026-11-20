@@ -9,6 +9,7 @@ import type { ChartData, ChartRange, WatchItem } from "@/lib/market";
 import type { Quote } from "@/lib/prices";
 import { fetchJson, goToLogin, UnauthorizedError, usePolling } from "@/lib/usePolling";
 import { formatQuotePrice, isIndex, OVERVIEW } from "./MarketView";
+import { AssetNewsPanel } from "./AssetNewsPanel";
 import { OrderForm } from "./OrdersView";
 import { PriceChart } from "./PriceChart";
 import { TransactionForm, toInput } from "./TransactionForm";
@@ -188,6 +189,8 @@ export function AssetDetailView() {
           {toast}
         </p>
       )}
+
+      <AssetNewsPanel instrument={id} />
 
       {action === "virtual" && (
         <Modal title="Sanal pozisyon aç" onClose={() => setAction(null)}>
