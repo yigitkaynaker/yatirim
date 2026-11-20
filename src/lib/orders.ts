@@ -271,7 +271,7 @@ async function executeOrder(o: Order): Promise<void> {
           date: todayIstanbul(),
           note: `Emir #${o.id} ile otomatik${o.note ? ` · ${o.note}` : ""}`,
         },
-        { orderId: o.id, priceTime: pricing.priceTime, amount: o.amount, amountCurrency: o.amountCurrency },
+        { orderId: o.id, priceTime: pricing.priceTime, amount: o.amount, amountCurrency: o.amountCurrency, fxTry: pricing.fxTry },
       );
       txId = tx.id;
     } catch (err) {

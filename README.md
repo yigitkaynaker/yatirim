@@ -27,7 +27,7 @@ Geliştirme modu için `npm run dev` kullanın. İki komut da `0.0.0.0:3000` adr
 
 Veriler `data/yatirim.db` dosyasında tutulur. Yedeklemek için sunucuyu durdurup bu dosyayı kopyalayın.
 
-Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run test:indicators` (gösterge motorunun birim testleri), `npm run icons` (ikonları yeniden üretir), `npm run test:ai` (yapay zeka katmanının sahte istemciyle testi; `YATIRIM_DATA_DIR` ile ayrı bir veri klasörü gösterin, gerçek API çağrısı yapmaz).
+Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run test:indicators` (gösterge motorunun birim testleri), `npm run test:fx` (işlem tarihi kuruyla TL K/Z ve kur etkisi testleri), `npm run icons` (ikonları yeniden üretir), `npm run test:ai` (yapay zeka katmanının sahte istemciyle testi; `YATIRIM_DATA_DIR` ile ayrı bir veri klasörü gösterin, gerçek API çağrısı yapmaz).
 
 Çalışan sunucuya dokunmadan test derlemesi için: `NEXT_DIST_DIR=.next-test npm run build` (çıktı `.next-test` klasörüne yazılır). `YATIRIM_DATA_DIR` ile farklı bir veri klasörü kullanılabilir.
 
@@ -74,7 +74,7 @@ Ana sayfadaki iki sekme birbirinden tamamen ayrıdır ve toplamları hiçbir zam
 - **Sanal ("alsaydım ne olurdu"):** bir varlık seçip **tutar** (örn. 10.000 TL) ya da **adet** girersiniz. Uygulama o anki canlı fiyatı alır ve adet = tutar / fiyat hesabını yapar (gerekirse kur çevrimiyle). Her pozisyon için giriş tarihi, giriş fiyatı, güncel fiyat, yatırılan tutar, güncel değer, K/Z ve geçen gün sayısı görünür.
 - **"Gerçekten aldım" butonu:** sanal giriş bilgilerini forma doldurur. Gerçekte ödediğiniz fiyatı ve aldığınız miktarı düzeltip kaydedersiniz; pozisyon gerçek portföye geçer. Sanal kayıt silinmez, arşivlenir ve gerçek işleme bağlanır. Böylece ileride "planladığım ile gerçekleşen" karşılaştırılabilir.
 
-USD ve EUR cinsinden varlıklar, toplamlarda güncel USDTRY/EURTRY kuruyla TL'ye çevrilir.
+USD ve EUR cinsinden varlıklarda TL **güncel değer** bugünkü USDTRY/EURTRY kuruyla, TL **maliyet** ve gerçekleşen TL K/Z ise her işlemin kendi tarihindeki kurla hesaplanır (işleme kaydedilir: bugünkü işlemde canlı kur, geçmiş tarihli işlemde Yahoo'daki o günün kapanışı). Böylece TL K/Z alıştan bu yana kurdaki değişimi de içerir; pozisyon listesinde TL K/Z'nin altında **Fiyat etkisi** ve **Kur etkisi** ayrı gösterilir. Varlığın kendi para birimindeki (USD) maliyet ve K/Z değişmez. Eski kayıtların kuru ilk açılışta otomatik doldurulur; kur alınamazsa geçici olarak güncel kur kullanılır (* işareti) ve birkaç dakika sonra yeniden denenir.
 
 Sayı girerken ondalık için virgül, binlik için nokta kullanın: `12,5` ve `10.000`.
 
@@ -94,7 +94,7 @@ Sayı girerken ondalık için virgül, binlik için nokta kullanın: `12,5` ve `
 
 ### Portföy grafikleri
 - **Varlık dağılımı** halka grafiği.
-- **Günlük değer çizgisi:** emir izleyici döngüsü gerçek ve sanal portföyün toplam değerini `portfolio_snapshots` tablosuna gün başına bir satır olarak yazar (gün içinde ~10 dk’da bir güncellenir, günün son değeri kalır). Grafik ilk kayıttan başlar; sunucu kapalıyken geçen günler için kayıt oluşmaz.
+- **Günlük değer çizgisi:** emir izleyici döngüsü gerçek ve sanal portföyün toplam değerini `portfolio_snapshots` tablosuna gün başına bir satır olarak yazar (gün içinde ~10 dk’da bir güncellenir, günün son değeri kalır; fiyatlar bayatken kayıt yazılmaz). Grafik ilk kayıttan başlar; sunucu kapalıyken geçen günler için kayıt oluşmaz.
 
 ### Hesaplayıcılar
 Mevduat getirisi (stopajlı net), birikim planı (bileşik getiri, yıllık tablo ve grafik), ortalama maliyet ve başabaş fiyatı, enflasyona göre reel getiri, canlı kurlarla döviz/altın çevirici. Her birinde yeni başlayanlar için açıklama vardır.

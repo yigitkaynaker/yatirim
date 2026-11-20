@@ -18,27 +18,35 @@ export interface SnapshotPoint {
 
 const g = globalThis as unknown as { __yatirimSnapshotAt?: number };
 
-/** Gerekirse bugünün anlık görüntüsünü kaydeder. Hata fırlatmaz. */
+/**
+ * Gerekirse bugünün anlık görüntüsünü kaydeder. Hata fırlatmaz.
+ * 10 dakikalık aralık yalnızca en az bir kayıt yazılınca başlar; böylece boş
+ * portföyde ilk işlem eklenince ilk kayıt bir sonraki turda (~30 sn) oluşur,
+ * fiyatlar bayatken atlanan kayıt da bir sonraki turda yeniden denenir.
+ */
 export async function maybeRecordSnapshots(force = false) {
   const now = Date.now();
   if (!force && g.__yatirimSnapshotAt && now - g.__yatirimSnapshotAt < SNAPSHOT_EVERY_MS) return;
-  g.__yatirimSnapshotAt = now;
   const date = todayIstanbul();
   const db = getDb();
   for (const mode of MODES) {
     try {
+      const started = !!db.prepare("SELECT 1 FROM portfolio_snapshots WHERE mode = ? LIMIT 1").get(mode);
+      // Portföy hiç kullanılmadıysa fiyat çekmeden geç (aralık başlamadığı için her turda bakılır).
+      if (!started && !db.prepare("SELECT 1 FROM transactions WHERE mode = ? AND converted_at IS NULL LIMIT 1").get(mode)) continue;
       const s = await getPortfolio(mode);
       // Fiyatı alınamayan varlık varsa yanlış bir değer yazmayalım.
       if (s.totals.incomplete) continue;
+      // Bayat (son bilinen) fiyatlarla hesaplanan değeri de yazma: çizgi grafikte
+      // sahte düzlük/sıçrama oluşturur. Kaynak düzelince sonraki turda yazılır.
+      if (s.totals.anyStale) continue;
       // Portföy hiç kullanılmadıysa kayıt başlatma (grafik ilk gerçek kayıttan başlar).
-      if (s.holdings.length === 0) {
-        const any = db.prepare("SELECT 1 FROM portfolio_snapshots WHERE mode = ? LIMIT 1").get(mode);
-        if (!any) continue;
-      }
+      if (s.holdings.length === 0 && !started) continue;
       db.prepare(
         `INSERT INTO portfolio_snapshots (date, mode, value_try, cost_try, updated_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(date, mode) DO UPDATE SET value_try=excluded.value_try, cost_try=excluded.cost_try, updated_at=excluded.updated_at`,
       ).run(date, mode, s.totals.valueTry, s.totals.costTry, now);
+      g.__yatirimSnapshotAt = now;
     } catch (err) {
       console.error(`[anlık görüntü] ${mode} kaydedilemedi`, err);
     }

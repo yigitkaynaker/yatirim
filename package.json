@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "icons": "node scripts/generate-icons.mjs",
     "test:ai": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-ai.ts",
-    "test:indicators": "node --import ./scripts/ts-hooks.mjs scripts/test-indicators.ts"
+    "test:indicators": "node --import ./scripts/ts-hooks.mjs scripts/test-indicators.ts",
+    "test:fx": "node --import ./scripts/ts-hooks.mjs scripts/test-fx.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.11.0",

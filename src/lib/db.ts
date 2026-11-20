@@ -208,6 +208,14 @@ const MIGRATIONS: string[] = [
     updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  `
+  -- İşlem para biriminin işlem tarihindeki TRY kuru (örn. USD işlemde o günün USDTRY'si).
+  -- TL maliyet ve gerçekleşen TL K/Z bu kurla hesaplanır. TRY işlemlerde 1.
+  -- Eski USD/EUR kayıtlarında NULL kalır; ilk portföy okumasında Yahoo geçmiş kurlarıyla
+  -- doldurulur (fxRates.ts), o zamana kadar güncel kur kullanılır.
+  ALTER TABLE transactions ADD COLUMN fx_try REAL;
+  UPDATE transactions SET fx_try = 1 WHERE currency = 'TRY';
+  `,
 ];
 
 function open(): DatabaseSync {

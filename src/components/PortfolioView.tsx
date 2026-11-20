@@ -145,7 +145,7 @@ function Summary({ summary, mode }: { summary: PortfolioSummary | null; mode: Mo
       {t?.incomplete && (
         <p className="mt-3 text-xs text-amber-300">Bazı varlıkların fiyatı alınamadığı için toplamlara dahil edilmedi.</p>
       )}
-      <p className="mt-3 text-xs text-slate-500">Döviz cinsinden varlıklar güncel kurla TL’ye çevrilir.</p>
+      <p className="mt-3 text-xs text-slate-500">Döviz cinsinden varlıklarda değer güncel kurla, maliyet ve gerçekleşen K/Z işlem günündeki kurla TL’ye çevrilir.</p>
     </Card>
   );
 }
@@ -231,6 +231,7 @@ function Holdings({
                 </>
               )}
             </dl>
+            <FxBreakdown h={h} className="mt-2 text-xs" />
             {virtual && (
               <button onClick={() => onConvert(h)} className="mt-3 w-full rounded-xl border border-violet-500/40 py-2 text-sm font-medium text-violet-200 hover:bg-violet-500/10">
                 Gerçekten aldım
@@ -292,7 +293,10 @@ function Holdings({
                   </>
                 )}
                 <td className="px-3 py-3 text-right font-medium">{formatMoney(h.valueTry)}</td>
-                <td className={`px-3 py-3 text-right ${pnlClass(h.pnlTry)}`}>{formatSigned(h.pnlTry)}</td>
+                <td className={`px-3 py-3 text-right ${pnlClass(h.pnlTry)}`}>
+                  {formatSigned(h.pnlTry)}
+                  <FxBreakdown h={h} className="mt-0.5 text-[11px] leading-tight" stacked />
+                </td>
                 <td className={`px-3 py-3 text-right ${pnlClass(h.pnlPct)}`}>{formatPercent(h.pnlPct)}</td>
                 {virtual && (
                   <td className="px-4 py-3 text-right">
@@ -307,6 +311,26 @@ function Holdings({
         </table>
       </Card>
     </>
+  );
+}
+
+/** Döviz cinsinden varlıkta TL K/Z ayrımı: fiyat hareketi + alıştan bu yana kur hareketi. */
+function FxBreakdown({ h, className = "", stacked = false }: { h: Holding; className?: string; stacked?: boolean }) {
+  if (h.fxEffectTry == null || h.priceEffectTry == null) return null;
+  const title = h.fxEstimated
+    ? "Bazı işlemlerin alış günü kuru henüz alınamadı; geçici olarak güncel kur kullanıldı."
+    : "TL K/Z = fiyat etkisi (varlığın kendi para birimindeki değişim, bugünkü kurla) + kur etkisi (alış günü kurundan bugüne kur değişimi).";
+  return (
+    <div className={`text-slate-500 ${className}`} title={title}>
+      <span className={stacked ? "block" : ""}>
+        Fiyat etkisi <span className={pnlClass(h.priceEffectTry)}>{formatSigned(h.priceEffectTry)}</span>
+      </span>
+      {!stacked && <span className="px-1.5">·</span>}
+      <span className={stacked ? "block" : ""}>
+        Kur etkisi <span className={pnlClass(h.fxEffectTry)}>{formatSigned(h.fxEffectTry)}</span>
+        {h.fxEstimated && " *"}
+      </span>
+    </div>
   );
 }
 

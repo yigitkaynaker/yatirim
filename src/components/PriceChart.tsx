@@ -201,8 +201,20 @@ export function PriceChart({
           },
           1,
         );
+        // RSI ekseninde yalnızca 30 / 70 ve güncel değer etiketleri görünsün: otomatik
+        // ölçek işaretleri (0…100) 30/70 etiketleriyle, özellikle 100 ile üst üste biniyordu.
+        s.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0.08 }, textColor: "rgba(0,0,0,0)", ticksVisible: false });
         for (const level of [30, 70]) {
-          s.createPriceLine({ price: level, color: "rgba(148,163,184,0.6)", lineWidth: 1, lineStyle: lib.LineStyle.Dashed, axisLabelVisible: true, title: "" });
+          s.createPriceLine({
+            price: level,
+            color: "rgba(148,163,184,0.6)",
+            lineWidth: 1,
+            lineStyle: lib.LineStyle.Dashed,
+            axisLabelVisible: true,
+            axisLabelColor: "#334155",
+            axisLabelTextColor: "#cbd5e1",
+            title: "",
+          });
         }
         rsiRef.current = s;
       }

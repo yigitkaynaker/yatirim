@@ -461,6 +461,13 @@ export function saveReport(
 
 /** Kaç dakika gecikmeyle hâlâ çalıştırılsın (sunucu o saatte kapalıydıysa) */
 const SLOT_GRACE_MIN = 60;
+/** Hata veren taramanın aynı dilim içinde yeniden denenmesinden önce beklenecek süre */
+const RETRY_DELAY_MIN = 10;
+
+/** SQLite datetime biçimi (UTC): "YYYY-MM-DD HH:MM:SS" */
+function sqlTime(d: Date) {
+  return d.toISOString().slice(0, 19).replace("T", " ");
+}
 
 function istanbulParts(now: Date) {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -483,13 +490,14 @@ function istanbulParts(now: Date) {
 
 export type ScheduleResult =
   | { ran: true; reportId: number }
-  | { ran: false; reason: "kapali" | "anahtar_yok" | "hafta_sonu" | "zamani_degil" | "zaten_calisti" | "butce" | "mesgul" | "hata" };
+  | { ran: false; reason: "kapali" | "anahtar_yok" | "hafta_sonu" | "zamani_degil" | "zaten_calisti" | "butce" | "mesgul" | "hata"; reportId?: number };
 
 /**
  * Emir izleyici döngüsünden (~30 sn) çağrılır. Hafta içi, ayarlanan saatlerde
  * (İstanbul) taramayı bir kez çalıştırır. Aynı zaman dilimi scheduled_runs
- * tablosundaki birincil anahtar sayesinde iki kez çalışamaz. Aylık bütçe
- * dolduysa otomatik tarama yapılmaz.
+ * tablosundaki birincil anahtar sayesinde iki kez çalışamaz; tarama hata verirse
+ * aynı dilim penceresinde 10 dk sonra yalnızca bir kez yeniden denenir. Aylık
+ * bütçe dolduysa ya da anahtar yoksa otomatik tarama yapılmaz (yeniden denenmez).
  */
 export async function maybeRunScheduledScan(now = new Date(), client?: AiClient): Promise<ScheduleResult> {
   const s = getAiSettings();
@@ -507,19 +515,43 @@ export async function maybeRunScheduledScan(now = new Date(), client?: AiClient)
   if (g.__yatirimNewsRunning) return { ran: false, reason: "mesgul" };
 
   const slot = `${p.date} ${due}`;
-  const claim = getDb().prepare("INSERT OR IGNORE INTO scheduled_runs (slot) VALUES (?)").run(slot);
-  if (Number(claim.changes) !== 1) return { ran: false, reason: "zaten_calisti" };
+  const db = getDb();
+  const claim = (key: string) =>
+    Number(db.prepare("INSERT OR IGNORE INTO scheduled_runs (slot, created_at) VALUES (?, ?)").run(key, sqlTime(now)).changes) === 1;
+  // Dilim zaten alındıysa: yalnızca önceki deneme hata verdiyse ve üzerinden
+  // RETRY_DELAY_MIN geçtiyse, aynı dilim penceresinde BİR kez daha denenir
+  // ("<dilim> tekrar" kaydı da birincil anahtarla korunur; çift çalışma olmaz).
+  let isRetry = false;
+  if (!claim(slot)) {
+    const failed = db.prepare("SELECT created_at FROM scheduled_runs WHERE slot = ?").get(`${slot} hata`) as { created_at: string } | undefined;
+    if (!failed) return { ran: false, reason: "zaten_calisti" };
+    if (now.getTime() - Date.parse(`${failed.created_at.replace(" ", "T")}Z`) < RETRY_DELAY_MIN * 60_000) return { ran: false, reason: "zaten_calisti" };
+    if (!claim(`${slot} tekrar`)) return { ran: false, reason: "zaten_calisti" };
+    isRetry = true;
+  }
+  const markFailed = () => {
+    if (!isRetry) claim(`${slot} hata`);
+  };
 
+  // Bütçe doluysa dilim atlanır (yeniden denenmez).
   const budget = getBudgetStatus(now);
   if (budget.overBudget) {
     console.log(`[haber] ${slot} otomatik tarama atlandı: aylık bütçe doldu ($${budget.spentUsd.toFixed(2)} / $${budget.budgetUsd})`);
     return { ran: false, reason: "butce" };
   }
   try {
-    console.log(`[haber] ${slot} otomatik tarama başlıyor`);
+    console.log(`[haber] ${slot} otomatik tarama ${isRetry ? "yeniden deneniyor" : "başlıyor"}`);
     const rep = await startNewsScan({ trigger: "otomatik", wait: true, client });
+    if (getReport(rep.id)?.status === "error") {
+      markFailed();
+      console.warn(`[haber] ${slot} otomatik tarama hata verdi${isRetry ? "" : `; ${RETRY_DELAY_MIN} dk sonra bir kez daha denenecek`}`);
+      return { ran: false, reason: "hata", reportId: rep.id };
+    }
     return { ran: true, reportId: rep.id };
   } catch (err) {
+    // Anahtar yoksa yalnızca atla; diğer başlatma hataları yeniden denenebilir.
+    if (err instanceof NoApiKeyError) return { ran: false, reason: "anahtar_yok" };
+    markFailed();
     console.error("[haber] otomatik tarama başlatılamadı", err);
     return { ran: false, reason: "hata" };
   }

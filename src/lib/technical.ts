@@ -43,6 +43,8 @@ export interface Candle {
 interface CandleSet {
   candles: Candle[];
   currency: string;
+  /** Son mum henüz kapanmadı (seans / gün sürüyor): hacmi kısmi */
+  lastPartial?: boolean;
 }
 
 const cache = (() => {
@@ -77,23 +79,34 @@ async function yahooCandles(symbol: string): Promise<CandleSet> {
     if (lastC && utcDay(lastC.time) === utcDay(t)) lastC.close = mp;
     else if (!lastC || t > lastC.time) candles.push({ time: t, close: mp, volume: null });
   }
+  // Seans sürüyorsa bugünün mumu (ve hacmi) kısmidir.
+  const toMs = (v: unknown) => (v instanceof Date ? v.getTime() : typeof v === "number" ? v * 1000 : typeof v === "string" ? Date.parse(v) : NaN);
+  const regular = (meta.currentTradingPeriod as { regular?: { start?: unknown; end?: unknown } } | undefined)?.regular;
+  const sessionStart = toMs(regular?.start);
+  const sessionEnd = toMs(regular?.end);
+  const lastT = candles.length ? candles[candles.length - 1].time * 1000 : NaN;
+  const now = Date.now();
+  const lastPartial =
+    Number.isFinite(sessionStart) && Number.isFinite(sessionEnd) && now >= sessionStart && now < sessionEnd && utcDay(lastT / 1000) === utcDay(sessionStart / 1000);
   let currency = typeof meta.currency === "string" ? meta.currency : "USD";
   if (currency === "GBp" || currency === "ZAc") {
     for (const c of candles) c.close /= 100;
     currency = currency === "GBp" ? "GBP" : "ZAR";
   }
-  return { candles, currency: currency.toUpperCase() };
+  return { candles, currency: currency.toUpperCase(), lastPartial };
 }
 
 async function binanceCandles(base: string): Promise<CandleSet> {
   const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(`${base}USDT`)}&interval=1d&limit=${BINANCE_LIMIT}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
   if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-  const rows = (await res.json()) as [number, string, string, string, string, string, ...unknown[]][];
+  const rows = (await res.json()) as [number, string, string, string, string, string, number, ...unknown[]][];
   const candles = rows
     .map((r) => ({ time: Math.floor(r[0] / 1000), close: Number(r[4]), volume: Number(r[5]) > 0 ? Number(r[5]) : null }))
     .filter((c) => Number.isFinite(c.close));
-  return { candles, currency: "USD" };
+  // Kripto 7/24: son mumun kapanış zamanı gelmediyse günün hacmi kısmidir.
+  const lastRow = rows[rows.length - 1];
+  return { candles, currency: "USD", lastPartial: !!lastRow && Number(lastRow[6]) > Date.now() };
 }
 
 /** Gram altın = ons × USDTRY / 31,1035 (her gün için o güne kadarki son kur). Hacim yok. */
@@ -156,7 +169,7 @@ const toPts = (times: number[], s: Series): Pt[] => {
 };
 
 /** Mumlardan göstergeleri ve sinyali hesaplar (ağ çağrısı yok). */
-export function analyzeCandles(candles: Candle[], withOverlays = false) {
+export function analyzeCandles(candles: Candle[], withOverlays = false, lastPartial = false) {
   const closes = candles.map((c) => c.close);
   const n = closes.length;
   const s20 = sma(closes, 20);
@@ -186,6 +199,7 @@ export function analyzeCandles(candles: Candle[], withOverlays = false) {
     bbLower: last(bb.lower),
     smaCross: recentCross(s50, s200, RULES.goldenCross.lookback + 1),
     volumeRatio: volumeRatio(candles.map((c) => c.volume), 20),
+    volumePartial: lastPartial && candles[n - 1]?.volume != null,
   };
   const summary = evaluateSignals(snapshot);
   const times = candles.map((c) => c.time);
@@ -201,9 +215,9 @@ export async function getTechnicalAnalysis(
   symbol: string,
   opts: { overlays?: boolean; force?: boolean; name?: string | null } = {},
 ): Promise<TechnicalAnalysis> {
-  const { candles, currency } = await getDailyCandles(type, symbol, { force: opts.force });
+  const { candles, currency, lastPartial } = await getDailyCandles(type, symbol, { force: opts.force });
   if (candles.length === 0) throw new Error("Günlük fiyat verisi alınamadı.");
-  const { snapshot, summary, overlays } = analyzeCandles(candles, !!opts.overlays);
+  const { snapshot, summary, overlays } = analyzeCandles(candles, !!opts.overlays, !!lastPartial);
   return {
     instrument: instrumentId(type, symbol),
     assetType: type,

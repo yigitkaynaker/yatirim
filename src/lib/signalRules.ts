@@ -52,6 +52,8 @@ export interface TechnicalSnapshot {
   smaCross: CrossInfo;
   /** Son hacim / 20 günlük ortalama hacim */
   volumeRatio: number | null;
+  /** Son mum henüz kapanmadı (seans sürüyor): son hacim gün içi, KISMİ */
+  volumePartial?: boolean;
 }
 
 export interface SignalReason {
@@ -211,7 +213,8 @@ export function evaluateSignals(s: TechnicalSnapshot): SignalSummary {
     const up = s.changePct > 0;
     add({
       id: up ? "volume_up" : "volume_down",
-      title: `Yüksek hacimle ${up ? "yükseliş" : "düşüş"} (ortalamanın ${fmt(s.volumeRatio)} katı)`,
+      // Seans sürerken hacim kısmidir; kısmi hacim bile eşiği aşıyorsa sinyal geçerlidir.
+      title: `Yüksek hacimle ${up ? "yükseliş" : "düşüş"} (${s.volumePartial ? "gün içi kısmi hacim bile " : ""}ortalamanın ${fmt(s.volumeRatio)} katı)`,
       points: up ? RULES.volume.points : -RULES.volume.points,
       explain: `Bugün her zamankinden çok daha fazla alım-satım oldu. Yüksek hacim, fiyatın ${up ? "yükselişinin" : "düşüşünün"} daha güçlü olduğunu düşündürür.`,
     });
@@ -288,14 +291,18 @@ export function indicatorRows(s: TechnicalSnapshot): IndicatorRow[] {
     },
     {
       key: "volume",
-      label: "Hacim / ortalama",
+      label: s.volumePartial ? "Hacim / ortalama (gün içi, kısmi)" : "Hacim / ortalama",
       value: s.volumeRatio,
       state:
         s.volumeRatio == null
           ? "Bu varlık için hacim verisi yok."
           : s.volumeRatio >= RULES.volume.highRatio
-            ? "Bugün ortalamadan belirgin şekilde fazla işlem oldu."
-            : s.volumeRatio < 0.6
+            ? s.volumePartial
+              ? "Gün henüz bitmeden ortalamadan belirgin şekilde fazla işlem oldu."
+              : "Bugün ortalamadan belirgin şekilde fazla işlem oldu."
+            : s.volumePartial
+              ? "Seans sürüyor: bugünkü hacim kısmi, gün sonunda artacaktır; düşük görünmesi az işlem olduğu anlamına gelmez."
+              : s.volumeRatio < 0.6
               ? "Bugün ortalamadan az işlem oldu."
               : "İşlem miktarı olağan seviyede.",
       explain: "Son günün alım-satım miktarının son 20 günün ortalamasına oranı. 1'den büyükse ilgi artmış demektir.",

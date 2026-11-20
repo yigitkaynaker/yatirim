@@ -15,6 +15,8 @@ import {
 } from "./assets";
 import { getQuotes, type InstrumentRef, type Quote } from "./prices";
 import { parseDecimal } from "./format";
+import { bySequence, buildPositions, positionPnl } from "./positions";
+import { ensureFxRates } from "./fxRates";
 
 // ---- İşlemler (transactions) ---------------------------------------------
 // Gerçek ve sanal işlemler aynı tabloda, `mode` alanıyla ayrılır. Tüm hesaplama
@@ -43,6 +45,8 @@ export interface Transaction {
   convertedToId: number | null;
   /** Emirle otomatik oluştuysa emir kimliği */
   orderId: number | null;
+  /** İşlem para biriminin işlem tarihindeki TRY kuru (TRY için 1; henüz bilinmiyorsa null) */
+  fxTry: number | null;
   createdAt: string;
 }
 
@@ -76,6 +80,7 @@ interface TxRow {
   converted_at: string | null;
   converted_to_id: number | null;
   order_id: number | null;
+  fx_try: number | null;
   created_at: string;
 }
 
@@ -98,6 +103,7 @@ function fromRow(r: TxRow): Transaction {
     convertedAt: r.converted_at,
     convertedToId: r.converted_to_id,
     orderId: r.order_id,
+    fxTry: r.fx_try,
     createdAt: r.created_at,
   };
 }
@@ -164,10 +170,6 @@ export function parseTransactionInput(body: unknown): TransactionInput {
 
 type SeqItem = Pick<Transaction, "assetType" | "symbol" | "side" | "quantity" | "date" | "id">;
 
-function bySequence(a: SeqItem, b: SeqItem) {
-  return a.date === b.date ? a.id - b.id : a.date < b.date ? -1 : 1;
-}
-
 /**
  * Bir varlığın elde tutulan miktarının hiçbir anda eksiye düşmediğini kontrol
  * eder (eldekinden fazla satış engellenir).
@@ -193,14 +195,16 @@ export interface InsertExtras {
   amountCurrency?: Currency | null;
   priceTime?: number | null;
   sourceId?: number | null;
+  /** İşlem tarihindeki kur (canlı fiyatla açılan işlemlerde bilinir). Verilmezse TRY → 1, diğerleri sonradan doldurulur. */
+  fxTry?: number | null;
 }
 
 function insert(input: TransactionInput, extras: InsertExtras = {}): number {
   const res = getDb()
     .prepare(
       `INSERT INTO transactions (mode, asset_type, symbol, side, quantity, price, currency, date, note,
-         amount, amount_currency, price_time, source_id, order_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         amount, amount_currency, price_time, source_id, order_id, fx_try)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.mode,
@@ -217,8 +221,12 @@ function insert(input: TransactionInput, extras: InsertExtras = {}): number {
       extras.priceTime ?? null,
       extras.sourceId ?? null,
       extras.orderId ?? null,
+      input.currency === "TRY" ? 1 : (extras.fxTry ?? null),
     );
-  return Number(res.lastInsertRowid);
+  const id = Number(res.lastInsertRowid);
+  // Kur bilinmiyorsa (elle girilen USD/EUR işlem) arka planda o günün kuruyla doldur.
+  if (input.currency !== "TRY" && extras.fxTry == null) void ensureFxRates({ force: true });
+  return id;
 }
 
 /** Eldekinden fazla satışı engelleyerek işlem kaydeder. */
@@ -245,12 +253,16 @@ export function updateTransaction(id: number, input: TransactionInput): Transact
       assertNoOversell(sameAsset(mode, existing.assetType, existing.symbol, id));
     }
   }
+  // Tarih ya da para birimi değiştiyse işlem tarihi kuru yeniden alınır.
+  const fxTry =
+    input.currency === "TRY" ? 1 : existing.currency === input.currency && existing.date === input.date ? existing.fxTry : null;
   getDb()
     .prepare(
       `UPDATE transactions SET asset_type=?, symbol=?, side=?, quantity=?, price=?, currency=?, date=?, note=?,
-         updated_at=datetime('now') WHERE id=?`,
+         fx_try=?, updated_at=datetime('now') WHERE id=?`,
     )
-    .run(input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, id);
+    .run(input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, fxTry, id);
+  if (fxTry == null) void ensureFxRates({ force: true });
   return getTransaction(id);
 }
 
@@ -293,6 +305,8 @@ export interface LivePricing {
   /** Kaynağın ham fiyatı ve para birimi (emir tetik karşılaştırması bununla yapılır) */
   quotePrice: number;
   quoteCurrency: string;
+  /** İşlem para biriminin şu anki TRY kuru (işleme kaydedilir) */
+  fxTry: number;
 }
 
 /**
@@ -327,7 +341,15 @@ export async function priceAtMarket(
     sizing.amount != null && sizing.amountCurrency
       ? (sizing.amount * rate(sizing.amountCurrency)) / rate(currency) / price
       : sizing.quantity!;
-  return { price, currency, quantity, priceTime: q.sourceTime ?? q.fetchedAt, quotePrice: q.price, quoteCurrency: q.currency };
+  return {
+    price,
+    currency,
+    quantity,
+    priceTime: q.sourceTime ?? q.fetchedAt,
+    quotePrice: q.price,
+    quoteCurrency: q.currency,
+    fxTry: rate(currency),
+  };
 }
 
 /**
@@ -342,7 +364,7 @@ export async function createVirtualEntry(body: unknown): Promise<Transaction> {
   const p = await priceAtMarket(assetType, symbol, sizing, { force: true });
   return recordTransaction(
     { mode: "virtual", assetType, symbol, side: "buy", quantity: p.quantity, price: p.price, currency: p.currency, date: todayIstanbul(), note },
-    { amount: sizing.amount, amountCurrency: sizing.amountCurrency, priceTime: p.priceTime },
+    { amount: sizing.amount, amountCurrency: sizing.amountCurrency, priceTime: p.priceTime, fxTry: p.fxTry },
   );
 }
 
@@ -395,11 +417,16 @@ export interface Holding {
   cost: number | null;
   pnl: number | null;
   pnlPct: number | null;
-  /** TRY karşılıkları (güncel kur ile) */
+  /** TRY karşılıkları: değer güncel kurla, maliyet ve gerçekleşen K/Z işlem tarihi kurlarıyla */
   valueTry: number | null;
   costTry: number | null;
   pnlTry: number | null;
   realizedPnlTry: number | null;
+  /** Döviz cinsinden varlıklarda TL K/Z ayrımı: fiyat hareketi (güncel kurla) + kur hareketi. TRY varlıkta null. */
+  priceEffectTry: number | null;
+  fxEffectTry: number | null;
+  /** İşlem tarihi kuru henüz alınamadı; TL maliyette geçici olarak güncel kur kullanıldı */
+  fxEstimated: boolean;
   /** 1 birim varlık para birimi = ? TRY */
   fxRate: number | null;
   /** İlk alış tarihi ve o günden bu yana geçen gün */
@@ -431,47 +458,6 @@ export interface PortfolioSummary {
   updatedAt: number;
 }
 
-interface Position {
-  assetType: AssetType;
-  symbol: string;
-  quantity: number;
-  /** Maliyet tabanı, para birimine göre (karma para birimli işlemler için) */
-  costBy: Map<string, number>;
-  /** Gerçekleşen K/Z, para birimine göre */
-  realizedBy: Map<string, number>;
-  /** Mevcut pozisyonun açıldığı tarih (tamamen satılıp yeniden alınırsa sıfırlanır) */
-  firstDate: string;
-}
-
-/** Ağırlıklı ortalama maliyet yöntemiyle pozisyonları çıkarır. */
-function buildPositions(txs: Transaction[]): Position[] {
-  const map = new Map<string, Position>();
-  for (const t of [...txs].sort(bySequence)) {
-    const key = instrumentId(t.assetType, t.symbol);
-    let p = map.get(key);
-    if (!p) {
-      p = { assetType: t.assetType, symbol: t.symbol, quantity: 0, costBy: new Map(), realizedBy: new Map(), firstDate: t.date };
-      map.set(key, p);
-    }
-    if (t.side === "buy") {
-      if (p.quantity <= 1e-12) p.firstDate = t.date;
-      p.quantity += t.quantity;
-      p.costBy.set(t.currency, (p.costBy.get(t.currency) ?? 0) + t.quantity * t.price);
-    } else {
-      const ratio = p.quantity > 0 ? Math.min(t.quantity / p.quantity, 1) : 0;
-      // Satılan kısmın maliyeti her para biriminden orantılı düşülür.
-      for (const [cur, c] of p.costBy) {
-        const removed = c * ratio;
-        p.costBy.set(cur, c - removed);
-        p.realizedBy.set(cur, (p.realizedBy.get(cur) ?? 0) - removed);
-      }
-      p.realizedBy.set(t.currency, (p.realizedBy.get(t.currency) ?? 0) + t.quantity * t.price);
-      p.quantity = Math.max(0, p.quantity - t.quantity);
-    }
-  }
-  return [...map.values()];
-}
-
 function daysSince(date: string): number {
   const start = Date.parse(`${date}T00:00:00Z`);
   const today = Date.parse(`${todayIstanbul()}T00:00:00Z`);
@@ -479,15 +465,18 @@ function daysSince(date: string): number {
 }
 
 export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): Promise<PortfolioSummary> {
-  const positions = buildPositions(activeTransactions(mode));
+  // Eski kayıtların / yeni elle girilen işlemlerin işlem tarihi kurunu tamamla (kısa süre bekler).
+  await ensureFxRates({ timeoutMs: 5_000 });
+  const txs = activeTransactions(mode);
 
   // Fiyatlar + gereken tüm kurlar.
-  const instruments: InstrumentRef[] = positions.map((p) => ({ type: p.assetType, symbol: p.symbol }));
+  const instrumentKeys = new Map<string, InstrumentRef>();
   const fxNeeded = new Set<string>(["USD", "EUR"]);
-  for (const p of positions) {
-    for (const c of p.costBy.keys()) fxNeeded.add(c);
-    for (const c of p.realizedBy.keys()) fxNeeded.add(c);
+  for (const t of txs) {
+    instrumentKeys.set(instrumentId(t.assetType, t.symbol), { type: t.assetType, symbol: t.symbol });
+    fxNeeded.add(t.currency);
   }
+  const instruments = [...instrumentKeys.values()];
   fxNeeded.delete("TRY");
   const firstPass = await getQuotes([...instruments, ...[...fxNeeded].map((c) => ({ type: "fx" as const, symbol: c }))], opts);
   // Yabancı hisseler USD dışında bir para biriminde olabilir (örn. GBP); o kurları da al.
@@ -498,33 +487,21 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
   const rates: Record<string, Quote> = {};
   for (const q of fxQuotes) rates[q.id.slice(3)] = q;
   const rate = (cur: string): number | null => (cur === "TRY" ? 1 : (rates[cur]?.price ?? null));
-  const toTry = (byCur: Map<string, number>): number | null => {
-    let sum = 0;
-    for (const [cur, v] of byCur) {
-      if (Math.abs(v) < 1e-12) continue;
-      const r = rate(cur);
-      if (r == null) return null;
-      sum += v * r;
-    }
-    return sum;
-  };
+  const quoteById = new Map(firstPass.slice(0, instruments.length).map((q) => [q.id, q]));
 
+  const positions = buildPositions(txs, rate);
   const holdings: Holding[] = [];
   let realizedTotal = 0;
-  for (let i = 0; i < positions.length; i++) {
-    const p = positions[i];
-    const q = firstPass[i];
-    const realizedTry = toTry(p.realizedBy);
+  for (const p of positions) {
+    const q = quoteById.get(instrumentId(p.assetType, p.symbol))!;
+    const realizedTry = Number.isFinite(p.realizedTry) ? p.realizedTry : null;
     if (realizedTry != null) realizedTotal += realizedTry;
     if (p.quantity <= 1e-12) continue; // tamamen satılmış
 
     const currency = q.currency || [...p.costBy.keys()][0] || "TRY";
     const fxRate = rate(currency);
-    const costTry = toTry(p.costBy);
-    const cost = costTry != null && fxRate ? costTry / fxRate : null;
-    const value = q.price != null ? q.price * p.quantity : null;
-    const valueTry = value != null && fxRate != null ? value * fxRate : null;
-    const pnl = value != null && cost != null ? value - cost : null;
+    const b = positionPnl(p, currency, q.price, rate);
+    const foreign = currency !== "TRY";
 
     holdings.push({
       id: q.id,
@@ -532,21 +509,24 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
       assetType: p.assetType,
       symbol: p.symbol,
       quantity: p.quantity,
-      avgCost: cost != null ? cost / p.quantity : null,
+      avgCost: b.cost != null ? b.cost / p.quantity : null,
       currency,
       price: q.price,
       changePct: q.changePct,
       stale: q.stale,
       priceError: q.error,
       fetchedAt: q.fetchedAt,
-      value,
-      cost,
-      pnl,
-      pnlPct: pnl != null && cost ? (pnl / cost) * 100 : null,
-      valueTry,
-      costTry,
-      pnlTry: valueTry != null && costTry != null ? valueTry - costTry : null,
+      value: b.value,
+      cost: b.cost,
+      pnl: b.pnl,
+      pnlPct: b.pnl != null && b.cost ? (b.pnl / b.cost) * 100 : null,
+      valueTry: b.valueTry,
+      costTry: b.costTry,
+      pnlTry: b.pnlTry,
       realizedPnlTry: realizedTry,
+      priceEffectTry: foreign ? b.priceEffectTry : null,
+      fxEffectTry: foreign ? b.fxEffectTry : null,
+      fxEstimated: p.fxEstimated,
       fxRate,
       firstDate: p.firstDate,
       days: daysSince(p.firstDate),

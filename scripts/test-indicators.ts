@@ -2,7 +2,7 @@
 // ÇALIŞTIRMA: npm run test:indicators
 import assert from "node:assert/strict";
 import { bollinger, ema, macd, recentCross, rsi, sma, volumeRatio } from "../src/lib/indicators";
-import { evaluateSignals, labelForScore, type TechnicalSnapshot } from "../src/lib/signalRules";
+import { evaluateSignals, indicatorRows, labelForScore, type TechnicalSnapshot } from "../src/lib/signalRules";
 
 let passed = 0;
 function ok(name: string) {
@@ -110,5 +110,18 @@ assert.equal(labelForScore(2), "Al");
 assert.equal(labelForScore(-2), "Sat");
 assert.equal(labelForScore(1), "Nötr");
 ok(`kurallar: boğa → ${bull.label} (${bull.score}), ayı → ${bear.label} (${bear.score})`);
+
+// Seans sürerken hacim kısmi: etiketlenir, düşük oran "az işlem" sayılmaz
+{
+  const partialLow = indicatorRows({ ...base, volumeRatio: 0.3, volumePartial: true }).find((r) => r.key === "volume")!;
+  assert.match(partialLow.label, /gün içi, kısmi/);
+  assert.doesNotMatch(partialLow.state, /ortalamadan az işlem/);
+  const fullLow = indicatorRows({ ...base, volumeRatio: 0.3 }).find((r) => r.key === "volume")!;
+  assert.equal(fullLow.label, "Hacim / ortalama");
+  assert.match(fullLow.state, /az işlem/);
+  const hi = evaluateSignals({ ...base, volumeRatio: 2, volumePartial: true, changePct: 1 }).reasons.find((r) => r.id === "volume_up");
+  assert.ok(hi && /kısmi/.test(hi.title), "kısmi hacim eşiği aşarsa sinyal yine verilir");
+  ok("gün içi kısmi hacim etiketlenir");
+}
 
 console.log(`\n${passed} test geçti.`);

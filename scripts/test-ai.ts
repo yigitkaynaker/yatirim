@@ -242,6 +242,18 @@ ok("bütçe uygunken 13:00 dilimi çalıştı");
 assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-21T06:50:00Z"), fake as AiClient), { ran: false, reason: "hafta_sonu" });
 assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-18T08:00:00Z"), fake as AiClient), { ran: false, reason: "zamani_degil" });
 ok("hafta sonu ve saat dışı atlanır");
+// Hata veren tarama: aynı dilimde 10 dk sonra yalnızca bir kez yeniden denenir
+script = []; // sahte istemci hata fırlatır → rapor "error"
+const t1830 = new Date("2026-11-18T15:31:00Z"); // 18:31 İstanbul
+const f1 = await maybeRunScheduledScan(t1830, fake as AiClient);
+assert.equal(f1.ran, false);
+assert.equal(!f1.ran && f1.reason, "hata");
+assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-18T15:35:00Z"), fake as AiClient), { ran: false, reason: "zaten_calisti" }, "10 dk dolmadan tekrar yok");
+script = [{ content: [toolUse("submit_news_report", { market_summary: "Toparlandı.", items: [] })], stop_reason: "tool_use" }];
+const f2 = await maybeRunScheduledScan(new Date("2026-11-18T15:42:00Z"), fake as AiClient);
+assert.equal(f2.ran, true, JSON.stringify(f2));
+assert.deepEqual(await maybeRunScheduledScan(new Date("2026-11-18T15:55:00Z"), fake as AiClient), { ran: false, reason: "zaten_calisti" }, "ikinci tekrar yok");
+ok("hata veren dilim 10 dk sonra bir kez yeniden denendi, sonra çift çalışma yok");
 
 // ---- 6b) Günlük teknik sinyal değişimi uyarısı ----------------------------------------------
 console.log("Teknik sinyal uyarıları");
