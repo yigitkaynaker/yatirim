@@ -1,0 +1,21 @@
+# bağımlılıklar
+node_modules/
+
+# next.js
+.next/
+out/
+build/
+next-env.d.ts
+*.tsbuildinfo
+
+# ortam değişkenleri (gizli)
+.env
+.env*.local
+
+# veritabanı
+data/
+
+# diğer
+.DS_Store
+desktop.ini
+npm-debug.log*
