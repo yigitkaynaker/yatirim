@@ -14,6 +14,8 @@ const NAV: { href: string; label: string; short: string; icon: string; mobile?: 
   { href: "/", label: "Portföy", short: "Portföy", primary: true, icon: "M3 13h4v8H3zM10 8h4v13h-4zM17 3h4v18h-4z" },
   { href: "/piyasa", label: "Piyasa", short: "Piyasa", primary: true, icon: "M3 17l5-5 4 4 8-9M14 7h6v6" },
   { href: "/sinyaller", label: "Sinyaller", short: "Sinyaller", icon: "M3 12h4l3-8 4 16 3-8h4" },
+  { href: "/temettu", label: "Temettü", short: "Temettü", icon: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM14.5 9.5c-.4-1-1.4-1.5-2.5-1.5-1.5 0-2.5.8-2.5 2s1.1 1.6 2.5 2 2.5.8 2.5 2-1 2-2.5 2c-1.1 0-2.1-.5-2.5-1.5M12 6.5V8M12 16v1.5" },
+  { href: "/kap", label: "KAP", short: "KAP", icon: "M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h7" },
   { href: "/islemler", label: "İşlemler", short: "İşlemler", icon: "M4 6h16M4 12h16M4 18h10" },
   { href: "/emirler", label: "Emirler", short: "Emirler", primary: true, icon: "M12 3v18M5 10l7-7 7 7M5 21h14" },
   { href: "/hesaplayicilar", label: "Hesaplayıcılar", short: "Hesapla", icon: "M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 7h8M8 12h2M14 12h2M8 16h2M14 16h2" },

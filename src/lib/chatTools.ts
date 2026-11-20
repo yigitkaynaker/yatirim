@@ -26,7 +26,7 @@ export interface ToolOutcome {
   card?: ActionCard;
 }
 
-const assetTypeProp = { type: "string", enum: [...ASSET_TYPES], description: "bist: BIST hissesi, foreign: yabancı hisse/endeks, crypto: kripto, fx: döviz, gold: gram altın (symbol GRAM)" };
+const assetTypeProp = { type: "string", enum: [...ASSET_TYPES], description: "bist: BIST hissesi, foreign: yabancı hisse/endeks, crypto: kripto, fx: döviz, gold: altın (symbol GRAM = gram altın, CEYREK, YARIM, TAM, CUMHURIYET, ATA, BILEZIK22 = 22 ayar bilezik gramı), fund: TEFAS yatırım fonu (3 karakterli fon kodu, örn. AFT)" };
 const modeProp = { type: "string", enum: ["real", "virtual"], description: "real: gerçek portföy, virtual: sanal portföy" };
 const currencyProp = { type: "string", enum: ["TRY", "USD", "EUR"] };
 const numProp = (description: string) => ({ type: "number", description });
@@ -152,6 +152,18 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       "Bir varlığın teknik analizini getirir: günlük kapanışlarla RSI(14), MACD(12,26,9), SMA/EMA 20/50/200, Bollinger(20,2), hacim oranı ve bunlardan çıkan özet sinyal (Güçlü Al / Al / Nötr / Sat / Güçlü Sat) ile nedenleri. Kullanıcıya anlatırken sade dil kullan ve teknik sinyallerin geleceği garanti etmediğini, yatırım tavsiyesi olmadığını belirt. asset_type verilmezse sembolden tahmin edilir (THYAO.IS → bist, BTCUSDT → crypto, diğerleri → foreign).",
     input_schema: { type: "object", properties: { asset_type: assetTypeProp, symbol: { type: "string" } }, required: ["symbol"] },
   },
+  {
+    name: "list_dividends",
+    description:
+      "Temettüleri (kâr payı) listeler: onaylanıp gelir olarak kaydedilenler (yıllara göre TL toplam), elde tutulurken ödenmiş ama henüz onaylanmamış öneriler ve elde tutulan hisselerin temettü geçmişi. symbol verilirse yalnızca o hissenin geçmişi ve kayıtları döner. Temettüler kullanıcı Temettü sayfasında onaylayınca gerçekleşen K/Z'ye eklenir.",
+    input_schema: { type: "object", properties: { asset_type: { type: "string", enum: ["bist", "foreign"] }, symbol: { type: "string" } } },
+  },
+  {
+    name: "get_kap_disclosures",
+    description:
+      "Bir BIST hissesinin son KAP (Kamuyu Aydınlatma Platformu) bildirimlerini getirir: şirketin resmi açıklamaları (bilanço, kâr payı, yeni iş, pay geri alımı…), başlık, özet, zaman ve kap.org.tr bağlantısı. Ücretsizdir; bir hisse hakkında güncel gelişme sorulursa web aramasından ÖNCE buna bak. Yalnızca portföy ve izleme listesindeki hisselerin bildirimleri saklanır.",
+    input_schema: { type: "object", properties: { symbol: { type: "string", description: "BIST kodu, örn. THYAO" }, hours: { type: "number", description: "Kaç saat geriye (varsayılan 168)" } }, required: ["symbol"] },
+  },
 ];
 
 const TOOL_LABELS: Record<string, string> = {
@@ -166,6 +178,8 @@ const TOOL_LABELS: Record<string, string> = {
   list_orders: "Emirlere bakılıyor",
   get_latest_news_report: "Haber raporuna bakılıyor",
   get_technical_signals: "Teknik göstergelere bakılıyor",
+  list_dividends: "Temettülere bakılıyor",
+  get_kap_disclosures: "KAP bildirimlerine bakılıyor",
   web_search: "Webde aranıyor",
 };
 
@@ -516,6 +530,61 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
             ...(s.volumePartial ? { hacim_gun_ici_kismi: true } : {}),
           },
           uyari: "Teknik sinyaller geçmiş fiyatlara dayanır, geleceği garanti etmez; yatırım tavsiyesi değildir.",
+        },
+      };
+    }
+
+    case "list_dividends": {
+      const one = i.symbol ? (i.asset_type ? ref(i) : guessRef(String(i.symbol))) : null;
+      if (one) {
+        const h = await actions.getDividendHistory({ type: one.assetType, symbol: one.symbol });
+        const records = actions.listDividends({ status: "confirmed" }).filter((d) => d.assetType === one.assetType && d.symbol === one.symbol);
+        const sugg = (await actions.getDividendSuggestions()).filter((d) => d.assetType === one.assetType && d.symbol === one.symbol);
+        return {
+          result: {
+            asset_type: one.assetType,
+            symbol: one.symbol,
+            para_birimi: h.currency,
+            gecmis: h.events.slice(-20).map((e) => ({ hak_kullanim_tarihi: e.date, pay_basina: r(e.amount, 6) })),
+            gecmis_eski: h.stale || undefined,
+            kaydedilenler: records.map((d) => ({ portfoy: modeName(d.mode), tarih: d.exDate, adet: r(d.quantity, 6), tutar: r(d.amount, 2), para_birimi: d.currency, tutar_tl: r(d.amountTry, 2) })),
+            onay_bekleyen: sugg.map((d) => ({ portfoy: modeName(d.mode), tarih: d.exDate, adet: r(d.quantity, 6), tutar: r(d.amount, 2), para_birimi: d.currency })),
+            aciklama: "Tutarlar brüttür; BIST'te stopaj (vergi kesintisi) sonrası hesaba daha az geçebilir.",
+          },
+        };
+      }
+      const o = await actions.getDividendOverview();
+      return {
+        result: {
+          alinan_toplam_tl_gercek: r(o.receivedTotalTry, 2),
+          yillar: o.received.map((y) => ({
+            yil: y.year,
+            toplam_tl_gercek: r(y.totalTry, 2),
+            kayitlar: y.items.map((d) => ({ portfoy: modeName(d.mode), symbol: d.symbol, tarih: d.exDate, tutar: r(d.amount, 2), para_birimi: d.currency, tutar_tl: r(d.amountTry, 2) })),
+          })),
+          onay_bekleyen: o.suggestions.map((d) => ({ portfoy: modeName(d.mode), symbol: d.symbol, tarih: d.exDate, adet: r(d.quantity, 6), tutar: r(d.amount, 2), para_birimi: d.currency })),
+          yaklasan: o.upcoming.slice(0, 10).map((u) => ({ symbol: u.symbol, tarih: u.date, baslik: u.title, ayrinti: u.detail, baglanti: u.url })),
+          hisseler: o.holdings.map((h) => ({ symbol: h.symbol, son_temettuler: h.history.events.slice(-4).map((e) => `${e.date}: ${r(e.amount, 4)} ${h.history.currency}`) })),
+          aciklama: "Onay bekleyen temettüler kullanıcı Temettü sayfasında onaylayınca gerçekleşen K/Z'ye eklenir.",
+        },
+      };
+    }
+
+    case "get_kap_disclosures": {
+      const sym = normalizeSymbol("bist", String(i.symbol ?? ""));
+      if (!sym) throw new actions.ValidationError("symbol eksik.");
+      const hours = Math.min(24 * 60, Math.max(1, Number(i.hours) || 168));
+      const items = actions.listKapDisclosures({ ticker: sym, sinceMs: Date.now() - hours * 3600_000, limit: 20 });
+      return {
+        result: {
+          symbol: sym,
+          bildirimler: items.map((d) => ({
+            zaman: new Date(d.publishAt).toLocaleString("tr-TR", { timeZone: "Europe/Istanbul" }),
+            konu: d.subject,
+            ozet: d.summary,
+            baglanti: d.url,
+          })),
+          aciklama: items.length === 0 ? "Bu süre içinde saklanmış KAP bildirimi yok (yalnızca portföy ve izleme listesindeki hisseler takip edilir)." : undefined,
         },
       };
     }

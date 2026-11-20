@@ -5,16 +5,17 @@ import {
   ASSET_TYPE_INFO,
   ASSET_TYPES,
   CURRENCIES,
-  GOLD_SYMBOL,
   instrumentId,
   isValidSymbol,
   normalizeSymbol,
+  quantityUnit,
   type AssetType,
   type Currency,
 } from "@/lib/assets";
 import { formatMoney, parseDecimal } from "@/lib/format";
 import type { Quote } from "@/lib/prices";
 import { Field, inputCls, PrimaryButton, Segmented } from "./ui";
+import { SymbolField, symbolOnTypeChange } from "./SymbolField";
 
 type EntryBy = "amount" | "quantity";
 
@@ -43,7 +44,7 @@ export function VirtualEntryForm({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const normalized = normalizeSymbol(assetType, assetType === "gold" ? GOLD_SYMBOL : symbol);
+  const normalized = normalizeSymbol(assetType, symbol);
   const validSymbol = isValidSymbol(assetType, normalized);
   const id = validSymbol ? instrumentId(assetType, normalized) : null;
 
@@ -119,7 +120,7 @@ export function VirtualEntryForm({
           onChange={(e) => {
             const t = e.target.value as AssetType;
             setAssetType(t);
-            if (t === "gold" || assetType === "gold") setSymbol("");
+            setSymbol(symbolOnTypeChange(t, assetType, symbol));
           }}
         >
           {ASSET_TYPES.map((t) => (
@@ -130,19 +131,7 @@ export function VirtualEntryForm({
         </select>
       </Field>
 
-      {assetType !== "gold" && (
-        <Field label="Sembol" hint={ASSET_TYPE_INFO[assetType].symbolHint}>
-          <input
-            className={`${inputCls} uppercase`}
-            required
-            value={symbol}
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-            onChange={(e) => setSymbol(e.target.value)}
-          />
-        </Field>
-      )}
+      <SymbolField assetType={assetType} value={symbol} onChange={setSymbol} />
 
       {id && (
         <p className="num text-sm text-slate-400">
@@ -184,7 +173,7 @@ export function VirtualEntryForm({
           </Field>
         </div>
       ) : (
-        <Field label={assetType === "gold" ? "Miktar (gram)" : "Adet"}>
+        <Field label={`Miktar (${quantityUnit(assetType, normalized)})`}>
           <input className={inputCls} inputMode="decimal" required value={quantity} onChange={(e) => setQuantity(e.target.value)} />
         </Field>
       )}

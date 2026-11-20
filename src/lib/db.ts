@@ -216,6 +216,65 @@ const MIGRATIONS: string[] = [
   ALTER TABLE transactions ADD COLUMN fx_try REAL;
   UPDATE transactions SET fx_try = 1 WHERE currency = 'TRY';
   `,
+  `
+  -- Fiyat önbelleği: önceki kapanış ("bugün" K/Z için) ve kaynağa özel ek bilgi (JSON: alış fiyatı, fon adı, yaklaşık mı).
+  ALTER TABLE price_cache ADD COLUMN prev_close REAL;
+  ALTER TABLE price_cache ADD COLUMN extra TEXT;
+
+  -- TEFAS fonları: doğrulanmış fon kodları ve adları (arama ve görünen ad için)
+  CREATE TABLE funds (
+    code        TEXT PRIMARY KEY,
+    name        TEXT,
+    last_price  REAL,
+    last_date   TEXT,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Temettü (kâr payı) kayıtları. confirmed: gelir olarak kaydedildi (gerçekleşen K/Z'ye eklenir),
+  -- dismissed: öneri kullanıcı tarafından gizlendi. Hak kullanım tarihi başına tek satır.
+  CREATE TABLE dividends (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode        TEXT    NOT NULL CHECK (mode IN ('real','virtual')),
+    asset_type  TEXT    NOT NULL,
+    symbol      TEXT    NOT NULL,
+    ex_date     TEXT    NOT NULL,
+    per_share   REAL    NOT NULL CHECK (per_share >= 0),
+    quantity    REAL    NOT NULL CHECK (quantity >= 0),
+    amount      REAL    NOT NULL CHECK (amount >= 0),
+    currency    TEXT    NOT NULL,
+    -- para biriminin hak kullanım tarihindeki TRY kuru (TRY için 1)
+    fx_try      REAL,
+    status      TEXT    NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed','dismissed')),
+    source      TEXT    NOT NULL DEFAULT 'otomatik',
+    note        TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (mode, asset_type, symbol, ex_date)
+  );
+
+  -- Kaynaktan alınan temettü geçmişi önbelleği (varlık başına JSON)
+  CREATE TABLE dividend_history (
+    instrument  TEXT PRIMARY KEY,
+    currency    TEXT,
+    events      TEXT    NOT NULL,
+    fetched_at  INTEGER NOT NULL
+  );
+
+  -- KAP bildirimleri (yalnızca portföy / izleme listesi hisseleriyle ilgili olanlar saklanır)
+  CREATE TABLE kap_disclosures (
+    disclosure_index  INTEGER PRIMARY KEY,
+    publish_at        INTEGER NOT NULL,
+    -- ",THYAO,PGSUS," biçiminde (LIKE '%,THYAO,%' ile aranır)
+    stock_codes       TEXT    NOT NULL,
+    kap_title         TEXT,
+    subject           TEXT,
+    summary           TEXT,
+    disclosure_class  TEXT,
+    disclosure_type   TEXT,
+    is_dividend       INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_kap_publish ON kap_disclosures (publish_at);
+  `,
 ];
 
 function open(): DatabaseSync {

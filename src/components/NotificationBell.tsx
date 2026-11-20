@@ -6,7 +6,7 @@ import type { AppNotification } from "@/lib/orders";
 import { usePolling } from "@/lib/usePolling";
 
 /** Bildirim türüne göre ilgili sayfa */
-const LINKS: Record<string, string> = { news_alert: "/analizler", signal_change: "/sinyaller" };
+const LINKS: Record<string, string> = { news_alert: "/analizler", signal_change: "/sinyaller", kap: "/kap" };
 
 /** Uygulama içi bildirimler (emir gerçekleşti, önemli haber vb.). */
 export function NotificationBell() {

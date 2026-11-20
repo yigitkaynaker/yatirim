@@ -5,6 +5,9 @@ import * as orders from "./orders";
 import * as market from "./market";
 import * as snapshots from "./snapshots";
 import * as technical from "./technical";
+import * as dividends from "./dividends";
+import * as kap from "./kap";
+import * as positionDetail from "./positionDetail";
 import { runOrderCheck } from "./orderWatcher";
 import { getQuotes, type InstrumentRef } from "./prices";
 
@@ -200,4 +203,59 @@ export function getTechnicalSignals(instrument: InstrumentRef, opts: { overlays?
 /** Tüm pozisyon (gerçek + sanal) ve izleme listesi varlıklarının güncel teknik sinyali. */
 export function listTechnicalSignals() {
   return technical.listSignals();
+}
+
+// ---- Temettü (kâr payı) -------------------------------------------------------------
+
+export type { DividendRecord, DividendSuggestion, DividendOverview, DividendHistory } from "./dividends";
+
+/** Temettü sayfası: yıllara göre alınan temettüler, öneriler, yaklaşanlar, hisse başına geçmiş. */
+export function getDividendOverview() {
+  return dividends.getDividendOverview();
+}
+
+/** Bir hissenin temettü geçmişi (Yahoo; önbellekli). */
+export function getDividendHistory(instrument: InstrumentRef) {
+  return dividends.getDividendHistory(instrument.type, instrument.symbol);
+}
+
+/** Elde tutulurken ödenmiş, henüz onaylanmamış temettüler. */
+export function getDividendSuggestions() {
+  return dividends.getDividendSuggestions();
+}
+
+/** Onaylanmış / gizlenmiş temettü kayıtları. */
+export function listDividends(opts: { mode?: Mode; status?: "confirmed" | "dismissed" } = {}) {
+  return dividends.listDividendRecords(opts);
+}
+
+/** Temettüyü gelir olarak kaydeder (gerçekleşen K/Z'ye eklenir). { mode, assetType, symbol, exDate, amount? } */
+export function confirmDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string; amount?: Num | null; note?: string | null }) {
+  return dividends.confirmDividend(p as unknown as Record<string, unknown>);
+}
+
+/** Temettü önerisini gizler. */
+export function dismissDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string }) {
+  return dividends.dismissDividend(p as unknown as Record<string, unknown>);
+}
+
+/** Temettü kaydını siler. Bulunamazsa false. */
+export function removeDividend(id: number) {
+  return dividends.deleteDividend(id);
+}
+
+// ---- KAP bildirimleri -----------------------------------------------------------------
+
+export type { KapDisclosure } from "./kap";
+
+/** Saklanan KAP bildirimleri (en yeni önce); ticker verilirse yalnızca o hisse. */
+export function listKapDisclosures(opts: { ticker?: string; limit?: number; sinceMs?: number } = {}) {
+  return kap.listKap(opts);
+}
+
+// ---- Pozisyon detayı ----------------------------------------------------------------
+
+/** Tek pozisyonun ayrıntısı: özet, işlemler, emirler, temettü, KAP, haber, değer geçmişi. */
+export function getPositionDetail(mode: Mode, instrument: InstrumentRef) {
+  return positionDetail.getPositionDetail(mode, instrument.type, instrument.symbol);
 }

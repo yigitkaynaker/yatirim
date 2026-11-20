@@ -174,3 +174,20 @@ export function getSignalAlertsEnabled(): boolean {
 export function setSignalAlertsEnabled(on: boolean) {
   setSetting(SIGNAL_ALERTS_KEY, on ? "1" : "0");
 }
+
+// ---- KAP bildirimleri ---------------------------------------------------------------
+
+export const KAP_NOTIFY_SCOPES = ["real", "all", "off"] as const;
+export type KapNotifyScope = (typeof KAP_NOTIFY_SCOPES)[number];
+const KAP_NOTIFY_KEY = "kap_notify";
+
+/** KAP bildirimi: real = yalnızca gerçek portföy hisseleri (varsayılan), all = gerçek + sanal, off = kapalı */
+export function getKapNotifyScope(): KapNotifyScope {
+  const v = getSetting(KAP_NOTIFY_KEY);
+  return (KAP_NOTIFY_SCOPES as readonly string[]).includes(v ?? "") ? (v as KapNotifyScope) : "real";
+}
+
+export function setKapNotifyScope(v: unknown) {
+  if (!(KAP_NOTIFY_SCOPES as readonly unknown[]).includes(v)) throw new ValidationError("KAP bildirim ayarı geçersiz.");
+  setSetting(KAP_NOTIFY_KEY, v as string);
+}

@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { ASSET_TYPE_INFO, displaySymbol, isCurrency, parseInstrumentId } from "@/lib/assets";
-import { formatPercent, formatTime, pnlClass } from "@/lib/format";
+import { ASSET_TYPE_INFO, displaySymbol, FUND_EXPLAIN, GOLD_SPREAD_EXPLAIN, GOLD_SYMBOL, isCurrency, parseInstrumentId, supportsDividends } from "@/lib/assets";
+import { formatMoney, formatPercent, formatTime, pnlClass } from "@/lib/format";
 import type { ChartData, ChartRange, WatchItem } from "@/lib/market";
 import type { Quote } from "@/lib/prices";
 import type { TechnicalAnalysis } from "@/lib/technical";
@@ -15,7 +15,8 @@ import { OrderForm } from "./OrdersView";
 import { PriceChart, type ChartOverlay } from "./PriceChart";
 import { SignalBadge, TechnicalPanel } from "./TechnicalPanel";
 import { TransactionForm, toInput } from "./TransactionForm";
-import { Card, Modal, Segmented, StaleBadge } from "./ui";
+import { Card, Explain, Modal, PriceMeta, Segmented } from "./ui";
+import { DividendPanel, KapPanel } from "./AssetPanels";
 import { VirtualEntryForm } from "./VirtualEntryForm";
 
 const RANGES: { value: ChartRange; label: string }[] = [
@@ -55,7 +56,9 @@ export function AssetDetailView() {
   const ref = parseInstrumentId(rawId);
   const id = ref ? `${ref.type}:${ref.symbol}` : "";
   const nameParam = params.get("ad");
-  const [range, setRange] = useState<ChartRange>("1A");
+  const isFund = ref?.type === "fund";
+  // Fon fiyatı günde bir açıklanır: gün içi aralıklar yerine 1 ay ve üstü.
+  const [range, setRange] = useState<ChartRange>(isFund ? "3A" : "1A");
   const [chart, setChart] = useState<{ key: string; data: ChartData | null; error?: string } | null>(null);
   const [action, setAction] = useState<Action>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -183,21 +186,47 @@ export function AssetDetailView() {
         <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
           <div>
             <div className="num text-3xl font-semibold tracking-tight">{formatQuotePrice(id, q)}</div>
-            <div className="num mt-1 flex items-center gap-2 text-sm">
-              <span className={pnlClass(q?.changePct)}>Bugün {formatPercent(q?.changePct)}</span>
+            <div className="num mt-1 flex flex-wrap items-center gap-2 text-sm">
+              <span className={pnlClass(q?.changePct)} title={isFund ? "Son açıklanan fiyatın bir önceki güne göre değişimi" : "Bir önceki kapanışa göre değişim"}>
+                {isFund ? "Son gün" : "Bugün"} {formatPercent(q?.changePct)}
+              </span>
               {rangeChange != null && (
                 <span className="text-slate-500">
                   · {ref.type === "crypto" && range === "1G" ? "son 24 saat" : RANGE_HINT[range]}: <span className={pnlClass(rangeChange)}>{formatPercent(rangeChange)}</span>
                 </span>
               )}
-              {q?.stale && q.price != null && <StaleBadge fetchedAt={q.fetchedAt} />}
             </div>
+            {q && q.price != null && <PriceMeta q={q} className="mt-1" />}
           </div>
           <span className="text-xs text-slate-500">{price.lastSuccess ? `Güncellendi ${formatTime(price.lastSuccess)}` : ""}</span>
         </div>
 
+        {ref.type === "gold" && ref.symbol !== GOLD_SYMBOL && q?.price != null && (
+          <div className="num mt-3 grid grid-cols-2 gap-2 text-sm">
+            <div className="rounded-xl border border-line px-3 py-2">
+              <div className="text-xs text-slate-500">Satış (siz alırken)</div>
+              <div className="font-medium">{formatMoney(q.price, "TRY")}</div>
+            </div>
+            <div className="rounded-xl border border-line px-3 py-2">
+              <div className="text-xs text-slate-500">Alış (siz satarken)</div>
+              <div className="font-medium">{q.bid != null ? formatMoney(q.bid, "TRY") : "—"}</div>
+            </div>
+          </div>
+        )}
+        {ref.type === "gold" && (
+          <Explain title="Alış / satış (makas):" className="mt-3">
+            {GOLD_SPREAD_EXPLAIN}
+            {ref.symbol === GOLD_SYMBOL && " Gram altın fiyatı ons altın ve dolar kurundan hesaplanır (makassız)."}
+          </Explain>
+        )}
+        {isFund && (
+          <Explain title="Fon nedir?" className="mt-3">
+            {FUND_EXPLAIN} Fiyat TEFAS’tan alınır.
+          </Explain>
+        )}
+
         <div className="mt-4">
-          <Segmented<ChartRange> value={range} onChange={setRange} options={RANGES} />
+          <Segmented<ChartRange> value={range} onChange={setRange} options={isFund ? RANGES.filter((r) => r.value !== "1G" && r.value !== "1H") : RANGES} />
         </div>
 
         <div className="relative mt-3">
@@ -273,6 +302,10 @@ export function AssetDetailView() {
       )}
 
       <TechnicalPanel data={techData} error={tech && tech.id === id ? tech.error : null} />
+
+      {ref.type === "bist" && !index && <KapPanel symbol={ref.symbol} />}
+
+      {supportsDividends(ref.type) && !index && <DividendPanel instrument={id} assetType={ref.type} />}
 
       <AssetNewsPanel instrument={id} />
 

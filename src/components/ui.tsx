@@ -8,14 +8,14 @@ export function Card({ className = "", children }: { className?: string; childre
   return <section className={`rounded-2xl border border-line bg-surface ${className}`}>{children}</section>;
 }
 
-export function StaleBadge({ fetchedAt, title }: { fetchedAt?: number | null; title?: string }) {
+export function StaleBadge({ fetchedAt, title, label = "eski" }: { fetchedAt?: number | null; title?: string; label?: string }) {
   return (
     <span
       title={title ?? (fetchedAt ? `Son güncel fiyat: ${formatTime(fetchedAt)}` : "Fiyat alınamadı")}
       className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-300"
     >
       <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-      eski
+      {label}
     </span>
   );
 }
@@ -125,5 +125,77 @@ export function PrimaryButton(props: React.ButtonHTMLAttributes<HTMLButtonElemen
       {...rest}
       className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition hover:brightness-110 disabled:opacity-50 ${toneCls} ${className}`}
     />
+  );
+}
+
+/** "20.11 15:54" (İstanbul saati) ya da günlük fiyatta "20.11.2026" */
+export function formatSourceTime(ms: number, dateOnly = false): string {
+  const d = new Date(ms);
+  if (dateOnly) return d.toLocaleDateString("tr-TR", { timeZone: "Europe/Istanbul", day: "2-digit", month: "2-digit", year: "numeric" });
+  const sameDay = d.toLocaleDateString("en-CA", { timeZone: "Europe/Istanbul" }) === new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Istanbul" });
+  return d.toLocaleString("tr-TR", {
+    timeZone: "Europe/Istanbul",
+    ...(sameDay ? {} : { day: "2-digit", month: "2-digit" }),
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export interface PriceMetaInfo {
+  sourceTime: number | null;
+  fetchedAt: number | null;
+  stale: boolean;
+  source?: string;
+  delayed?: boolean;
+  daily?: boolean;
+  approx?: boolean;
+}
+
+/**
+ * Fiyatın kaynağı ve zamanı: "Yahoo · 15:54", BIST için "gecikmeli (15 dk)",
+ * güncellenemediyse "eski · son güncelleme …", gram altından hesaplandıysa "yaklaşık".
+ */
+export function PriceMeta({ q, className = "" }: { q: PriceMetaInfo | null | undefined; className?: string }) {
+  if (!q) return null;
+  const when = q.sourceTime ?? q.fetchedAt;
+  return (
+    <span className={`inline-flex flex-wrap items-center gap-1 text-[11px] leading-tight text-slate-500 ${className}`}>
+      {when != null && (
+        <span title={q.daily ? "Fon fiyatı her iş günü bir kez açıklanır; bu tarih son açıklanan fiyatın günüdür." : "Fiyatın kaynaktaki zamanı (İstanbul saati)"}>
+          {q.source ? `${q.source} · ` : ""}
+          {formatSourceTime(when, q.daily)}
+        </span>
+      )}
+      {q.delayed && (
+        <span
+          title="Borsa İstanbul fiyatları ücretsiz kaynakta yaklaşık 15 dakika gecikmeli gelir. Anlık fiyat için aracı kurumunuza bakın."
+          className="rounded bg-slate-500/15 px-1 py-px font-medium text-slate-300"
+        >
+          gecikmeli (15 dk)
+        </span>
+      )}
+      {q.approx && (
+        <span title="Kaynağa ulaşılamadı; gram altın fiyatı × ağırlık × saflık ile yaklaşık hesaplandı. İşçilik ve makas dahil değildir." className="rounded bg-sky-500/15 px-1 py-px font-medium text-sky-300">
+          yaklaşık
+        </span>
+      )}
+      {q.stale && (
+        <StaleBadge
+          fetchedAt={q.fetchedAt}
+          title={q.fetchedAt ? `Kaynağa şu an ulaşılamıyor. Son güncelleme: ${formatSourceTime(q.fetchedAt)}` : "Fiyat alınamadı"}
+          label={q.fetchedAt ? `eski · son güncelleme ${formatSourceTime(q.fetchedAt)}` : "eski"}
+        />
+      )}
+    </span>
+  );
+}
+
+/** Yeni başlayanlar için kısa açıklama kutusu */
+export function Explain({ title, children, className = "" }: { title?: string; children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-xl border border-line/70 bg-bg/40 px-3 py-2.5 text-xs leading-relaxed text-slate-400 ${className}`}>
+      {title && <span className="font-medium text-slate-200">{title} </span>}
+      {children}
+    </div>
   );
 }

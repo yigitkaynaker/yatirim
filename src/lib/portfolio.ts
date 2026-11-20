@@ -15,7 +15,7 @@ import {
 } from "./assets";
 import { getQuotes, type InstrumentRef, type Quote } from "./prices";
 import { parseDecimal } from "./format";
-import { bySequence, buildPositions, positionPnl } from "./positions";
+import { bySequence, buildPositions, dayChange, positionPnl } from "./positions";
 import { ensureFxRates } from "./fxRates";
 
 // ---- İşlemler (transactions) ---------------------------------------------
@@ -119,7 +119,7 @@ export function listTransactions(mode?: Mode): Transaction[] {
 }
 
 /** Toplamlara giren işlemler: gerçeğe dönüştürülmüş (arşiv) sanal işlemler hariç */
-function activeTransactions(mode: Mode): Transaction[] {
+export function activeTransactions(mode: Mode): Transaction[] {
   return listTransactions(mode).filter((t) => !t.convertedAt);
 }
 
@@ -412,6 +412,23 @@ export interface Holding {
   stale: boolean;
   priceError?: string;
   fetchedAt: number | null;
+  /** Fiyatın kaynaktaki zamanı (ms), kaynağı ve gecikme / günlük fiyat / yaklaşık bilgisi */
+  sourceTime: number | null;
+  source: string;
+  delayed: boolean;
+  daily: boolean;
+  approx: boolean;
+  /** Altın: kuyumcu alış fiyatı (satarsanız alacağınız), fiyat = satış fiyatı */
+  bid: number | null;
+  /** Kaynaktan gelen ad (fon unvanı) */
+  name: string | null;
+  /** "Bugün" (son seans) değişimi: önceki kapanışa göre, TL ve % */
+  dayChangeTry: number | null;
+  dayChangePct: number | null;
+  /** true: fiyat bugüne değil önceki bir seansa ait (hafta sonu / tatil / fonun son açıklanan günü) */
+  dayIsPastSession: boolean;
+  /** Onaylanmış temettü gelirleri (TL, hak kullanım günü kuruyla) */
+  dividendsTry: number;
   /** Değer ve K/Z, varlığın para biriminde */
   value: number | null;
   cost: number | null;
@@ -448,7 +465,13 @@ export interface PortfolioSummary {
     costTry: number;
     pnlTry: number;
     pnlPct: number | null;
+    /** Gerçekleşen K/Z: satışlardan + onaylanmış temettü gelirleri */
     realizedPnlTry: number;
+    /** Gerçekleşen K/Z'nin temettü kısmı */
+    dividendsTry: number;
+    /** "Bugün" değişimi (önceki kapanışa göre) — hesaplanamayan pozisyonlar hariç */
+    dayChangeTry: number | null;
+    dayChangePct: number | null;
     /** Değeri hesaplanamayan pozisyon var mı */
     incomplete: boolean;
     anyStale: boolean;
@@ -489,9 +512,16 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
   const rate = (cur: string): number | null => (cur === "TRY" ? 1 : (rates[cur]?.price ?? null));
   const quoteById = new Map(firstPass.slice(0, instruments.length).map((q) => [q.id, q]));
 
+  const prevRate = (cur: string): number | null => (cur === "TRY" ? 1 : (rates[cur]?.prevClose ?? rates[cur]?.price ?? null));
+  const today = todayIstanbul();
+
   const positions = buildPositions(txs, rate);
+  const dividends = confirmedDividendsTry(mode, rate);
   const holdings: Holding[] = [];
-  let realizedTotal = 0;
+  let realizedTotal = dividends.total;
+  let dayTotal = 0;
+  let dayBase = 0;
+  let dayMissing = false;
   for (const p of positions) {
     const q = quoteById.get(instrumentId(p.assetType, p.symbol))!;
     const realizedTry = Number.isFinite(p.realizedTry) ? p.realizedTry : null;
@@ -502,6 +532,15 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
     const fxRate = rate(currency);
     const b = positionPnl(p, currency, q.price, rate);
     const foreign = currency !== "TRY";
+
+    // "Bugün": fiyatın ait olduğu seans gününe göre (hafta sonu son seans, fonda son açıklanan gün).
+    const sessionDate = q.sourceTime ? new Date(q.sourceTime).toLocaleDateString("en-CA", { timeZone: "Europe/Istanbul" }) : today;
+    const assetTxs = txs.filter((t) => t.assetType === p.assetType && t.symbol === p.symbol);
+    const day = dayChange(assetTxs, sessionDate, q.price, q.prevClose, fxRate, prevRate(currency), rate);
+    if (day) {
+      dayTotal += day.changeTry;
+      dayBase += day.baseTry;
+    } else dayMissing = true;
 
     holdings.push({
       id: q.id,
@@ -516,6 +555,17 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
       stale: q.stale,
       priceError: q.error,
       fetchedAt: q.fetchedAt,
+      sourceTime: q.sourceTime,
+      source: q.source,
+      delayed: q.delayed,
+      daily: q.daily,
+      approx: !!q.approx,
+      bid: q.bid ?? null,
+      name: q.name ?? null,
+      dayChangeTry: day?.changeTry ?? null,
+      dayChangePct: day && day.baseTry > 0 ? (day.changeTry / day.baseTry) * 100 : null,
+      dayIsPastSession: sessionDate < today,
+      dividendsTry: dividends.byInstrument.get(q.id) ?? 0,
       value: b.value,
       cost: b.cost,
       pnl: b.pnl,
@@ -561,6 +611,9 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
       pnlTry: valueTry - costTry,
       pnlPct: costTry > 0 ? ((valueTry - costTry) / costTry) * 100 : null,
       realizedPnlTry: realizedTotal,
+      dividendsTry: dividends.total,
+      dayChangeTry: holdings.length === 0 || (dayMissing && dayBase === 0) ? null : dayTotal,
+      dayChangePct: dayBase > 0 ? (dayTotal / dayBase) * 100 : null,
       incomplete,
       anyStale: holdings.some((h) => h.stale) || Object.values(rates).some((r) => r.stale),
     },
@@ -568,4 +621,25 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean } = {}): 
     rates,
     updatedAt: Date.now(),
   };
+}
+
+/**
+ * Onaylanmış temettü gelirleri (TL). Hak kullanım günü kuru (fx_try) ile; kur
+ * kaydedilmemişse güncel kur kullanılır.
+ */
+function confirmedDividendsTry(mode: Mode, rate: (cur: string) => number | null): { total: number; byInstrument: Map<string, number> } {
+  const rows = getDb()
+    .prepare("SELECT asset_type, symbol, amount, currency, fx_try FROM dividends WHERE mode = ? AND status = 'confirmed'")
+    .all(mode) as { asset_type: AssetType; symbol: string; amount: number; currency: string; fx_try: number | null }[];
+  const byInstrument = new Map<string, number>();
+  let total = 0;
+  for (const r of rows) {
+    const fx = r.currency === "TRY" ? 1 : (r.fx_try ?? rate(r.currency));
+    if (fx == null) continue;
+    const v = r.amount * fx;
+    total += v;
+    const id = instrumentId(r.asset_type, r.symbol);
+    byInstrument.set(id, (byInstrument.get(id) ?? 0) + v);
+  }
+  return { total, byInstrument };
 }

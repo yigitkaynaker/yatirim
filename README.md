@@ -10,6 +10,8 @@ Kişisel (tek kullanıcılı) yatırım uygulaması. Bilgisayarınızda çalış
 
 **Aşama 4 içeriği:** teknik analiz sinyalleri (RSI, MACD, hareketli ortalamalar, Bollinger, hacim), varlık detayında Teknik Analiz bölümü ve grafik katmanları, Sinyaller sayfası, günlük sinyal değişimi bildirimleri, sohbette ve haber analizinde teknik sinyaller.
 
+**Geliştirme paketi A:** "Bugün" K/Z ve fiyat zamanı / gecikme etiketleri, TEFAS yatırım fonları, altın türleri (çeyrek, yarım, tam, cumhuriyet, ata, 22 ayar bilezik), temettü takibi (Temettü sayfası), KAP bildirimleri (KAP sayfası) ve pozisyon detay sayfası.
+
 > **Güncellemeden sonra:** kod değiştiyse sunucuyu durdurup `npm run build` ile yeniden derleyin, sonra `npm start`. Eski derleme (`.next`) yeni sayfaları içermez.
 
 ## Kurulum ve çalıştırma
@@ -27,7 +29,7 @@ Geliştirme modu için `npm run dev` kullanın. İki komut da `0.0.0.0:3000` adr
 
 Veriler `data/yatirim.db` dosyasında tutulur. Yedeklemek için sunucuyu durdurup bu dosyayı kopyalayın.
 
-Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run test:indicators` (gösterge motorunun birim testleri), `npm run test:fx` (işlem tarihi kuruyla TL K/Z ve kur etkisi testleri), `npm run icons` (ikonları yeniden üretir), `npm run test:ai` (yapay zeka katmanının sahte istemciyle testi; `YATIRIM_DATA_DIR` ile ayrı bir veri klasörü gösterin, gerçek API çağrısı yapmaz).
+Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run test:indicators` (gösterge motorunun birim testleri), `npm run test:sources` (temettü hak edişi, TEFAS sıfır fiyat, altın kaynağı ve "bugün" değişimi testleri), `npm run test:fx` (işlem tarihi kuruyla TL K/Z ve kur etkisi testleri), `npm run icons` (ikonları yeniden üretir), `npm run test:ai` (yapay zeka katmanının sahte istemciyle testi; `YATIRIM_DATA_DIR` ile ayrı bir veri klasörü gösterin, gerçek API çağrısı yapmaz).
 
 Çalışan sunucuya dokunmadan test derlemesi için: `NEXT_DIST_DIR=.next-test npm run build` (çıktı `.next-test` klasörüne yazılır). `YATIRIM_DATA_DIR` ile farklı bir veri klasörü kullanılabilir.
 
@@ -123,6 +125,15 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 - **Kripto:** Binance (örn. `BTC` → BTCUSDT).
 - Fiyatlar sunucuda 30 saniye önbellekte tutulur, ekran da yaklaşık 30 saniyede bir yenilenir. Bir kaynak yanıt vermezse son bilinen fiyat **"eski"** etiketiyle gösterilir.
 
+### Paket A: günlük K/Z, fonlar, altın türleri, temettü, KAP
+- **Bugün:** portföy toplamında ve her pozisyonda önceki kapanışa göre bugünkü değişim (TL ve %), gerçek ve sanal. Bugün yapılan alış/satışlar işlem fiyatından hesaplanır; hafta sonu son seans gösterilir. Her fiyatın yanında kaynağı ve zamanı, BIST için **gecikmeli (15 dk)**, kaynak yanıt vermiyorsa **eski · son güncelleme** etiketi vardır.
+- **Fon (TEFAS):** yeni varlık türü. Aramada 3 harfli fon kodu yazın (örn. AFT); kod TEFAS'ta doğrulanır. Fiyat günde bir açıklanır (30 dk önbellek); 0 dönen fiyatlar geçersiz sayılır, son geçerli fiyat kullanılır. Detay sayfasında 1A–5Y grafik.
+- **Altın türleri:** gram (eskisi gibi ons × kur), çeyrek, yarım, tam, cumhuriyet, ata, 22 ayar bilezik (gram). Kaynak: Truncgil, yedek Genelpara; ikisi de yoksa gram altından "yaklaşık". Değer kuyumcu **satış** fiyatıyla; alış fiyatı ve makas açıklaması gösterilir. Sikke grafikleri gram altından ölçeklenir (yaklaşık).
+- **Temettü:** Yahoo'dan hisse başına temettü geçmişi (BIST ve ABD). Hak kullanım gününden önceki gün elinizde olan hisseler için "Temettü geliri" önerisi çıkar; **Onayla** ile hak kullanım günü kuruyla `dividends` tablosuna yazılır ve gerçekleşen K/Z'ye eklenir. Temettü sayfası: yıllara göre alınanlar, onay bekleyenler, yaklaşanlar (KAP kâr payı bildirimleri), hisse başına geçmiş. Sohbette `list_dividends` aracı.
+- **KAP:** hafta içi 08:00–22:00 arası en fazla 10 dakikada bir KAP'tan tarih aralığıyla bildirimler çekilir; portföy (gerçek + sanal) ve izleme listesindeki BIST hisseleriyle ilgili olanlar `kap_disclosures` tablosunda saklanır. KAP sayfası ve varlık detayında başlık, özet, zaman ve kap.org.tr bağlantısı. Pozisyon hisseleri için bildirim + push (Ayarlar: yalnız gerçek / gerçek + sanal / kapalı). Son 48 saatin KAP bildirimleri haber analizi istemine ve sohbete ücretsiz bağlam olarak eklenir (`get_kap_disclosures` aracı).
+- **Pozisyon detayı:** Portföy'de bir satıra dokununca `/portfoy/pozisyon?mod=gercek|sanal&id=…` açılır: özet (miktar, maliyet, değer, K/Z, fiyat/kur etkisi, bugün, gün sayısı), alış/satış işaretli ve "Maliyetin" çizgili grafik (üstü yeşil, altı kırmızı), "Yatırımımın değeri" grafiği, işlemler, teknik sinyal, bekleyen emirler, temettü, KAP ve son haber analizi; Al/Sat/Emir ver ya da Gerçekten aldım/Sanal sat düğmeleri.
+- Dış kaynaklar tarayıcı User-Agent'ı ile, önbellekli ve hata alınca artan bekleme süresiyle (`src/lib/http.ts`) sorgulanır; hata durumunda son bilinen veri gösterilir.
+
 ## Kod yapısı (sonraki aşamalar için)
 
 | Yol | İçerik |
@@ -133,6 +144,10 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 | `src/lib/prices.ts` | Fiyat servisi (Yahoo + Binance, önbellek, "eski" fiyat desteği) |
 | `src/lib/market.ts` | İzleme listesi, sembol arama, grafik verisi (eylemler: `listWatchlist`, `addToWatchlist`, `searchSymbols`, `getPriceChart`) |
 | `src/lib/indicators.ts`, `src/lib/signalRules.ts`, `src/lib/technical.ts` | Gösterge motoru (saf, testli), sinyal kuralları, günlük mumlar + analiz + günlük sinyal uyarısı (eylemler: `getTechnicalSignals`, `listTechnicalSignals`) |
+| `src/lib/dividends.ts`, `src/lib/dividendLogic.ts` | Temettü geçmişi, öneri, onay; hak ediş mantığı (saf, testli) |
+| `src/lib/kap.ts` | KAP sorgusu, saklama, bildirim, yapay zeka bağlamı |
+| `src/lib/sourceParse.ts`, `src/lib/http.ts` | TEFAS / altın yanıt ayrıştırma (saf, testli); kibar dış istek ve geri çekilme |
+| `src/lib/positionDetail.ts` | Pozisyon detay sayfasının verisi |
 | `src/lib/snapshots.ts` | Günlük portföy değeri kayıtları (`getPortfolioHistory`) |
 | `src/lib/db.ts` | SQLite bağlantısı ve sürümlü şema geçişleri. Yeni tablo eklemek için `MIGRATIONS` dizisine yeni bir adım ekleyin. |
 | `src/lib/auth.ts`, `src/proxy.ts` | İmzalı oturum çerezi ve sayfa/API koruması |

@@ -1,14 +1,18 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ASSET_TYPE_INFO, displaySymbol, isCurrency, type Mode } from "@/lib/assets";
+import type { DividendSuggestion } from "@/lib/dividends";
 import { formatDate, formatMoney, formatPercent, formatQuantity, formatSigned, formatTime, pnlClass } from "@/lib/format";
 import type { Holding, PortfolioSummary } from "@/lib/portfolio";
 import { usePolling } from "@/lib/usePolling";
 import { MarketStrip } from "./MarketStrip";
 import { AllocationDonut, PortfolioHistory } from "./PortfolioCharts";
 import { TransactionForm, toInput, today } from "./TransactionForm";
-import { Card, Modal, ModeTabs, PrimaryButton, StaleBadge } from "./ui";
+import { Card, Modal, ModeTabs, PriceMeta, PrimaryButton, StaleBadge } from "./ui";
+import { positionHref } from "./PositionDetailView";
 import { VirtualEntryForm } from "./VirtualEntryForm";
 
 export function PortfolioView() {
@@ -47,6 +51,8 @@ export function PortfolioView() {
       {error && <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-300">{error}</p>}
 
       <Summary summary={summary} mode={mode} />
+
+      <DividendHint mode={mode} />
 
       {summary && summary.allocation.length > 0 && <AllocationDonut summary={summary} />}
 
@@ -121,8 +127,18 @@ function Summary({ summary, mode }: { summary: PortfolioSummary | null; mode: Mo
         {t?.anyStale && <StaleBadge title="Bazı fiyatlar güncellenemedi; son bilinen fiyatlar kullanılıyor." />}
       </div>
       <div className="num mt-1 text-3xl font-semibold tracking-tight md:text-4xl">{t ? formatMoney(t.valueTry) : "—"}</div>
-      <div className={`num mt-1 text-sm font-medium ${pnlClass(t?.pnlTry)}`}>
-        {t ? `${formatSigned(t.pnlTry)} (${formatPercent(t.pnlPct)})` : ""}
+      <div className="num mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm font-medium">
+        <span className={pnlClass(t?.pnlTry)} title="Toplam kâr/zarar: bugünkü değer − maliyet">
+          {t ? `${formatSigned(t.pnlTry)} (${formatPercent(t.pnlPct)})` : ""}
+        </span>
+        {t && t.dayChangeTry != null && (
+          <span title="Bugün: fiyatların bir önceki kapanışa göre değişimi (hafta sonu ve tatilde son seansın değişimi)">
+            <span className="text-slate-500">Bugün </span>
+            <span className={pnlClass(t.dayChangeTry)}>
+              {formatSigned(t.dayChangeTry)} ({formatPercent(t.dayChangePct)})
+            </span>
+          </span>
+        )}
       </div>
       <dl className="num mt-4 grid grid-cols-2 gap-3 border-t border-line pt-4 text-sm md:grid-cols-4">
         <div>
@@ -136,6 +152,11 @@ function Summary({ summary, mode }: { summary: PortfolioSummary | null; mode: Mo
         <div>
           <dt className="text-slate-500">Gerçekleşen K/Z</dt>
           <dd className={`font-medium ${pnlClass(t?.realizedPnlTry)}`}>{t ? formatSigned(t.realizedPnlTry) : "—"}</dd>
+          {t && t.dividendsTry > 0 && (
+            <dd className="text-xs text-slate-500" title="Onayladığınız temettü (kâr payı) gelirleri gerçekleşen K/Z'ye eklenir.">
+              temettü dahil: {formatMoney(t.dividendsTry)}
+            </dd>
+          )}
         </div>
         <div>
           <dt className="text-slate-500">USD/TRY</dt>
@@ -145,7 +166,10 @@ function Summary({ summary, mode }: { summary: PortfolioSummary | null; mode: Mo
       {t?.incomplete && (
         <p className="mt-3 text-xs text-amber-300">Bazı varlıkların fiyatı alınamadığı için toplamlara dahil edilmedi.</p>
       )}
-      <p className="mt-3 text-xs text-slate-500">Döviz cinsinden varlıklarda değer güncel kurla, maliyet ve gerçekleşen K/Z işlem günündeki kurla TL’ye çevrilir.</p>
+      <p className="mt-3 text-xs text-slate-500">
+        Döviz cinsinden varlıklarda değer güncel kurla, maliyet ve gerçekleşen K/Z işlem günündeki kurla TL’ye çevrilir. “Bugün”, fiyatların bir önceki
+        kapanışa göre değişimidir; BIST fiyatları yaklaşık 15 dakika gecikmeli, fon fiyatları günde bir kez açıklanır.
+      </p>
     </Card>
   );
 }
@@ -155,13 +179,57 @@ function AssetName({ h }: { h: Holding }) {
     <div className="flex items-center gap-2">
       <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: ASSET_TYPE_INFO[h.assetType].color }} />
       <div className="min-w-0">
-        <div className="flex items-center gap-1.5 font-medium">
+        <Link href={positionHref(h.mode, h.id)} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5 font-medium hover:underline">
           {displaySymbol(h.assetType, h.symbol)}
-          {h.stale && <StaleBadge fetchedAt={h.fetchedAt} />}
-        </div>
-        <div className="text-xs text-slate-500">{ASSET_TYPE_INFO[h.assetType].label}</div>
+        </Link>
+        <div className="max-w-56 truncate text-xs text-slate-500">{h.assetType === "fund" && h.name ? h.name : ASSET_TYPE_INFO[h.assetType].label}</div>
+        <PriceMeta q={h} />
       </div>
     </div>
+  );
+}
+
+/** "Bugün" değişimi: TL ve % (önceki kapanışa göre) */
+function DayChange({ h, stacked = false }: { h: Holding; stacked?: boolean }) {
+  if (h.dayChangeTry == null) return <span className="text-slate-500">—</span>;
+  const title = h.dayIsPastSession
+    ? "Bugün işlem yok (hafta sonu / tatil ya da fonun son açıklanan günü); son seansın değişimi gösteriliyor."
+    : "Bir önceki kapanışa göre bugünkü değişim";
+  return (
+    <span className={pnlClass(h.dayChangeTry)} title={title}>
+      {formatSigned(h.dayChangeTry)}
+      {stacked ? <span className="block text-[11px]">{formatPercent(h.dayChangePct)}</span> : ` · ${formatPercent(h.dayChangePct)}`}
+      {h.dayIsPastSession && <span className="text-slate-500"> (son seans)</span>}
+    </span>
+  );
+}
+
+/** Altın: kuyumcu alış fiyatı (satarsanız alacağınız) */
+function GoldBid({ h }: { h: Holding }) {
+  if (h.assetType !== "gold" || h.bid == null) return null;
+  return (
+    <span className="block text-[11px] text-slate-500" title="Gösterilen fiyat kuyumcunun satış fiyatıdır. Altını satarsanız kuyumcu alış fiyatını öder; aradaki fark makastır.">
+      satarsanız {formatMoney(h.bid, "TRY")}
+    </span>
+  );
+}
+
+/** Onay bekleyen temettü geliri varsa kısa uyarı (Temettü sayfasına bağlantı) */
+function DividendHint({ mode }: { mode: Mode }) {
+  const { data } = usePolling<{ suggestions: DividendSuggestion[] }>("/api/dividends?only=suggestions", 10 * 60_000);
+  const list = (data?.suggestions ?? []).filter((s) => s.mode === mode);
+  if (list.length === 0) return null;
+  const names = [...new Set(list.map((s) => s.name))].slice(0, 3).join(", ");
+  return (
+    <Link href="/temettu" className="flex items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm hover:bg-amber-500/15">
+      <span>
+        <span className="font-medium text-amber-200">Temettü geliri önerisi ({list.length})</span>
+        <span className="block text-xs text-amber-100/70">
+          {names} elinizdeyken kâr payı ödemiş görünüyor. Onaylarsanız gerçekleşen K/Z’ye eklenir.
+        </span>
+      </span>
+      <span className="text-amber-200">›</span>
+    </Link>
   );
 }
 
@@ -177,6 +245,7 @@ function Holdings({
   onAdd: () => void;
 }) {
   const virtual = mode === "virtual";
+  const router = useRouter();
   if (!summary) return <Card className="p-6 text-center text-sm text-slate-500">Yükleniyor…</Card>;
   if (summary.holdings.length === 0) {
     return (
@@ -193,13 +262,22 @@ function Holdings({
   }
 
   const cur = (h: Holding) => h.currency || "TRY";
+  const open = (h: Holding) => router.push(positionHref(h.mode, h.id));
 
   return (
     <>
       {/* Mobil: kartlar */}
       <div className="space-y-3 md:hidden">
         {summary.holdings.map((h) => (
-          <Card key={h.id} className="p-4">
+          <div
+            key={h.id}
+            role="link"
+            tabIndex={0}
+            onClick={() => open(h)}
+            onKeyDown={(e) => e.key === "Enter" && open(h)}
+            className="cursor-pointer rounded-2xl border border-line bg-surface p-4 transition active:bg-surface-2"
+            aria-label={`${displaySymbol(h.assetType, h.symbol)} pozisyon detayı`}
+          >
             <div className="flex items-start justify-between gap-3">
               <AssetName h={h} />
               <div className="num text-right">
@@ -217,27 +295,44 @@ function Holdings({
                   </Dt>
                   <Dt label="Yatırılan">{formatMoney(h.costTry)}</Dt>
                   <Dt label="Giriş fiyatı">{formatMoney(h.avgCost, cur(h), 4)}</Dt>
-                  <Dt label="Güncel fiyat">{formatMoney(h.price, cur(h), 4)}</Dt>
+                  <Dt label="Güncel fiyat">
+                    {formatMoney(h.price, cur(h), 4)}
+                    <GoldBid h={h} />
+                  </Dt>
                   <Dt label="Miktar">{formatQuantity(h.quantity)}</Dt>
+                  <Dt label="Bugün">
+                    <DayChange h={h} />
+                  </Dt>
                 </>
               ) : (
                 <>
                   <Dt label="Miktar">{formatQuantity(h.quantity)}</Dt>
                   <Dt label="Ort. maliyet">{formatMoney(h.avgCost, cur(h), 4)}</Dt>
-                  <Dt label="Güncel fiyat">{formatMoney(h.price, cur(h), 4)}</Dt>
-                  <Dt label="Günlük">
-                    <span className={pnlClass(h.changePct)}>{formatPercent(h.changePct)}</span>
+                  <Dt label="Güncel fiyat">
+                    {formatMoney(h.price, cur(h), 4)}
+                    <GoldBid h={h} />
+                  </Dt>
+                  <Dt label="Bugün">
+                    <DayChange h={h} />
                   </Dt>
                 </>
               )}
             </dl>
             <FxBreakdown h={h} className="mt-2 text-xs" />
             {virtual && (
-              <button onClick={() => onConvert(h)} className="mt-3 w-full rounded-xl border border-violet-500/40 py-2 text-sm font-medium text-violet-200 hover:bg-violet-500/10">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onConvert(h);
+                }}
+                className="mt-3 w-full rounded-xl border border-violet-500/40 py-2 text-sm font-medium text-violet-200 hover:bg-violet-500/10">
                 Gerçekten aldım
               </button>
             )}
-          </Card>
+            <div className="mt-2 flex items-center justify-end gap-1 text-xs text-slate-500">
+              Ayrıntılar, grafik ve işlemler <span className="text-base leading-none text-slate-400">›</span>
+            </div>
+          </div>
         ))}
       </div>
 
@@ -252,6 +347,7 @@ function Holdings({
                   <th className="px-3 py-3 font-medium">Giriş tarihi</th>
                   <th className="px-3 py-3 text-right font-medium">Giriş fiyatı</th>
                   <th className="px-3 py-3 text-right font-medium">Güncel fiyat</th>
+                  <th className="px-3 py-3 text-right font-medium">Bugün</th>
                   <th className="px-3 py-3 text-right font-medium">Yatırılan</th>
                 </>
               ) : (
@@ -259,18 +355,19 @@ function Holdings({
                   <th className="px-3 py-3 text-right font-medium">Miktar</th>
                   <th className="px-3 py-3 text-right font-medium">Ort. maliyet</th>
                   <th className="px-3 py-3 text-right font-medium">Güncel fiyat</th>
-                  <th className="px-3 py-3 text-right font-medium">Günlük</th>
+                  <th className="px-3 py-3 text-right font-medium">Bugün</th>
                 </>
               )}
               <th className="px-3 py-3 text-right font-medium">Değer (TL)</th>
               <th className="px-3 py-3 text-right font-medium">K/Z (TL)</th>
               <th className="px-3 py-3 text-right font-medium">K/Z %</th>
               {virtual && <th className="px-4 py-3" />}
+              <th className="w-6 py-3" aria-label="Ayrıntı" />
             </tr>
           </thead>
           <tbody>
             {summary.holdings.map((h) => (
-              <tr key={h.id} className="border-b border-line/60 last:border-0 hover:bg-surface-2/50">
+              <tr key={h.id} onClick={() => open(h)} className="cursor-pointer border-b border-line/60 last:border-0 hover:bg-surface-2/50" title="Pozisyon detayını aç">
                 <td className="px-4 py-3">
                   <AssetName h={h} />
                 </td>
@@ -281,15 +378,26 @@ function Holdings({
                       <div className="text-xs text-slate-500">{h.days} gün önce</div>
                     </td>
                     <td className="px-3 py-3 text-right">{formatMoney(h.avgCost, cur(h), 4)}</td>
-                    <td className="px-3 py-3 text-right">{formatMoney(h.price, cur(h), 4)}</td>
+                    <td className="px-3 py-3 text-right">
+                      {formatMoney(h.price, cur(h), 4)}
+                      <GoldBid h={h} />
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      <DayChange h={h} stacked />
+                    </td>
                     <td className="px-3 py-3 text-right">{formatMoney(h.costTry)}</td>
                   </>
                 ) : (
                   <>
                     <td className="px-3 py-3 text-right">{formatQuantity(h.quantity)}</td>
                     <td className="px-3 py-3 text-right">{formatMoney(h.avgCost, cur(h), 4)}</td>
-                    <td className="px-3 py-3 text-right">{formatMoney(h.price, cur(h), 4)}</td>
-                    <td className={`px-3 py-3 text-right ${pnlClass(h.changePct)}`}>{formatPercent(h.changePct)}</td>
+                    <td className="px-3 py-3 text-right">
+                      {formatMoney(h.price, cur(h), 4)}
+                      <GoldBid h={h} />
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      <DayChange h={h} stacked />
+                    </td>
                   </>
                 )}
                 <td className="px-3 py-3 text-right font-medium">{formatMoney(h.valueTry)}</td>
@@ -300,11 +408,19 @@ function Holdings({
                 <td className={`px-3 py-3 text-right ${pnlClass(h.pnlPct)}`}>{formatPercent(h.pnlPct)}</td>
                 {virtual && (
                   <td className="px-4 py-3 text-right">
-                    <button onClick={() => onConvert(h)} className="whitespace-nowrap rounded-lg border border-violet-500/40 px-3 py-1.5 text-xs font-medium text-violet-200 hover:bg-violet-500/10">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onConvert(h);
+                      }}
+                      className="whitespace-nowrap rounded-lg border border-violet-500/40 px-3 py-1.5 text-xs font-medium text-violet-200 hover:bg-violet-500/10">
                       Gerçekten aldım
                     </button>
                   </td>
                 )}
+                <td className="py-3 pr-3 text-lg text-slate-500" aria-hidden>
+                  ›
+                </td>
               </tr>
             ))}
           </tbody>

@@ -1,7 +1,7 @@
 import "server-only";
 import { getDb } from "./db";
-import { displaySymbol, instrumentId, type AssetType } from "./assets";
-import { yahooClient, yahooSymbolFor } from "./prices";
+import { displaySymbol, GOLD_SYMBOL, goldKind, instrumentId, type AssetType } from "./assets";
+import { fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
 import { listWatchlist } from "./market";
 import { getPortfolio } from "./portfolio";
 import { addNotification } from "./orders";
@@ -122,6 +122,20 @@ async function gramGoldCandles(): Promise<CandleSet> {
   return { candles, currency: "TRY" };
 }
 
+/** Fon: TEFAS günlük fiyatları (~3 yıl; 0 fiyatlar atlanır). Hacim yok. */
+async function fundCandles(code: string): Promise<CandleSet> {
+  const f = await fetchFundPrices(code, 36);
+  return { candles: f.history.map((p) => ({ time: Math.floor(fundDateMs(p.date) / 1000), close: p.price, volume: null })), currency: "TRY" };
+}
+
+/** Sikke / bilezik: gram altın mumları güncel fiyat oranıyla ölçeklenir (yaklaşık). */
+async function goldKindCandles(symbol: string): Promise<CandleSet> {
+  const kind = goldKind(symbol);
+  const [gram, quotes] = await Promise.all([gramGoldCandles(), getQuotes([{ type: "gold", symbol: GOLD_SYMBOL }, { type: "gold", symbol }])]);
+  const ratio = quotes[0].price && quotes[1].price ? quotes[1].price / quotes[0].price : (kind?.grams ?? 1) * (kind?.purity ?? 1);
+  return { candles: gram.candles.map((c) => ({ ...c, close: c.close * ratio })), currency: "TRY" };
+}
+
 /** Günlük mumlar (önbellekli, eskiden yeniye). Kaynak yanıt vermezse hata fırlatır. */
 export async function getDailyCandles(type: AssetType, symbol: string, opts: { force?: boolean } = {}): Promise<CandleSet> {
   const key = instrumentId(type, symbol);
@@ -129,7 +143,8 @@ export async function getDailyCandles(type: AssetType, symbol: string, opts: { f
   if (!opts.force && hit && Date.now() - hit.at < CANDLE_TTL_MS) return hit.data;
   let data: CandleSet;
   if (type === "crypto") data = await binanceCandles(symbol);
-  else if (type === "gold") data = await gramGoldCandles();
+  else if (type === "fund") data = await fundCandles(symbol);
+  else if (type === "gold") data = symbol === GOLD_SYMBOL ? await gramGoldCandles() : await goldKindCandles(symbol);
   else data = await yahooCandles(yahooSymbolFor(type, symbol)!);
   // Sıralı ve tekrarsız
   const byTime = new Map<number, Candle>();

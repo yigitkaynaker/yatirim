@@ -5,6 +5,7 @@ import { aiErrorMessage, currentModel, getAiClient, getBudgetStatus, recordUsage
 import { getAiSettings } from "./settings";
 import { CHAT_TOOLS, executeChatTool, toolLabel, type ActionCard } from "./chatTools";
 import { todayIstanbul } from "./portfolio";
+import { kapContext, tickersOfInterest } from "./kap";
 
 // SOHBET
 // Claude ile araç kullanan sohbet. Mesajlar API içerik blokları olarak
@@ -162,9 +163,25 @@ function systemPrompt(): string {
     "- Bir araç hata döndürürse hatayı sade dille açıkla ve ne yapılabileceğini söyle.",
     "- Güncel haber gerekiyorsa önce get_latest_news_report'a bak; yetmezse web_search kullan.",
     "- Teknik analiz (RSI, MACD, hareketli ortalamalar, al/sat sinyali) sorulursa get_technical_signals kullan; göstergeleri sade dille açıkla ve teknik sinyallerin geleceği garanti etmediğini belirt.",
+    "- Bir BIST hissesiyle ilgili güncel gelişme sorulursa önce aşağıdaki KAP bildirimlerine ve get_kap_disclosures aracına bak (ücretsiz, resmi kaynak); yetmezse web_search kullan. KAP bildirimini anlatırken bağlantısını ver.",
+    "- Temettü (kâr payı) sorulursa list_dividends kullan. Temettü, şirketin kârından hissedarlara dağıttığı paradır; tutarlar brüttür, BIST'te stopaj kesilebilir.",
+    "- Varlık türleri: fund = TEFAS yatırım fonu (fiyatı günde bir açıklanır), gold = altın (GRAM, CEYREK, YARIM, TAM, CUMHURIYET, ATA, BILEZIK22). Sikke altın fiyatı kuyumcu satış fiyatıdır; satarken alış fiyatı alınır (makas).",
     "",
     `Bugünün tarihi (İstanbul): ${todayIstanbul()}.`,
+    ...kapSystemLines(),
   ].join("\n");
+}
+
+/** Portföy / izleme listesi hisselerinin son 48 saatlik KAP bildirimleri (ücretsiz bağlam). */
+function kapSystemLines(): string[] {
+  try {
+    const ctx = kapContext([...tickersOfInterest().keys()], 48, 3);
+    if (ctx.size === 0) return [];
+    const lines = [...ctx.entries()].slice(0, 12).flatMap(([t, items]) => items.map((x) => `- ${t}: ${x}`));
+    return ["", "Son 48 saatin KAP bildirimleri (kullanıcının hisseleri; resmi kaynak):", ...lines];
+  } catch {
+    return [];
+  }
 }
 
 // ---- Tur çalıştırma -------------------------------------------------------------------

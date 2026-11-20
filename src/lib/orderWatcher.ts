@@ -43,6 +43,7 @@ export function startOrderWatcher() {
     void runOrderCheck();
     void runScheduledNews();
     void runSignalAlerts();
+    void runKapPoll();
   }, ORDER_CHECK_MS);
   timer.unref?.();
   g.__yatirimOrderWatcher = { timer, running: false };
@@ -67,5 +68,15 @@ async function runSignalAlerts() {
     await maybeRunSignalAlerts();
   } catch (err) {
     console.error("[teknik] zamanlayıcı hatası", err);
+  }
+}
+
+/** KAP bildirimleri: hafta içi 08–22 (İstanbul), en fazla 10 dk'da bir (zamanlama kap.ts içinde). */
+async function runKapPoll() {
+  try {
+    const { maybePollKap } = await import("./kap");
+    await maybePollKap();
+  } catch (err) {
+    console.error("[kap] zamanlayıcı hatası", err);
   }
 }

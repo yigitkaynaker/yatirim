@@ -1,7 +1,9 @@
 import "server-only";
 import { getDb } from "./db";
 import {
+  GOLD_KINDS,
   GOLD_SYMBOL,
+  goldKind,
   instrumentId,
   isAssetType,
   isValidSymbol,
@@ -9,7 +11,7 @@ import {
   type AssetType,
 } from "./assets";
 import { ValidationError } from "./portfolio";
-import { yahooClient, yahooSymbolFor } from "./prices";
+import { fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
 
 // Piyasa sayfası: izleme listesi, sembol arama ve fiyat grafiği verisi.
 
@@ -90,6 +92,14 @@ export interface SearchResult {
 /** Türkçe anahtar kelimelerle bulunabilen hazır varlıklar */
 const BUILTIN: (SearchResult & { keys: string[] })[] = [
   { instrument: "gold:GRAM", assetType: "gold", symbol: GOLD_SYMBOL, name: "Gram Altın", exchange: "Hesaplanan", keys: ["altın", "altin", "gram", "gold"] },
+  ...GOLD_KINDS.filter((k) => k.symbol !== GOLD_SYMBOL).map((k) => ({
+    instrument: `gold:${k.symbol}`,
+    assetType: "gold" as const,
+    symbol: k.symbol,
+    name: k.label,
+    exchange: "Kuyumcu",
+    keys: ["altın", "altin", "gold", k.label.toLocaleLowerCase("tr-TR"), k.symbol.toLowerCase(), ...(k.symbol === "BILEZIK22" ? ["bilezik", "22 ayar"] : [])],
+  })),
   { instrument: "foreign:GC=F", assetType: "foreign", symbol: "GC=F", name: "Ons Altın (vadeli)", exchange: "COMEX", keys: ["ons", "altın", "altin", "gold"] },
   { instrument: "fx:USD", assetType: "fx", symbol: "USD", name: "Amerikan Doları", exchange: "Döviz", keys: ["dolar", "usd"] },
   { instrument: "fx:EUR", assetType: "fx", symbol: "EUR", name: "Euro", exchange: "Döviz", keys: ["euro", "avro", "eur"] },
@@ -152,10 +162,16 @@ export async function searchSymbols(rawQuery: string): Promise<SearchResult[]> {
 
   for (const b of BUILTIN) if (b.keys.some((k) => k.startsWith(lower) || lower.startsWith(k))) push(b);
 
-  const [yahoo, bases] = await Promise.allSettled([
+  // Yatırım fonları: daha önce doğrulanan fonlar (kod / ad), 3 karakterli kod yazıldıysa TEFAS'ta doğrula.
+  for (const f of searchKnownFunds(q, lower)) push(f);
+  const fundCode = /^[A-Za-z0-9]{3}$/.test(q) ? q.toLocaleUpperCase("en-US") : null;
+
+  const [yahoo, bases, fund] = await Promise.allSettled([
     yahooClient().search(q, { quotesCount: 12, newsCount: 0 }, { validateResult: false }),
     binanceBases(),
+    fundCode && !seen.has(`fund:${fundCode}`) ? lookupFund(fundCode) : Promise.resolve(null),
   ]);
+  if (fund.status === "fulfilled" && fund.value) push(fund.value);
 
   if (yahoo.status === "fulfilled") {
     const quotes = ((yahoo.value as { quotes?: unknown[] }).quotes ?? []) as Record<string, unknown>[];
@@ -182,12 +198,38 @@ export async function searchSymbols(rawQuery: string): Promise<SearchResult[]> {
     for (const b of matches) push({ instrument: instrumentId("crypto", b), assetType: "crypto", symbol: b, name: `${b}/USDT`, exchange: "Binance" });
   }
 
-  // Türk kullanıcı için BIST sonuçları önce gelsin (hazır eşleşmeler en üstte kalır).
-  const builtinCount = out.filter((r) => BUILTIN.some((b) => b.instrument === r.instrument)).length;
+  // Türk kullanıcı için BIST sonuçları önce gelsin (hazır eşleşmeler ve fonlar en üstte kalır).
+  const builtinCount = out.filter((r) => r.assetType === "fund" || BUILTIN.some((b) => b.instrument === r.instrument)).length;
   const head = out.slice(0, builtinCount);
   const rest = out.slice(builtinCount);
   rest.sort((a, b) => Number(b.assetType === "bist") - Number(a.assetType === "bist"));
   return [...head, ...rest].slice(0, 20);
+}
+
+/** funds tablosundaki (daha önce doğrulanmış) fonlarda kod / ad araması */
+function searchKnownFunds(q: string, lower: string): SearchResult[] {
+  try {
+    const rows = getDb().prepare("SELECT code, name FROM funds ORDER BY code").all() as { code: string; name: string | null }[];
+    const wantAll = lower === "fon" || lower === "fonlar" || lower === "tefas";
+    return rows
+      .filter((r) => wantAll || r.code.startsWith(q.toLocaleUpperCase("en-US")) || (q.length >= 3 && (r.name ?? "").toLocaleLowerCase("tr-TR").includes(lower)))
+      .slice(0, 8)
+      .map((r) => ({ instrument: instrumentId("fund", r.code), assetType: "fund" as const, symbol: r.code, name: r.name ?? r.code, exchange: "TEFAS" }));
+  } catch {
+    return [];
+  }
+}
+
+/** Fon kodunu TEFAS'ta doğrular (geçerli fiyatı olan fon). Bulunamazsa null. */
+async function lookupFund(code: string): Promise<SearchResult | null> {
+  try {
+    const f = await fetchFundPrices(code, 1);
+    if (!f.last) return null;
+    return { instrument: instrumentId("fund", code), assetType: "fund", symbol: code, name: f.name ?? code, exchange: "TEFAS" };
+  } catch (err) {
+    console.warn("[piyasa] TEFAS fon araması yapılamadı:", (err as Error).message);
+    return null;
+  }
 }
 
 // ---- Grafik verisi -----------------------------------------------------------
@@ -303,17 +345,42 @@ async function gramGoldSeries(range: ChartRange): Promise<Series> {
   return { points, currency: "TRY", name: "Gram Altın" };
 }
 
+/** TEFAS fon fiyat geçmişi (günlük; 0 fiyatlar atlanmış). periyod: ay sayısı */
+const FUND_MONTHS: Record<ChartRange, number> = { "1G": 1, "1H": 1, "1A": 1, "3A": 3, "1Y": 12, "5Y": 60 };
+
+async function fundSeries(code: string, range: ChartRange): Promise<Series> {
+  const f = await fetchFundPrices(code, FUND_MONTHS[range]);
+  let points = f.history.map((p) => ({ time: Math.floor(fundDateMs(p.date) / 1000), value: p.price }));
+  if (range === "1H") points = points.filter((p) => p.time * 1000 >= Date.now() - 8 * DAY);
+  if (range === "1G") points = points.slice(-2);
+  return { points, currency: "TRY", name: f.name };
+}
+
+/**
+ * Sikke / bilezik grafiği: kaynakta geçmiş yok; gram altın serisi, güncel fiyat
+ * oranıyla ölçeklenir (yaklaşık — işçilik ve makas oranı sabit varsayılır).
+ */
+async function goldKindSeries(symbol: string, range: ChartRange): Promise<Series> {
+  const kind = goldKind(symbol)!;
+  const [gram, quotes] = await Promise.all([gramGoldSeries(range), getQuotes([{ type: "gold", symbol: GOLD_SYMBOL }, { type: "gold", symbol }])]);
+  const ratio = quotes[0].price && quotes[1].price ? quotes[1].price / quotes[0].price : kind.grams * kind.purity;
+  return { points: gram.points.map((p) => ({ ...p, value: p.value * ratio })), currency: "TRY", name: `${kind.label} (gram altından yaklaşık)` };
+}
+
 /** Fiyat grafiği verisi (önbellekli). Kaynak yanıt vermezse hata fırlatır. */
 export async function getChart(type: AssetType, symbol: string, range: ChartRange): Promise<ChartData> {
   const instrument = instrumentId(type, symbol);
   const key = `${instrument}|${range}`;
   const spec = RANGE_SPEC[range];
   const cached = chartCache.get(key);
-  if (cached && Date.now() - cached.at < spec.ttl) return cached.data;
+  // Fon fiyatı günde bir açıklanır: TEFAS'a en fazla 30 dk'da bir sor.
+  const ttl = type === "fund" ? Math.max(spec.ttl, 30 * 60_000) : spec.ttl;
+  if (cached && Date.now() - cached.at < ttl) return cached.data;
 
   let s: Series;
   if (type === "crypto") s = await binanceSeries(symbol, range);
-  else if (type === "gold") s = await gramGoldSeries(range);
+  else if (type === "fund") s = await fundSeries(symbol, range);
+  else if (type === "gold") s = symbol === GOLD_SYMBOL ? await gramGoldSeries(range) : await goldKindSeries(symbol, range);
   else s = await yahooSeries(yahooSymbolFor(type, symbol)!, range);
 
   // Aynı zaman damgası tekrar etmesin, sıralı olsun (grafik kütüphanesi bunu ister).
@@ -321,7 +388,8 @@ export async function getChart(type: AssetType, symbol: string, range: ChartRang
   for (const p of s.points) dedup.set(p.time, p.value);
   const points = [...dedup.entries()].sort((a, b) => a[0] - b[0]).map(([time, value]) => ({ time, value }));
 
-  const data: ChartData = { instrument, range, currency: s.currency, name: s.name, points, intraday: range === "1G" || range === "1H" || range === "1A" };
+  const intraday = type !== "fund" && (range === "1G" || range === "1H" || range === "1A");
+  const data: ChartData = { instrument, range, currency: s.currency, name: s.name, points, intraday };
   if (points.length > 0) chartCache.set(key, { at: Date.now(), data });
   return data;
 }

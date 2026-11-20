@@ -5,7 +5,7 @@ import {
   ASSET_TYPE_INFO,
   ASSET_TYPES,
   CURRENCIES,
-  GOLD_SYMBOL,
+  quantityUnit,
   type AssetType,
   type Currency,
   type Mode,
@@ -13,6 +13,7 @@ import {
 } from "@/lib/assets";
 import { formatMoney, parseDecimal } from "@/lib/format";
 import { Field, inputCls, PrimaryButton, Segmented } from "./ui";
+import { SymbolField, symbolOnTypeChange } from "./SymbolField";
 
 export interface TransactionFormValues {
   assetType: AssetType;
@@ -68,7 +69,7 @@ export function TransactionForm({ mode, initial, endpoint, method, lockAsset, lo
     setV((p) => ({
       ...p,
       assetType: t,
-      symbol: t === "gold" ? GOLD_SYMBOL : p.assetType === "gold" ? "" : p.symbol,
+      symbol: symbolOnTypeChange(t, p.assetType, p.symbol),
       currency: ASSET_TYPE_INFO[t].defaultCurrency,
     }));
   }
@@ -112,20 +113,7 @@ export function TransactionForm({ mode, initial, endpoint, method, lockAsset, lo
         </select>
       </Field>
 
-      {v.assetType !== "gold" && (
-        <Field label="Sembol" hint={ASSET_TYPE_INFO[v.assetType].symbolHint}>
-          <input
-            className={`${inputCls} uppercase`}
-            value={v.symbol}
-            disabled={lockAsset}
-            required
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-            onChange={(e) => set("symbol", e.target.value)}
-          />
-        </Field>
-      )}
+      <SymbolField assetType={v.assetType} value={v.symbol} disabled={lockAsset} onChange={(s) => set("symbol", s)} />
 
       {!lockSide && (
         <Field label="İşlem">
@@ -141,7 +129,7 @@ export function TransactionForm({ mode, initial, endpoint, method, lockAsset, lo
       )}
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label={v.assetType === "gold" ? "Miktar (gram)" : "Miktar"}>
+        <Field label={`Miktar (${quantityUnit(v.assetType, v.symbol)})`}>
           <input className={inputCls} inputMode="decimal" required value={v.quantity} onChange={(e) => set("quantity", e.target.value)} />
         </Field>
         <Field label="Birim fiyat">

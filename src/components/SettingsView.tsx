@@ -11,6 +11,7 @@ interface SettingsData {
   models: { key: string; id: string; label: string; inputPerMTok: number; outputPerMTok: number }[];
   budget: { spentUsd: number; budgetUsd: number; overBudget: boolean; searches: number; calls: number };
   signalAlerts: boolean;
+  kapNotify: "real" | "all" | "off";
 }
 
 type Msg = { ok: boolean; text: string } | null;
@@ -69,6 +70,7 @@ export function SettingsView() {
           <KeySection data={data} onChange={setData} />
           <AiSettingsSection key={JSON.stringify(data.settings)} data={data} onChange={setData} />
           <SignalAlertsSection data={data} onChange={setData} />
+          <KapSection data={data} onChange={setData} />
         </>
       )}
       <PushSection />
@@ -352,6 +354,53 @@ function SignalAlertsSection({ data, onChange }: { data: SettingsData; onChange:
         />
       </label>
       <p className="text-xs text-slate-500">Teknik sinyaller geçmiş fiyatlara dayanır, geleceği garanti etmez; yatırım tavsiyesi değildir.</p>
+      <Note msg={msg} />
+    </Card>
+  );
+}
+
+// ---- KAP bildirimleri ------------------------------------------------------------------
+
+type KapScope = SettingsData["kapNotify"];
+
+function KapSection({ data, onChange }: { data: SettingsData; onChange: (d: SettingsData) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg>(null);
+
+  async function change(v: KapScope) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      onChange((await send("/api/settings", "PUT", { kapNotify: v })) as SettingsData);
+      setMsg({ ok: true, text: "KAP bildirim ayarı kaydedildi." });
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="space-y-3 p-4 md:p-6">
+      <div>
+        <span className="block font-semibold">KAP bildirimleri</span>
+        <span className="mt-1 block text-sm text-slate-500">
+          KAP, borsadaki şirketlerin resmi açıklamalarını yaptığı sitedir. Hafta içi 08:00–22:00 arasında 10 dakikada bir kontrol edilir; portföyünüzdeki bir
+          hisse için yeni açıklama gelince bildirim ve anlık bildirim gönderilir. Sık tekrarlanan teknik duyurular (devre kesici vb.) bildirim üretmez.
+        </span>
+      </div>
+      <div className={busy ? "pointer-events-none opacity-60" : ""}>
+        <Segmented<KapScope>
+          value={data.kapNotify}
+          onChange={change}
+          options={[
+            { value: "real", label: "Yalnız gerçek" },
+            { value: "all", label: "Gerçek + sanal" },
+            { value: "off", label: "Kapalı" },
+          ]}
+        />
+      </div>
+      <p className="text-xs text-slate-500">Bildirim kapalı olsa da açıklamalar KAP sayfasında ve varlık detayında görünmeye devam eder.</p>
       <Note msg={msg} />
     </Card>
   );

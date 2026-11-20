@@ -7,7 +7,7 @@ import { formatMoney, formatPercent, formatTime, pnlClass } from "@/lib/format";
 import type { SearchResult, WatchItem } from "@/lib/market";
 import type { Quote } from "@/lib/prices";
 import { goToLogin, usePolling } from "@/lib/usePolling";
-import { Card, inputCls, Modal, PrimaryButton, StaleBadge } from "./ui";
+import { Card, inputCls, Modal, PriceMeta, PrimaryButton, StaleBadge } from "./ui";
 
 /** Genel bakış kartları: kimlik + Türkçe ad */
 export const OVERVIEW: { id: string; label: string }[] = [
@@ -15,6 +15,7 @@ export const OVERVIEW: { id: string; label: string }[] = [
   { id: "fx:USD", label: "USD/TRY" },
   { id: "fx:EUR", label: "EUR/TRY" },
   { id: "gold:GRAM", label: "Gram Altın" },
+  { id: "gold:CEYREK", label: "Çeyrek Altın" },
   { id: "foreign:GC=F", label: "Ons Altın" },
   { id: "crypto:BTC", label: "Bitcoin" },
   { id: "crypto:ETH", label: "Ethereum" },
@@ -96,6 +97,7 @@ export function MarketView() {
               </div>
               <div className="num mt-1 truncate font-semibold">{formatQuotePrice(o.id, q)}</div>
               <div className={`num text-sm font-medium ${pnlClass(q?.changePct)}`}>{q ? formatPercent(q.changePct) : "…"}</div>
+              {q?.delayed && <div className="text-[10px] text-slate-500">15 dk gecikmeli</div>}
             </Link>
           );
         })}
@@ -130,6 +132,7 @@ export function MarketView() {
                         {q?.stale && q.price != null && <StaleBadge fetchedAt={q.fetchedAt} />}
                       </div>
                       <div className="truncate text-xs text-slate-500">{w.name ?? ASSET_TYPE_INFO[w.assetType].label}</div>
+                      {q && q.price != null && <PriceMeta q={{ ...q, stale: false }} />}
                     </div>
                     <div className="num text-right">
                       <div className="font-medium">{formatQuotePrice(w.instrument, q)}</div>
@@ -207,13 +210,16 @@ export function SymbolSearch({ onPick, existing }: { onPick: (r: SearchResult) =
       <input
         className={inputCls}
         autoFocus
-        placeholder="Örn. THYAO, Apple, BTC, altın, dolar"
+        placeholder="Örn. THYAO, Apple, BTC, çeyrek altın, dolar, AFT"
         value={q}
         autoCorrect="off"
         spellCheck={false}
         onChange={(e) => setQ(e.target.value)}
       />
-      <p className="text-xs text-slate-500">BIST, yabancı hisse, endeks, döviz ve Binance kripto paritelerinde arar.</p>
+      <p className="text-xs text-slate-500">
+        BIST, yabancı hisse, endeks, döviz, altın türleri ve Binance kripto paritelerinde arar. Yatırım fonu için 3 harfli TEFAS kodunu yazın (örn. AFT);
+        fon, birçok kişinin parasının uzmanlarca hisse, tahvil, altın gibi varlıklara yatırıldığı ortak bir sepettir.
+      </p>
       {query && !current && <p className="text-sm text-slate-500">Aranıyor…</p>}
       {current?.error && <p className="text-sm text-rose-400">{current.error}</p>}
       {current && !current.error && current.results?.length === 0 && <p className="text-sm text-slate-500">Sonuç bulunamadı.</p>}

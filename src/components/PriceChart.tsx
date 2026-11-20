@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { IChartApi, ISeriesApi, Time, UTCTimestamp } from "lightweight-charts";
+import type { IChartApi, IPriceLine, ISeriesApi, ISeriesMarkersPluginApi, SeriesMarker, Time, UTCTimestamp } from "lightweight-charts";
 
 type ChartLib = typeof import("lightweight-charts");
 
@@ -22,6 +22,14 @@ export interface ChartOverlay {
   color: string;
   points: ChartPointIn[];
   dashed?: boolean;
+}
+
+/** Grafikte işaret (alış / satış noktası). time grafiğin en yakın önceki noktasına oturtulur. */
+export interface ChartMarkerIn {
+  time: number;
+  side: "buy" | "sell";
+  price: number;
+  text: string;
 }
 
 const IST_OFFSET_S = 3 * 3600;
@@ -51,7 +59,18 @@ export function PriceChart({
   height = 280,
   overlays = [],
   rsi = null,
+  baseline = null,
+  baselineLabel = "Maliyetin",
+  markers = [],
 }: {
+  /**
+   * Verilirse (ilk çizimde) grafik bu fiyatın üstünde yeşil, altında kırmızı boyanır ve
+   * fiyatta kesikli bir çizgi (baselineLabel) çizilir. Örn. pozisyonun ortalama maliyeti.
+   */
+  baseline?: number | null;
+  baselineLabel?: string;
+  /** Alış / satış işaretleri */
+  markers?: ChartMarkerIn[];
   points: ChartPointIn[];
   currency?: string;
   /** true: ipucunda saat de gösterilir */
@@ -66,12 +85,14 @@ export function PriceChart({
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Area"> | ISeriesApi<"Baseline"> | null>(null);
   const libRef = useRef<ChartLib | null>(null);
   const overlayRefs = useRef(new Map<string, ISeriesApi<"Line">>());
   const rsiRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const propsRef = useRef({ points, currency, intraday, tone, overlays, rsi, height });
-  propsRef.current = { points, currency, intraday, tone, overlays, rsi, height };
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const costLineRef = useRef<IPriceLine | null>(null);
+  const propsRef = useRef({ points, currency, intraday, tone, overlays, rsi, height, baseline, baselineLabel, markers });
+  propsRef.current = { points, currency, intraday, tone, overlays, rsi, height, baseline, baselineLabel, markers };
 
   // Grafiği bir kez oluştur.
   useEffect(() => {
@@ -123,7 +144,30 @@ export function PriceChart({
         handleScroll: { vertTouchDrag: false },
         handleScale: { axisPressedMouseMove: false },
       });
-      const series = chart.addSeries(AreaSeries, { lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+      const base = propsRef.current.baseline;
+      const series =
+        base != null
+          ? chart.addSeries(lib.BaselineSeries, {
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              baseValue: { type: "price", price: base },
+              // Maliyet çizgisi her zaman görünsün: ölçek maliyeti de kapsasın.
+              autoscaleInfoProvider: (original: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
+                const r = original();
+                const b = propsRef.current.baseline;
+                if (!r || b == null) return r;
+                return { ...r, priceRange: { minValue: Math.min(r.priceRange.minValue, b), maxValue: Math.max(r.priceRange.maxValue, b) } };
+              },
+              topLineColor: COLORS.up.line,
+              topFillColor1: COLORS.up.top,
+              topFillColor2: COLORS.up.bottom,
+              bottomLineColor: COLORS.down.line,
+              bottomFillColor1: COLORS.down.bottom,
+              bottomFillColor2: COLORS.down.top,
+            })
+          : chart.addSeries(AreaSeries, { lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+      markersRef.current = lib.createSeriesMarkers(series, []);
       chartRef.current = chart;
       seriesRef.current = series;
       apply();
@@ -133,6 +177,8 @@ export function PriceChart({
       chartRef.current?.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      markersRef.current = null;
+      costLineRef.current = null;
       overlaySeries.clear();
       rsiRef.current = null;
     };
@@ -148,11 +194,62 @@ export function PriceChart({
     const first = pts[0]?.value;
     const last = pts[pts.length - 1]?.value;
     const c = tn === "neutral" || first == null || last == null ? COLORS.neutral : last >= first ? COLORS.up : COLORS.down;
-    series.applyOptions({ lineColor: c.line, topColor: c.top, bottomColor: c.bottom });
+    const base = propsRef.current.baseline;
+    if (series.seriesType() === "Baseline") {
+      if (base != null) (series as ISeriesApi<"Baseline">).applyOptions({ baseValue: { type: "price", price: base } });
+    } else {
+      (series as ISeriesApi<"Area">).applyOptions({ lineColor: c.line, topColor: c.top, bottomColor: c.bottom });
+    }
     series.setData(pts.map((p) => ({ time: (p.time + IST_OFFSET_S) as UTCTimestamp, value: p.value })));
     chart.applyOptions({ timeScale: { timeVisible: propsRef.current.intraday, secondsVisible: false } });
+    applyCostAndMarkers(pts);
     applyIndicators(chart, pts);
     chart.timeScale().fitContent();
+  }
+
+  /** "Maliyetin" kesikli çizgisi ve alış / satış işaretleri */
+  function applyCostAndMarkers(pts: ChartPointIn[]) {
+    const lib = libRef.current;
+    const series = seriesRef.current;
+    if (!lib || !series) return;
+    const { baseline: base, baselineLabel: label, markers: mks } = propsRef.current;
+    if (costLineRef.current) {
+      series.removePriceLine(costLineRef.current);
+      costLineRef.current = null;
+    }
+    if (base != null && Number.isFinite(base)) {
+      costLineRef.current = series.createPriceLine({
+        price: base,
+        color: "#fbbf24",
+        lineWidth: 1,
+        lineStyle: lib.LineStyle.Dashed,
+        axisLabelVisible: true,
+        axisLabelColor: "#78350f",
+        axisLabelTextColor: "#fde68a",
+        title: label,
+      });
+    }
+    // İşaretler grafikteki bir noktaya oturmalı: işlem zamanına en yakın önceki nokta (yoksa ilk nokta).
+    const out: SeriesMarker<Time>[] = [];
+    if (pts.length > 0) {
+      for (const m of mks) {
+        if (m.time < pts[0].time - 86_400 * 3 || m.time > pts[pts.length - 1].time + 86_400) continue;
+        let t = pts[0].time;
+        for (const p of pts) {
+          if (p.time > m.time) break;
+          t = p.time;
+        }
+        out.push({
+          time: (t + IST_OFFSET_S) as UTCTimestamp,
+          position: m.side === "buy" ? "belowBar" : "aboveBar",
+          shape: m.side === "buy" ? "arrowUp" : "arrowDown",
+          color: m.side === "buy" ? "#34d399" : "#fb7185",
+          text: m.text,
+        });
+      }
+      out.sort((a, b) => (a.time as number) - (b.time as number));
+    }
+    markersRef.current?.setMarkers(out);
   }
 
   /** Gösterge çizgilerini ve RSI panelini ekler / günceller / kaldırır. */
@@ -230,7 +327,7 @@ export function PriceChart({
   }
 
   // Veri değişince güncelle.
-  useEffect(apply, [points, currency, intraday, tone, overlays, rsi]);
+  useEffect(apply, [points, currency, intraday, tone, overlays, rsi, baseline, baselineLabel, markers]);
 
   const total = height + (rsi && rsi.length > 0 ? RSI_PANE_HEIGHT : 0);
   return <div ref={boxRef} style={{ height: total }} className="w-full touch-pan-y" aria-label={`Fiyat grafiği (${currency})`} role="img" />;

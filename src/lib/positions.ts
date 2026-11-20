@@ -156,3 +156,51 @@ export function closeOnOrBefore(candles: { date: string; close: number }[], date
   }
   return found;
 }
+
+export interface DayChange {
+  /** Bugünkü (son seans) değişim, TL */
+  changeTry: number;
+  /** Değişimin dayanağı: dünkü kapanış değeri + bugün yapılan alışların maliyeti, TL */
+  baseTry: number;
+}
+
+/**
+ * Bir pozisyonun "bugün" değişimi (TL). Dünkü kapanışa göre hesaplanır:
+ * - seans gününden önce elde olan miktar: adet × (güncel fiyat × kur − önceki kapanış × önceki kur)
+ * - bugün alınanlar: adet × (güncel değer − alış fiyatı), bugün satılanlar: satış fiyatı − önceki kapanış.
+ * `sessionDate`: fiyatın ait olduğu gün (YYYY-MM-DD). Fiyat / önceki kapanış / kur yoksa null.
+ */
+export function dayChange(
+  txs: PositionTx[],
+  sessionDate: string,
+  price: number | null,
+  prevClose: number | null,
+  rate: number | null,
+  prevRate: number | null,
+  currentRate: (cur: string) => number | null,
+): DayChange | null {
+  if (price == null || prevClose == null || rate == null || prevRate == null || !(prevClose > 0)) return null;
+  const now = price * rate;
+  const prev = prevClose * prevRate;
+  let qtyStart = 0;
+  let change = 0;
+  let base = 0;
+  for (const t of [...txs].sort(bySequence)) {
+    if (t.date < sessionDate) {
+      qtyStart = Math.max(0, qtyStart + (t.side === "buy" ? t.quantity : -t.quantity));
+      continue;
+    }
+    const fx = t.currency === "TRY" ? 1 : t.fxTry && t.fxTry > 0 ? t.fxTry : currentRate(t.currency);
+    if (fx == null) return null;
+    const txValue = t.price * fx;
+    if (t.side === "buy") {
+      change += t.quantity * (now - txValue);
+      base += t.quantity * txValue;
+    } else {
+      change -= t.quantity * (now - txValue);
+    }
+  }
+  change += qtyStart * (now - prev);
+  base += qtyStart * prev;
+  return { changeTry: cleanZero(change), baseTry: base };
+}

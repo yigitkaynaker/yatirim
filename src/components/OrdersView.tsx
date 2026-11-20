@@ -5,7 +5,6 @@ import {
   ASSET_TYPE_INFO,
   ASSET_TYPES,
   CURRENCIES,
-  GOLD_SYMBOL,
   displaySymbol,
   instrumentId,
   isValidSymbol,
@@ -20,6 +19,7 @@ import type { Order, OrderCondition, OrderStatus } from "@/lib/orders";
 import type { Quote } from "@/lib/prices";
 import { usePolling } from "@/lib/usePolling";
 import { Card, Field, inputCls, Modal, PrimaryButton, Segmented } from "./ui";
+import { SymbolField, symbolOnTypeChange } from "./SymbolField";
 
 const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   pending: { label: "Bekliyor", cls: "bg-sky-500/15 text-sky-300" },
@@ -139,13 +139,16 @@ export function OrderForm({
   onSaved,
   initialAssetType = "bist",
   initialSymbol = "",
+  initialMode = "virtual",
 }: {
   onSaved: () => void;
   /** Piyasa detayından açılınca varlık önceden seçili gelir */
   initialAssetType?: AssetType;
   initialSymbol?: string;
+  /** Pozisyon detayından açılınca o pozisyonun portföyü seçili gelir */
+  initialMode?: Mode;
 }) {
-  const [mode, setMode] = useState<Mode>("virtual");
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [assetType, setAssetType] = useState<AssetType>(initialAssetType);
   const [symbol, setSymbol] = useState(initialSymbol);
   const [side, setSide] = useState<Side>("buy");
@@ -160,7 +163,7 @@ export function OrderForm({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const sym = normalizeSymbol(assetType, assetType === "gold" ? GOLD_SYMBOL : symbol);
+  const sym = normalizeSymbol(assetType, symbol);
   const id = isValidSymbol(assetType, sym) ? instrumentId(assetType, sym) : null;
 
   useEffect(() => {
@@ -219,7 +222,7 @@ export function OrderForm({
             onChange={(e) => {
               const t = e.target.value as AssetType;
               setAssetType(t);
-              if (t === "gold" || assetType === "gold") setSymbol("");
+              setSymbol(symbolOnTypeChange(t, assetType, symbol));
             }}
           >
             {ASSET_TYPES.map((t) => (
@@ -229,19 +232,7 @@ export function OrderForm({
             ))}
           </select>
         </Field>
-        <Field label="Sembol">
-          <input
-            className={`${inputCls} uppercase`}
-            value={assetType === "gold" ? "Gram Altın" : symbol}
-            disabled={assetType === "gold"}
-            required
-            placeholder={ASSET_TYPE_INFO[assetType].symbolHint}
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-            onChange={(e) => setSymbol(e.target.value)}
-          />
-        </Field>
+        <SymbolField assetType={assetType} value={symbol} onChange={setSymbol} showHint={false} />
       </div>
       {id && (
         <p className="num -mt-2 text-sm text-slate-400">
