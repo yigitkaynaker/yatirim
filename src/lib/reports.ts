@@ -63,9 +63,9 @@ const ZERO = () => ({
 
 /** Yıllık gerçekleşen kazanç raporu (gerçek portföy). account verilmezse tüm hesaplar. */
 export async function getYearlyReport(opts: { account?: number | null } = {}): Promise<YearlyReport> {
-  const accounts = listAccounts({ includeArchived: true });
+  const accounts = await listAccounts({ includeArchived: true });
   const account = opts.account != null ? (accounts.find((a) => a.id === opts.account) ?? null) : null;
-  const txs = activeTransactions("real").filter((t) => !account || t.accountId === account.id);
+  const txs = (await activeTransactions("real")).filter((t) => !account || t.accountId === account.id);
 
   // Kuru kaydedilmemiş işlemler için güncel kur (önbellekli).
   const curs = [...new Set(txs.map((t) => t.currency).filter((c) => c !== "TRY"))];
@@ -103,9 +103,7 @@ export async function getYearlyReport(opts: { account?: number | null } = {}): P
     rowFor(t.date.slice(0, 4), t.assetType, t.symbol).feesTry += t.fee * fx;
   }
 
-  const divs = getDb()
-    .prepare("SELECT account_id, asset_type, symbol, ex_date, amount, gross_amount, currency, fx_try FROM dividends WHERE mode = 'real' AND status = 'confirmed'")
-    .all() as { account_id: number; asset_type: AssetType; symbol: string; ex_date: string; amount: number; gross_amount: number | null; currency: string; fx_try: number | null }[];
+  const divs = await (await getDb()).all("SELECT account_id, asset_type, symbol, ex_date, amount, gross_amount, currency, fx_try FROM dividends WHERE mode = 'real' AND status = 'confirmed'") as { account_id: number; asset_type: AssetType; symbol: string; ex_date: string; amount: number; gross_amount: number | null; currency: string; fx_try: number | null }[];
   for (const d of divs) {
     if (account && d.account_id !== account.id) continue;
     const fx = d.currency === "TRY" ? 1 : (d.fx_try ?? rate(d.currency));
@@ -164,9 +162,9 @@ export interface SanalRealityCheck {
 export const ASSUMED_FEE_PCT = 0.2;
 
 export async function getSanalRealityCheck(): Promise<SanalRealityCheck> {
-  const all = listTransactions("virtual");
+  const all = await listTransactions("virtual");
   const active = all.filter((t) => !t.convertedAt);
-  const acc = defaultAccount();
+  const acc = await defaultAccount();
   const feeAssumed = !(acc.feePct > 0);
   const feePct = feeAssumed ? ASSUMED_FEE_PCT : acc.feePct;
 
@@ -199,7 +197,7 @@ export async function getSanalRealityCheck(): Promise<SanalRealityCheck> {
   }
   const byPct = [...outcomes].filter((o) => o.pnlPct != null).sort((a, b) => b.pnlPct! - a.pnlPct!);
 
-  const snaps = listSnapshots("virtual");
+  const snaps = await listSnapshots("virtual");
   const flows = active.map((t) => ({
     date: t.date,
     amount: (t.side === "buy" ? 1 : -1) * t.quantity * t.price * (t.currency === "TRY" ? 1 : (t.fxTry ?? rate(t.currency) ?? 1)),

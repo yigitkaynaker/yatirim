@@ -52,7 +52,7 @@ export function VirtualEntryForm({
   useEffect(() => {
     if (!id) return;
     const ctrl = new AbortController();
-    const t = setTimeout(async () => {
+    const load = async () => {
       try {
         const res = await fetch(`/api/prices?ids=${encodeURIComponent(`${id},fx:USD,fx:EUR`)}`, { signal: ctrl.signal });
         if (!res.ok) throw new Error();
@@ -61,7 +61,8 @@ export function VirtualEntryForm({
       } catch {
         if (!ctrl.signal.aborted) setPreview({ id, quote: null, usdTry: null, eurTry: null });
       }
-    }, 450);
+    };
+    const t = setTimeout(() => void load(), 450);
     return () => {
       clearTimeout(t);
       ctrl.abort();

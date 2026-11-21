@@ -8,5 +8,5 @@ export const dynamic = "force-dynamic";
 export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const id = parseId((await ctx.params).id);
   if (id == null) return notFound();
-  return handle(() => (actions.removeFromWatchlist(id) ? { ok: true } : notFound()));
+  return handle(async () => ((await actions.removeFromWatchlist(id)) ? { ok: true } : notFound()));
 }

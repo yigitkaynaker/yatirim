@@ -9,5 +9,5 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const mode = req.nextUrl.searchParams.get("mode") ?? "real";
   if (!isMode(mode)) return NextResponse.json({ error: "Geçersiz mod." }, { status: 400 });
-  return handle(() => ({ mode, points: actions.getPortfolioHistory(mode) }));
+  return handle(async () => ({ mode, points: await actions.getPortfolioHistory(mode) }));
 }

@@ -28,12 +28,12 @@ export async function maybeRecordSnapshots(force = false) {
   const now = Date.now();
   if (!force && g.__yatirimSnapshotAt && now - g.__yatirimSnapshotAt < SNAPSHOT_EVERY_MS) return;
   const date = todayIstanbul();
-  const db = getDb();
+  const db = await getDb();
   for (const mode of MODES) {
     try {
-      const started = !!db.prepare("SELECT 1 FROM portfolio_snapshots WHERE mode = ? LIMIT 1").get(mode);
+      const started = !!(await db.get("SELECT 1 FROM portfolio_snapshots WHERE mode = ? LIMIT 1", [mode]));
       // Portföy hiç kullanılmadıysa fiyat çekmeden geç (aralık başlamadığı için her turda bakılır).
-      if (!started && !db.prepare("SELECT 1 FROM transactions WHERE mode = ? AND converted_at IS NULL LIMIT 1").get(mode)) continue;
+      if (!started && !(await db.get("SELECT 1 FROM transactions WHERE mode = ? AND converted_at IS NULL LIMIT 1", [mode]))) continue;
       const s = await getPortfolio(mode);
       // Fiyatı alınamayan varlık varsa yanlış bir değer yazmayalım.
       if (s.totals.incomplete) continue;
@@ -42,10 +42,8 @@ export async function maybeRecordSnapshots(force = false) {
       if (s.totals.anyStale) continue;
       // Portföy hiç kullanılmadıysa kayıt başlatma (grafik ilk gerçek kayıttan başlar).
       if (s.holdings.length === 0 && !started) continue;
-      db.prepare(
-        `INSERT INTO portfolio_snapshots (date, mode, value_try, cost_try, updated_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(date, mode) DO UPDATE SET value_try=excluded.value_try, cost_try=excluded.cost_try, updated_at=excluded.updated_at`,
-      ).run(date, mode, s.totals.valueTry, s.totals.costTry, now);
+      await db.run(`INSERT INTO portfolio_snapshots (date, mode, value_try, cost_try, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(date, mode) DO UPDATE SET value_try=excluded.value_try, cost_try=excluded.cost_try, updated_at=excluded.updated_at`, [date, mode, s.totals.valueTry, s.totals.costTry, now]);
       g.__yatirimSnapshotAt = now;
     } catch (err) {
       console.error(`[anlık görüntü] ${mode} kaydedilemedi`, err);
@@ -54,9 +52,7 @@ export async function maybeRecordSnapshots(force = false) {
 }
 
 /** Bir modun günlük değer geçmişi (ilk kayıttan itibaren, tarihe göre artan). */
-export function listSnapshots(mode: Mode): SnapshotPoint[] {
-  const rows = getDb()
-    .prepare("SELECT date, value_try, cost_try FROM portfolio_snapshots WHERE mode = ? ORDER BY date")
-    .all(mode) as { date: string; value_try: number; cost_try: number }[];
+export async function listSnapshots(mode: Mode): Promise<SnapshotPoint[]> {
+  const rows = await (await getDb()).all("SELECT date, value_try, cost_try FROM portfolio_snapshots WHERE mode = ? ORDER BY date", [mode]) as { date: string; value_try: number; cost_try: number }[];
   return rows.map((r) => ({ date: r.date, valueTry: r.value_try, costTry: r.cost_try }));
 }

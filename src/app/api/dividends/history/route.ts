@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   if (!ref || !supportsDividends(ref.type)) return NextResponse.json({ error: "Geçersiz enstrüman." }, { status: 400 });
   return handle(async () => {
     const [history, suggestions] = await Promise.all([actions.getDividendHistory(ref), actions.getDividendSuggestions()]);
-    const records = actions.listDividends({ status: "confirmed" }).filter((d) => d.assetType === ref.type && d.symbol === ref.symbol);
+    const records = (await actions.listDividends({ status: "confirmed" })).filter((d) => d.assetType === ref.type && d.symbol === ref.symbol);
     return { history, records, suggestions: suggestions.filter((s) => s.assetType === ref.type && s.symbol === ref.symbol) };
   });
 }

@@ -42,8 +42,8 @@ export function getPortfolioSummary(mode: Mode, opts: { force?: boolean; account
   return portfolio.getPortfolio(mode, opts);
 }
 
-export function listTransactions(mode?: Mode) {
-  return portfolio.listTransactions(mode);
+export async function listTransactions(mode?: Mode) {
+  return await portfolio.listTransactions(mode);
 }
 
 /** Canlı fiyatlar (önbellekli). */
@@ -51,12 +51,12 @@ export function getPrices(instruments: InstrumentRef[], opts: { force?: boolean 
   return getQuotes(instruments, opts);
 }
 
-export function listOrders(status?: orders.OrderStatus) {
-  return orders.listOrders(status);
+export async function listOrders(status?: orders.OrderStatus) {
+  return await orders.listOrders(status);
 }
 
-export function listNotifications(limit?: number) {
-  return orders.listNotifications(limit);
+export async function listNotifications(limit?: number) {
+  return await orders.listNotifications(limit);
 }
 
 // ---- İşlemler -------------------------------------------------------------
@@ -81,18 +81,18 @@ export interface AddTransactionParams {
 }
 
 /** Elle işlem ekler (gerçek ya da sanal). */
-export function addTransaction(p: AddTransactionParams) {
-  return portfolio.createTransaction(portfolio.parseTransactionInput(p));
+export async function addTransaction(p: AddTransactionParams) {
+  return await portfolio.createTransaction(await portfolio.parseTransactionInput(p));
 }
 
 /** İşlemi düzenler (modu değişmez). Bulunamazsa null. */
-export function editTransaction(id: number, p: AddTransactionParams) {
-  return portfolio.updateTransaction(id, portfolio.parseTransactionInput(p));
+export async function editTransaction(id: number, p: AddTransactionParams) {
+  return await portfolio.updateTransaction(id, await portfolio.parseTransactionInput(p));
 }
 
 /** İşlemi siler. Bulunamazsa false. */
-export function removeTransaction(id: number) {
-  return portfolio.deleteTransaction(id);
+export async function removeTransaction(id: number) {
+  return await portfolio.deleteTransaction(id);
 }
 
 // ---- Sanal portföy ----------------------------------------------------------
@@ -131,8 +131,8 @@ export interface PromoteParams {
 }
 
 /** "Gerçekten aldım": sanal pozisyonu arşivler, gerçek portföye alış işlemi ekler. */
-export function promoteSanalToGercek(p: PromoteParams) {
-  return portfolio.convertVirtualPosition(p);
+export async function promoteSanalToGercek(p: PromoteParams) {
+  return await portfolio.convertVirtualPosition(p);
 }
 
 // ---- Emirler ----------------------------------------------------------------
@@ -164,16 +164,16 @@ export async function placeOrder(p: PlaceOrderParams, source: orders.OrderSource
   const order = await orders.createOrder({ ...p, entryBy }, source);
   // Koşul zaten sağlanıyorsa beklemeden kontrol et.
   await runOrderCheck();
-  return orders.getOrder(order.id)!;
+  return (await orders.getOrder(order.id))!;
 }
 
 /** Bekleyen emri iptal eder. Bulunamazsa null. */
-export function cancelOrder(id: number) {
-  return orders.cancelOrder(id);
+export async function cancelOrder(id: number) {
+  return await orders.cancelOrder(id);
 }
 
-export function markNotificationsRead() {
-  orders.markNotificationsRead();
+export async function markNotificationsRead() {
+  await orders.markNotificationsRead();
 }
 
 // ---- Piyasa -----------------------------------------------------------------
@@ -182,18 +182,18 @@ export type { WatchItem, SearchResult, ChartData, ChartRange } from "./market";
 export type { SnapshotPoint } from "./snapshots";
 
 /** Kullanıcının izleme listesi (eklenme sırasıyla). */
-export function listWatchlist() {
-  return market.listWatchlist();
+export async function listWatchlist() {
+  return await market.listWatchlist();
 }
 
 /** İzleme listesine varlık ekler (zaten varsa mevcut kaydı döndürür). */
-export function addToWatchlist(p: { assetType: AssetType; symbol: string; name?: string | null }) {
-  return market.addWatch(p.assetType, p.symbol, p.name);
+export async function addToWatchlist(p: { assetType: AssetType; symbol: string; name?: string | null }) {
+  return await market.addWatch(p.assetType, p.symbol, p.name);
 }
 
 /** İzleme listesinden çıkarır. Bulunamazsa false. */
-export function removeFromWatchlist(id: number) {
-  return market.removeWatch(id);
+export async function removeFromWatchlist(id: number) {
+  return await market.removeWatch(id);
 }
 
 /** Sembol arama: Yahoo Finance + Binance USDT pariteleri + Türkçe hazır eşleşmeler. */
@@ -207,8 +207,8 @@ export function getPriceChart(instrument: InstrumentRef, range: market.ChartRang
 }
 
 /** Portföyün günlük değer geçmişi (ilk anlık görüntüden itibaren). */
-export function getPortfolioHistory(mode: Mode) {
-  return snapshots.listSnapshots(mode);
+export async function getPortfolioHistory(mode: Mode) {
+  return await snapshots.listSnapshots(mode);
 }
 
 // ---- Teknik analiz ------------------------------------------------------------------
@@ -249,8 +249,8 @@ export function getDividendSuggestions() {
 }
 
 /** Onaylanmış / gizlenmiş temettü kayıtları. */
-export function listDividends(opts: { mode?: Mode; status?: "confirmed" | "dismissed" } = {}) {
-  return dividends.listDividendRecords(opts);
+export async function listDividends(opts: { mode?: Mode; status?: "confirmed" | "dismissed" } = {}) {
+  return await dividends.listDividendRecords(opts);
 }
 
 /** Temettüyü gelir olarak kaydeder (gerçekleşen K/Z'ye eklenir). { mode, assetType, symbol, exDate, amount? } */
@@ -269,18 +269,18 @@ export function confirmDividend(p: {
 }
 
 /** Temettü önerisini gizler. */
-export function dismissDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string; accountId?: number | null }) {
-  return dividends.dismissDividend(p as unknown as Record<string, unknown>);
+export async function dismissDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string; accountId?: number | null }) {
+  return await dividends.dismissDividend(p as unknown as Record<string, unknown>);
 }
 
 /** Kaydedilmiş temettünün tutarını açıkça düzenler. Bulunamazsa null. */
-export function editDividend(id: number, p: { amount: Num; note?: string | null }) {
-  return dividends.updateDividend(id, p as unknown as Record<string, unknown>);
+export async function editDividend(id: number, p: { amount: Num; note?: string | null }) {
+  return await dividends.updateDividend(id, p as unknown as Record<string, unknown>);
 }
 
 /** Temettü kaydını siler. Bulunamazsa false. */
-export function removeDividend(id: number) {
-  return dividends.deleteDividend(id);
+export async function removeDividend(id: number) {
+  return await dividends.deleteDividend(id);
 }
 
 // ---- KAP bildirimleri -----------------------------------------------------------------
@@ -288,8 +288,8 @@ export function removeDividend(id: number) {
 export type { KapDisclosure } from "./kap";
 
 /** Saklanan KAP bildirimleri (en yeni önce); ticker verilirse yalnızca o hisse. */
-export function listKapDisclosures(opts: { ticker?: string; limit?: number; sinceMs?: number } = {}) {
-  return kap.listKap(opts);
+export async function listKapDisclosures(opts: { ticker?: string; limit?: number; sinceMs?: number } = {}) {
+  return await kap.listKap(opts);
 }
 
 // ---- Pozisyon detayı ----------------------------------------------------------------
@@ -304,13 +304,13 @@ export function getPositionDetail(mode: Mode, instrument: InstrumentRef, opts: {
 export type { Alarm, AlarmEvent, AlarmKind, AlarmScope } from "./alarms";
 
 /** Alarmlar (en yeni önce); instrument verilirse yalnızca o varlığınkiler. */
-export function listAlarms(opts: { instrument?: string; activeOnly?: boolean } = {}) {
-  return alarms.listAlarms(opts);
+export async function listAlarms(opts: { instrument?: string; activeOnly?: boolean } = {}) {
+  return await alarms.listAlarms(opts);
 }
 
 /** Son çalan alarmlar */
-export function listAlarmEvents(limit?: number) {
-  return alarms.listAlarmEvents(limit);
+export async function listAlarmEvents(limit?: number) {
+  return await alarms.listAlarmEvents(limit);
 }
 
 export interface CreateAlarmParams {
@@ -337,46 +337,46 @@ export async function createAlarm(p: CreateAlarmParams, source = "manuel") {
   const alarm = await alarms.createAlarm(p as unknown as Record<string, unknown>, source);
   // Koşul zaten sağlanıyorsa beklemeden kontrol et.
   await alarms.checkAlarms().catch(() => undefined);
-  return alarms.getAlarm(alarm.id)!;
+  return (await alarms.getAlarm(alarm.id))!;
 }
 
 /** Alarmı siler. Bulunamazsa false. */
-export function deleteAlarm(id: number) {
-  return alarms.deleteAlarm(id);
+export async function deleteAlarm(id: number) {
+  return await alarms.deleteAlarm(id);
 }
 
 /** Alarmı açar / kapatır. */
-export function setAlarmActive(id: number, active: boolean) {
-  return alarms.setAlarmActive(id, active);
+export async function setAlarmActive(id: number, active: boolean) {
+  return await alarms.setAlarmActive(id, active);
 }
 
 // ---- Hesaplar ------------------------------------------------------------------------------
 
 /** Hesaplar (arşivliler isteğe bağlı) */
-export function listAccounts(opts: { includeArchived?: boolean } = {}) {
-  return accounts.listAccounts(opts);
+export async function listAccounts(opts: { includeArchived?: boolean } = {}) {
+  return await accounts.listAccounts(opts);
 }
 
 /** Yeni hesap: { name, feePct?, includeInTotal? } */
-export function createAccount(p: { name: string; feePct?: Num | null; includeInTotal?: boolean }) {
-  return accounts.createAccount(p as unknown as Record<string, unknown>);
+export async function createAccount(p: { name: string; feePct?: Num | null; includeInTotal?: boolean }) {
+  return await accounts.createAccount(p as unknown as Record<string, unknown>);
 }
 
 /** Hesabı yeniden adlandırır / komisyon oranını, toplama dahil olmasını, arşiv durumunu değiştirir. Bulunamazsa null. */
-export function updateAccount(id: number, p: { name?: string; feePct?: Num | null; includeInTotal?: boolean; archived?: boolean }) {
-  return accounts.updateAccount(id, p as unknown as Record<string, unknown>);
+export async function updateAccount(id: number, p: { name?: string; feePct?: Num | null; includeInTotal?: boolean; archived?: boolean }) {
+  return await accounts.updateAccount(id, p as unknown as Record<string, unknown>);
 }
 
 // ---- Pozisyon notu ---------------------------------------------------------------------------
 
 export type { PositionNote } from "./notes";
 
-export function getPositionNote(mode: Mode, instrument: InstrumentRef) {
-  return notes.getNote(mode, instrument.type, instrument.symbol);
+export async function getPositionNote(mode: Mode, instrument: InstrumentRef) {
+  return await notes.getNote(mode, instrument.type, instrument.symbol);
 }
 
 /** Notu kaydeder; tüm alanlar boşsa siler (null). Fiyatlar varlığın fiyat biriminde. */
-export function savePositionNote(p: {
+export async function savePositionNote(p: {
   mode: Mode;
   assetType: AssetType;
   symbol: string;
@@ -385,7 +385,7 @@ export function savePositionNote(p: {
   targetPrice?: Num | null;
   stopPrice?: Num | null;
 }) {
-  return notes.saveNote(p as unknown as Record<string, unknown>);
+  return await notes.saveNote(p as unknown as Record<string, unknown>);
 }
 
 /**
@@ -393,10 +393,10 @@ export function savePositionNote(p: {
  * varsa yenisi kurulmaz. Stop alarmı çalınca bildirimde satış planınız hatırlatılır.
  */
 export async function createNoteAlarms(p: { mode: Mode; assetType: AssetType; symbol: string; which?: "target" | "stop" | "both" }) {
-  const n = notes.getNote(p.mode, p.assetType, p.symbol);
+  const n = await notes.getNote(p.mode, p.assetType, p.symbol);
   if (!n || (n.targetPrice == null && n.stopPrice == null)) throw new portfolio.ValidationError("Önce notta hedef ya da stop fiyatı girin.");
   const which = p.which ?? "both";
-  const existing = alarms.listAlarms({ instrument: `${p.assetType}:${p.symbol}`, activeOnly: true }).filter((a) => a.kind === "price");
+  const existing = (await alarms.listAlarms({ instrument: `${p.assetType}:${p.symbol}`, activeOnly: true })).filter((a) => a.kind === "price");
   const has = (dir: "up" | "down", t: number) => existing.some((a) => a.direction === dir && a.threshold != null && Math.abs(a.threshold - t) <= Math.abs(t) * 1e-6);
   const created: alarms.Alarm[] = [];
   const skipped: string[] = [];
@@ -426,20 +426,20 @@ export function listBackups() {
 }
 
 /** Şimdi yedekle (çalışırken güvenli). */
-export function createBackup() {
-  return backup.createBackup("elle");
+export async function createBackup() {
+  return await backup.createBackup("elle");
 }
 
 /** Yüklenen yedeği doğrular ve geri yükleme için hazırlar (henüz bir şey değişmez). */
-export function stageRestore(bytes: Uint8Array) {
-  return backup.stageUpload(bytes);
+export async function stageRestore(bytes: Uint8Array) {
+  return await backup.stageUpload(bytes);
 }
 
 /** Hazırlanan yedeği geri yükler (önce mevcut veri yedeklenir). */
-export function restoreBackup(token: string) {
+export async function restoreBackup(token: string) {
   const file = backup.stagedPath(token);
   if (!file) throw new portfolio.ValidationError("Yüklenen dosya bulunamadı ya da süresi doldu; yeniden yükleyin.");
-  return backup.restoreFromFile(file);
+  return await backup.restoreFromFile(file);
 }
 
 // ---- Dışa / içe aktarma (CSV) -----------------------------------------------------------------
@@ -451,28 +451,28 @@ export type ExportKind = "islemler" | "pozisyonlar" | "temettuler" | "kazanc";
 export async function exportCsv(kind: ExportKind, opts: { account?: number | null; year?: string | null } = {}): Promise<string> {
   switch (kind) {
     case "islemler":
-      return io.exportTransactionsCsv(opts);
+      return await io.exportTransactionsCsv(opts);
     case "pozisyonlar":
       return io.exportHoldingsCsv(opts);
     case "temettuler":
-      return io.exportDividendsCsv(opts);
+      return await io.exportDividendsCsv(opts);
     case "kazanc":
       return io.exportRealizedCsv(opts);
   }
 }
 
-export function importTemplateCsv() {
-  return io.importTemplateCsv();
+export async function importTemplateCsv() {
+  return await io.importTemplateCsv();
 }
 
 /** İşlem içe aktarma önizlemesi: satır satır doğrulama, mükerrer işareti. Hiçbir şey kaydedilmez. */
-export function previewTransactionImport(text: string, opts: io.ImportOptions = {}) {
-  return io.previewImport(text, opts);
+export async function previewTransactionImport(text: string, opts: io.ImportOptions = {}) {
+  return await io.previewImport(text, opts);
 }
 
 /** İşlemleri tek seferde (atomik) kaydeder; hatalı satır varsa hiçbiri kaydedilmez, mükerrerler atlanır. */
-export function importTransactions(text: string, opts: io.ImportOptions = {}) {
-  return io.commitImport(text, opts);
+export async function importTransactions(text: string, opts: io.ImportOptions = {}) {
+  return await io.commitImport(text, opts);
 }
 
 // ---- Raporlar --------------------------------------------------------------------------------

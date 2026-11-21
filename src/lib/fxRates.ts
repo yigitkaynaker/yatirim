@@ -24,11 +24,11 @@ function istanbulDate(ms: number): string {
 
 /** <PB>TRY=X günlük kapanışları (İstanbul tarihine göre, eskiden yeniye). */
 async function historicalCloses(currency: string, from: string, to: string): Promise<{ date: string; close: number }[]> {
-  const res = (await yahooClient().chart(
+  const res = await yahooClient().chart(
     `${currency}TRY=X`,
     { period1: new Date(Date.parse(from) - 10 * DAY_MS), period2: new Date(Date.parse(to) + 2 * DAY_MS), interval: "1d", return: "array" },
     { validateResult: false },
-  )) as { quotes?: { date: Date | string | number; close: number | null }[] };
+  ) as { quotes?: { date: Date | string | number; close: number | null }[] };
   const out: { date: string; close: number }[] = [];
   for (const q of res.quotes ?? []) {
     if (typeof q.close !== "number" || !Number.isFinite(q.close) || q.close <= 0) continue;
@@ -60,13 +60,11 @@ interface MissingRow {
 }
 
 async function fill(): Promise<void> {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT id, currency, date FROM transactions WHERE fx_try IS NULL AND currency != 'TRY'")
-    .all() as unknown as MissingRow[];
+  const db = await getDb();
+  const rows = await db.all("SELECT id, currency, date FROM transactions WHERE fx_try IS NULL AND currency != 'TRY'") as unknown as MissingRow[];
   if (rows.length === 0) return;
   const today = istanbulDate(Date.now());
-  const update = db.prepare("UPDATE transactions SET fx_try = ? WHERE id = ? AND fx_try IS NULL");
+  const update = (rate: number, id: number) => db.run("UPDATE transactions SET fx_try = ? WHERE id = ? AND fx_try IS NULL", [rate, id]);
   let failed = false;
 
   const byCurrency = new Map<string, MissingRow[]>();
@@ -77,7 +75,7 @@ async function fill(): Promise<void> {
       const current = list.filter((r) => r.date >= today);
       if (current.length > 0) {
         const [q] = await getQuotes([{ type: "fx", symbol: currency }]);
-        if (q.price != null && q.price > 0) for (const r of current) update.run(q.price, r.id);
+        if (q.price != null && q.price > 0) for (const r of current) await update(q.price, r.id);
         else failed = true;
       }
       if (past.length > 0) {
@@ -85,7 +83,7 @@ async function fill(): Promise<void> {
         const closes = await historicalCloses(currency, dates[0], dates[dates.length - 1]);
         for (const r of past) {
           const rate = closeOnOrBefore(closes, r.date);
-          if (rate != null) update.run(rate, r.id);
+          if (rate != null) await update(rate, r.id);
           else failed = true;
         }
       }
@@ -106,7 +104,7 @@ export async function ensureFxRates(opts: { timeoutMs?: number; force?: boolean 
   if (!s.inflight) {
     if (!opts.force && Date.now() < s.retryAt) return;
     // Bekleyen satır yoksa ağ çağrısı yapmadan dön.
-    const any = getDb().prepare("SELECT 1 FROM transactions WHERE fx_try IS NULL AND currency != 'TRY' LIMIT 1").get();
+    const any = await (await getDb()).get("SELECT 1 FROM transactions WHERE fx_try IS NULL AND currency != 'TRY' LIMIT 1");
     if (!any) return;
     s.inflight = fill()
       .catch((err) => {

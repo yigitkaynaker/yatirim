@@ -1,5 +1,5 @@
 import "server-only";
-import { getDb } from "./db";
+import { getDb, sqlNow } from "./db";
 import { ValidationError } from "./portfolio";
 import { parseDecimal } from "./format";
 
@@ -7,22 +7,18 @@ import { parseDecimal } from "./format";
 // Yapay zeka ayarları (model, otomatik tarama takvimi, arama sınırı, bütçe) ve
 // Ayarlar sayfasından yapıştırılan API anahtarı buradadır.
 
-export function getSetting(key: string): string | null {
-  const row = getDb().prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+export async function getSetting(key: string): Promise<string | null> {
+  const row = await (await getDb()).get("SELECT value FROM settings WHERE key = ?", [key]) as { value: string } | undefined;
   return row ? row.value : null;
 }
 
-export function setSetting(key: string, value: string) {
-  getDb()
-    .prepare(
-      `INSERT INTO settings (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
-    )
-    .run(key, value);
+export async function setSetting(key: string, value: string) {
+  await (await getDb()).run(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, [key, value, sqlNow()]);
 }
 
-export function deleteSetting(key: string) {
-  getDb().prepare("DELETE FROM settings WHERE key = ?").run(key);
+export async function deleteSetting(key: string) {
+  await (await getDb()).run("DELETE FROM settings WHERE key = ?", [key]);
 }
 
 // ---- Modeller ---------------------------------------------------------------
@@ -47,29 +43,29 @@ const KEY_SETTING = "anthropic_api_key";
 export type KeySource = "env" | "db" | null;
 
 /** .env'deki ANTHROPIC_API_KEY önceliklidir; yoksa Ayarlar'dan kaydedilen anahtar. */
-export function getApiKey(): { key: string | null; source: KeySource } {
+export async function getApiKey(): Promise<{ key: string | null; source: KeySource }> {
   const env = process.env.ANTHROPIC_API_KEY?.trim();
   if (env) return { key: env, source: "env" };
-  const db = getSetting(KEY_SETTING)?.trim();
+  const db = (await getSetting(KEY_SETTING))?.trim();
   if (db) return { key: db, source: "db" };
   return { key: null, source: null };
 }
 
-export function hasApiKey(): boolean {
-  return getApiKey().key != null;
+export async function hasApiKey(): Promise<boolean> {
+  return (await getApiKey()).key != null;
 }
 
-export function saveApiKey(raw: unknown) {
+export async function saveApiKey(raw: unknown) {
   const key = typeof raw === "string" ? raw.trim() : "";
   if (!key) throw new ValidationError("Anahtar boş olamaz.");
   if (!/^sk-ant-[A-Za-z0-9_\-]{10,}$/.test(key)) {
     throw new ValidationError("Bu bir Claude API anahtarına benzemiyor. Anahtar \"sk-ant-\" ile başlar.");
   }
-  setSetting(KEY_SETTING, key);
+  await setSetting(KEY_SETTING, key);
 }
 
-export function deleteApiKey() {
-  deleteSetting(KEY_SETTING);
+export async function deleteApiKey() {
+  await deleteSetting(KEY_SETTING);
 }
 
 export function maskKey(key: string | null): string | null {
@@ -102,8 +98,8 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
 
 const AI_SETTINGS_KEY = "ai_settings";
 
-export function getAiSettings(): AiSettings {
-  const raw = getSetting(AI_SETTINGS_KEY);
+export async function getAiSettings(): Promise<AiSettings> {
+  const raw = await getSetting(AI_SETTINGS_KEY);
   if (!raw) return { ...DEFAULT_AI_SETTINGS };
   try {
     return normalizeAiSettings({ ...DEFAULT_AI_SETTINGS, ...(JSON.parse(raw) as Partial<AiSettings>) });
@@ -137,8 +133,8 @@ function normalizeAiSettings(s: AiSettings): AiSettings {
 }
 
 /** Kısmi güncelleme. Hatalı değerde ValidationError. */
-export function updateAiSettings(body: Record<string, unknown>): AiSettings {
-  const cur = getAiSettings();
+export async function updateAiSettings(body: Record<string, unknown>): Promise<AiSettings> {
+  const cur = await getAiSettings();
   const next: AiSettings = { ...cur };
   if (body.model !== undefined) {
     if (!isAiModelKey(body.model)) throw new ValidationError("Model geçersiz.");
@@ -159,7 +155,7 @@ export function updateAiSettings(body: Record<string, unknown>): AiSettings {
   if (next.scheduleEnabled && next.scheduleTimes.length === 0) {
     throw new ValidationError("Otomatik tarama açıkken en az bir saat girin.");
   }
-  setSetting(AI_SETTINGS_KEY, JSON.stringify(next));
+  await setSetting(AI_SETTINGS_KEY, JSON.stringify(next));
   return next;
 }
 
@@ -168,12 +164,12 @@ export function updateAiSettings(body: Record<string, unknown>): AiSettings {
 const SIGNAL_ALERTS_KEY = "signal_alerts";
 
 /** Günlük teknik sinyal değişimi bildirimi açık mı (varsayılan: açık) */
-export function getSignalAlertsEnabled(): boolean {
-  return getSetting(SIGNAL_ALERTS_KEY) !== "0";
+export async function getSignalAlertsEnabled(): Promise<boolean> {
+  return (await getSetting(SIGNAL_ALERTS_KEY)) !== "0";
 }
 
-export function setSignalAlertsEnabled(on: boolean) {
-  setSetting(SIGNAL_ALERTS_KEY, on ? "1" : "0");
+export async function setSignalAlertsEnabled(on: boolean) {
+  await setSetting(SIGNAL_ALERTS_KEY, on ? "1" : "0");
 }
 
 // ---- KAP bildirimleri ---------------------------------------------------------------
@@ -183,14 +179,14 @@ export type KapNotifyScope = (typeof KAP_NOTIFY_SCOPES)[number];
 const KAP_NOTIFY_KEY = "kap_notify";
 
 /** KAP bildirimi: real = yalnızca gerçek portföy hisseleri (varsayılan), all = gerçek + sanal, off = kapalı */
-export function getKapNotifyScope(): KapNotifyScope {
-  const v = getSetting(KAP_NOTIFY_KEY);
+export async function getKapNotifyScope(): Promise<KapNotifyScope> {
+  const v = await getSetting(KAP_NOTIFY_KEY);
   return (KAP_NOTIFY_SCOPES as readonly string[]).includes(v ?? "") ? (v as KapNotifyScope) : "real";
 }
 
-export function setKapNotifyScope(v: unknown) {
+export async function setKapNotifyScope(v: unknown) {
   if (!(KAP_NOTIFY_SCOPES as readonly unknown[]).includes(v)) throw new ValidationError("KAP bildirim ayarı geçersiz.");
-  setSetting(KAP_NOTIFY_KEY, v as string);
+  await setSetting(KAP_NOTIFY_KEY, v as string);
 }
 
 // ---- Temettü stopajı (vergi kesintisi) ----------------------------------------------
@@ -205,24 +201,24 @@ export interface DividendWithholding {
 export const DEFAULT_WITHHOLDING: DividendWithholding = { bist: 15, foreign: 15 };
 const WITHHOLDING_KEY = "dividend_withholding";
 
-export function getDividendWithholding(): DividendWithholding {
+export async function getDividendWithholding(): Promise<DividendWithholding> {
   try {
-    const raw = getSetting(WITHHOLDING_KEY);
+    const raw = await getSetting(WITHHOLDING_KEY);
     return raw ? { ...DEFAULT_WITHHOLDING, ...(JSON.parse(raw) as Partial<DividendWithholding>) } : { ...DEFAULT_WITHHOLDING };
   } catch {
     return { ...DEFAULT_WITHHOLDING };
   }
 }
 
-export function setDividendWithholding(body: unknown): DividendWithholding {
+export async function setDividendWithholding(body: unknown): Promise<DividendWithholding> {
   const b = (body ?? {}) as Record<string, unknown>;
-  const cur = getDividendWithholding();
+  const cur = await getDividendWithholding();
   for (const k of ["bist", "foreign"] as const) {
     if (b[k] === undefined) continue;
     const n = parseDecimal(b[k] as string | number);
     if (!Number.isFinite(n) || n < 0 || n > 60) throw new ValidationError("Stopaj oranı 0 ile 60 arasında olmalı.");
     cur[k] = n;
   }
-  setSetting(WITHHOLDING_KEY, JSON.stringify(cur));
+  await setSetting(WITHHOLDING_KEY, JSON.stringify(cur));
   return cur;
 }

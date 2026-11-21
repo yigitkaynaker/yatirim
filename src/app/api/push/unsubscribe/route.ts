@@ -7,6 +7,6 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   return handle(async () => {
     const b = await readJson(req);
-    return { removed: removeSubscription({ endpoint: b.endpoint, id: b.id }) };
+    return { removed: await removeSubscription({ endpoint: b.endpoint, id: b.id }) };
   });
 }

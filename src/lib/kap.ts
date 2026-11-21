@@ -1,5 +1,6 @@
 import "server-only";
-import { getDb } from "./db";
+import { background } from "./background";
+import { getDb, sqlNow, type SqlValue } from "./db";
 import { activeTransactions } from "./portfolio";
 import { buildPositions } from "./positions";
 import { listWatchlist } from "./market";
@@ -58,7 +59,7 @@ const fromRow = (r: KapRow): KapDisclosure => ({
 });
 
 /** Kayıtlı KAP bildirimleri (en yeni önce). ticker verilirse yalnızca o hisse. */
-export function listKap(opts: { ticker?: string; limit?: number; sinceMs?: number; dividendOnly?: boolean } = {}): KapDisclosure[] {
+export async function listKap(opts: { ticker?: string; limit?: number; sinceMs?: number; dividendOnly?: boolean } = {}): Promise<KapDisclosure[]> {
   const where: string[] = [];
   const args: (string | number)[] = [];
   if (opts.ticker) {
@@ -72,7 +73,7 @@ export function listKap(opts: { ticker?: string; limit?: number; sinceMs?: numbe
   if (opts.dividendOnly) where.push("is_dividend = 1");
   const sql = `SELECT * FROM kap_disclosures ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY publish_at DESC LIMIT ?`;
   args.push(Math.min(500, opts.limit ?? 100));
-  return (getDb().prepare(sql).all(...args) as unknown as KapRow[]).map(fromRow);
+  return (await (await getDb()).all(sql, [...args]) as unknown as KapRow[]).map(fromRow);
 }
 
 // ---- İlgili hisseler ------------------------------------------------------------
@@ -84,7 +85,7 @@ export interface TickerInterest {
 }
 
 /** Pozisyonlardaki (gerçek + sanal) ve izleme listesindeki BIST hisseleri. Ağ kullanmaz. */
-export function tickersOfInterest(): Map<string, TickerInterest> {
+export async function tickersOfInterest(): Promise<Map<string, TickerInterest>> {
   const out = new Map<string, TickerInterest>();
   const get = (t: string) => {
     let e = out.get(t);
@@ -95,10 +96,10 @@ export function tickersOfInterest(): Map<string, TickerInterest> {
     return e;
   };
   for (const mode of ["real", "virtual"] as const) {
-    const txs = activeTransactions(mode).filter((t) => t.assetType === "bist");
+    const txs = (await activeTransactions(mode)).filter((t) => t.assetType === "bist");
     for (const p of buildPositions(txs, () => 1)) if (p.quantity > 1e-12) get(p.symbol)[mode] = true;
   }
-  for (const w of listWatchlist()) if (w.assetType === "bist") get(w.symbol).watch = true;
+  for (const w of (await listWatchlist())) if (w.assetType === "bist") get(w.symbol).watch = true;
   out.delete("XU100");
   return out;
 }
@@ -169,20 +170,22 @@ export function kapFromMs(now: number, lastOk: number | null, latestStored: numb
 }
 
 export async function pollKapNow(now = Date.now()): Promise<KapPollResult> {
-  const interest = tickersOfInterest();
+  const interest = await tickersOfInterest();
   if (interest.size === 0) return { fetched: 0, stored: 0, notified: 0 };
-  const db = getDb();
+  const db = await getDb();
   // Boşluk kalmasın: son başarılı çekimden (yoksa en son saklanan bildirimden) 1 gün öncesinden
   // başla; en fazla 7 gün geriye git. Hiç çekim yoksa son 3 gün.
-  const from = istanbulDate(kapFromMs(now, Number(getSetting(LAST_OK_KEY)) || null, (db.prepare("SELECT MAX(publish_at) AS m FROM kap_disclosures").get() as { m: number | null }).m));
+  const from = istanbulDate(kapFromMs(now, Number(await getSetting(LAST_OK_KEY)) || null, (await db.get("SELECT MAX(publish_at) AS m FROM kap_disclosures") as { m: number | null }).m));
   const items = await fetchKap(from, istanbulDate(now));
-  setSetting(LAST_OK_KEY, String(now));
+  await setSetting(LAST_OK_KEY, String(now));
 
-  const insert = db.prepare(
-    `INSERT OR IGNORE INTO kap_disclosures (disclosure_index, publish_at, stock_codes, kap_title, subject, summary, disclosure_class, disclosure_type, is_dividend)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const scope = getKapNotifyScope();
+  const insert = (...p: SqlValue[]) =>
+    db.run(
+      `INSERT INTO kap_disclosures (disclosure_index, publish_at, stock_codes, kap_title, subject, summary, disclosure_class, disclosure_type, is_dividend, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+      [...p, sqlNow()],
+    );
+  const scope = await getKapNotifyScope();
   const fresh: { item: KapDisclosure; codes: string[] }[] = [];
   let stored = 0;
   for (const it of items) {
@@ -195,7 +198,7 @@ export async function pollKapNow(now = Date.now()): Promise<KapPollResult> {
     const subject = str(it.subject);
     const summary = str(it.summary);
     const isDividend = DIVIDEND_SUBJECTS.test(`${subject ?? ""} ${summary ?? ""}`);
-    const r = insert.run(id, publishAt, `,${codes.join(",")},`, str(it.kapTitle), subject, summary, str(it.disclosureClass), str(it.disclosureType), isDividend ? 1 : 0);
+    const r = await insert(id, publishAt, `,${codes.join(",")},`, str(it.kapTitle), subject, summary, str(it.disclosureClass), str(it.disclosureType), isDividend ? 1 : 0);
     if (Number(r.changes) === 1) {
       stored++;
       const d = fromRow({ disclosure_index: id, publish_at: publishAt, stock_codes: `,${codes.join(",")},`, kap_title: str(it.kapTitle), subject, summary, is_dividend: isDividend ? 1 : 0 });
@@ -219,12 +222,12 @@ export async function pollKapNow(now = Date.now()): Promise<KapPollResult> {
         body: (item.summary ?? item.companyTitle ?? "Yeni şirket açıklaması.").slice(0, 300),
         data: { disclosureIndex: item.id, url: item.url, codes },
       };
-      addNotification(n);
-      void sendPushToAll({ title: n.title, body: n.body, url: `/kap?hisse=${encodeURIComponent(codes[0])}`, tag: `kap-${item.id}` });
+      await addNotification(n);
+      background(() => sendPushToAll({ title: n.title, body: n.body, url: `/kap?hisse=${encodeURIComponent(codes[0])}`, tag: `kap-${item.id}` }));
       notified++;
     }
     if (relevant.length > 5) {
-      addNotification({ kind: "kap", title: `KAP: ${relevant.length - 5} bildirim daha`, body: "Tümünü KAP sayfasında görebilirsiniz." });
+      await addNotification({ kind: "kap", title: `KAP: ${relevant.length - 5} bildirim daha`, body: "Tümünü KAP sayfasında görebilirsiniz." });
     }
   }
   return { fetched: items.length, stored, notified };
@@ -274,11 +277,11 @@ export async function maybePollKap(now = Date.now()): Promise<KapPollResult | nu
  * Yapay zeka istemleri için son `hours` saatin KAP bildirimleri (hisse → satırlar).
  * Ücretsiz resmi kaynak; web aramasını azaltmak için kullanılır.
  */
-export function kapContext(tickers: string[], hours = 48, perTicker = 5): Map<string, string[]> {
+export async function kapContext(tickers: string[], hours = 48, perTicker = 5): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>();
   const since = Date.now() - hours * 3600_000;
   for (const t of tickers) {
-    const items = listKap({ ticker: t, sinceMs: since, limit: perTicker });
+    const items = await listKap({ ticker: t, sinceMs: since, limit: perTicker });
     if (items.length === 0) continue;
     out.set(
       t,

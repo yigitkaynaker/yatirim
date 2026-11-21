@@ -1,5 +1,5 @@
 import "server-only";
-import { getDb } from "./db";
+import { getDb, sqlNow } from "./db";
 import { isAssetType, isMode, isValidSymbol, normalizeSymbol, type AssetType, type Mode } from "./assets";
 import { parseDecimal } from "./format";
 import { ValidationError } from "./portfolio";
@@ -43,18 +43,14 @@ const fromRow = (r: NoteRow): PositionNote => ({
   updatedAt: r.updated_at,
 });
 
-export function getNote(mode: Mode, assetType: AssetType, symbol: string): PositionNote | null {
-  const r = getDb()
-    .prepare("SELECT * FROM position_notes WHERE mode = ? AND asset_type = ? AND symbol = ?")
-    .get(mode, assetType, symbol) as unknown as NoteRow | undefined;
+export async function getNote(mode: Mode, assetType: AssetType, symbol: string): Promise<PositionNote | null> {
+  const r = await (await getDb()).get("SELECT * FROM position_notes WHERE mode = ? AND asset_type = ? AND symbol = ?", [mode, assetType, symbol]) as unknown as NoteRow | undefined;
   return r ? fromRow(r) : null;
 }
 
 /** Bir varlığın notları (önce gerçek) */
-export function notesForInstrument(assetType: AssetType, symbol: string): PositionNote[] {
-  const rows = getDb()
-    .prepare("SELECT * FROM position_notes WHERE asset_type = ? AND symbol = ? ORDER BY CASE mode WHEN 'real' THEN 0 ELSE 1 END")
-    .all(assetType, symbol) as unknown as NoteRow[];
+export async function notesForInstrument(assetType: AssetType, symbol: string): Promise<PositionNote[]> {
+  const rows = await (await getDb()).all("SELECT * FROM position_notes WHERE asset_type = ? AND symbol = ? ORDER BY CASE mode WHEN 'real' THEN 0 ELSE 1 END", [assetType, symbol]) as unknown as NoteRow[];
   return rows.map(fromRow);
 }
 
@@ -74,7 +70,7 @@ function price(v: unknown, label: string): number | null {
  * Notu kaydeder: { mode, assetType, symbol, why?, exitPlan?, targetPrice?, stopPrice? }.
  * Tüm alanlar boşsa not silinir (null döner).
  */
-export function saveNote(body: Record<string, unknown>): PositionNote | null {
+export async function saveNote(body: Record<string, unknown>): Promise<PositionNote | null> {
   if (!isMode(body.mode)) throw new ValidationError("Portföy modu geçersiz.");
   if (!isAssetType(body.assetType)) throw new ValidationError("Varlık türü geçersiz.");
   const symbol = normalizeSymbol(body.assetType, String(body.symbol ?? ""));
@@ -86,18 +82,16 @@ export function saveNote(body: Record<string, unknown>): PositionNote | null {
   if (targetPrice != null && stopPrice != null && stopPrice >= targetPrice) {
     throw new ValidationError("Stop fiyatı hedef fiyattan düşük olmalı (stop: zararı durdurmak için satacağınız fiyat).");
   }
-  const db = getDb();
+  const db = await getDb();
   if (!why && !exitPlan && targetPrice == null && stopPrice == null) {
-    db.prepare("DELETE FROM position_notes WHERE mode = ? AND asset_type = ? AND symbol = ?").run(body.mode, body.assetType, symbol);
+    await db.run("DELETE FROM position_notes WHERE mode = ? AND asset_type = ? AND symbol = ?", [body.mode, body.assetType, symbol]);
     return null;
   }
-  db.prepare(
-    `INSERT INTO position_notes (mode, asset_type, symbol, why, exit_plan, target_price, stop_price, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  await db.run(`INSERT INTO position_notes (mode, asset_type, symbol, why, exit_plan, target_price, stop_price, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(mode, asset_type, symbol) DO UPDATE SET why = excluded.why, exit_plan = excluded.exit_plan,
-       target_price = excluded.target_price, stop_price = excluded.stop_price, updated_at = excluded.updated_at`,
-  ).run(body.mode, body.assetType, symbol, why, exitPlan, targetPrice, stopPrice);
-  return getNote(body.mode, body.assetType, symbol);
+       target_price = excluded.target_price, stop_price = excluded.stop_price, updated_at = excluded.updated_at`, [body.mode, body.assetType, symbol, why, exitPlan, targetPrice, stopPrice, sqlNow()]);
+  return await getNote(body.mode, body.assetType, symbol);
 }
 
 const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(1e-9, Math.abs(b) * 1e-6);
@@ -106,9 +100,9 @@ const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(1e-9, Math.ab
  * Fiyat alarmı çaldığında bildirime eklenecek not hatırlatması: alarm eşiği bir notun stop
  * (aşağı) ya da hedef (yukarı) fiyatıysa notunuzu hatırlatır.
  */
-export function noteReminder(assetType: AssetType, symbol: string, direction: "up" | "down" | "both", threshold: number | null): string | null {
+export async function noteReminder(assetType: AssetType, symbol: string, direction: "up" | "down" | "both", threshold: number | null): Promise<string | null> {
   if (threshold == null) return null;
-  for (const n of notesForInstrument(assetType, symbol)) {
+  for (const n of (await notesForInstrument(assetType, symbol))) {
     const where = n.mode === "virtual" ? " (sanal)" : "";
     if (direction === "down" && n.stopPrice != null && near(n.stopPrice, threshold)) {
       return `Stop fiyatınıza geldi${where}. Satış planınız: ${n.exitPlan ?? "—"}${n.why ? ` · Neden almıştınız: ${n.why}` : ""}`;

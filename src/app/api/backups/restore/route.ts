@@ -16,12 +16,12 @@ export async function POST(req: Request) {
       const form = await req.formData().catch(() => null);
       const file = form?.get("file");
       if (!file || typeof file === "string") throw new ValidationError("Dosya seçin.");
-      return actions.stageRestore(new Uint8Array(await file.arrayBuffer()));
+      return await actions.stageRestore(new Uint8Array(await file.arrayBuffer()));
     }
-    const b = (await req.json().catch(() => null)) as { token?: unknown; confirm?: unknown } | null;
+    const b = await req.json().catch(() => null) as { token?: unknown; confirm?: unknown } | null;
     if (!b || typeof b.token !== "string") throw new ValidationError("Geçersiz istek.");
     if (b.confirm !== "GERI YUKLE") throw new ValidationError("Geri yükleme onaylanmadı.");
-    const r = actions.restoreBackup(b.token);
+    const r = await actions.restoreBackup(b.token);
     return { ok: true, before: r.before, check: r.check };
   });
 }

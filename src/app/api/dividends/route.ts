@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
         overwrite: b.overwrite === true,
       });
     }
-    if (b.action === "dismiss") return actions.dismissDividend(p);
+    if (b.action === "dismiss") return await actions.dismissDividend(p);
     throw new ValidationError("İşlem geçersiz.");
   });
 }

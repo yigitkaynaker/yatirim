@@ -1,20 +1,8 @@
-import "server-only";
-import { DatabaseSync } from "node:sqlite";
-import fs from "node:fs";
-import path from "node:path";
+// SQLite şema geçişleri (yerel mod). Sürüm PRAGMA user_version ile izlenir.
+// Yeni tablo / sütun eklemek için listeye yeni bir adım ekleyin; mevcut adımları asla değiştirmeyin.
+// Bulut (Postgres) karşılığı: migrationsPg.ts. İkisi aynı tablo/sütunları üretmelidir (test:pg şema testi).
 
-// Node'un yerleşik SQLite modülü: yerel derleme gerektirmez.
-// Veritabanı dosyası: data/yatirim.db (git'e eklenmez).
-
-// YATIRIM_DATA_DIR: test sunucusu gibi durumlarda farklı bir veri klasörü kullanmak için.
-const DATA_DIR = process.env.YATIRIM_DATA_DIR || path.join(process.cwd(), "data");
-const DB_PATH = path.join(DATA_DIR, "yatirim.db");
-
-/**
- * Şema sürümleri. Yeni tablo / sütun eklemek için listeye yeni bir adım ekleyin;
- * mevcut adımları asla değiştirmeyin.
- */
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: string[] = [
   `
   CREATE TABLE transactions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -410,88 +398,26 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (mode, asset_type, symbol)
   );
   `,
+  `
+  -- Bulut modu nöbeti (dış zamanlayıcı /api/cron/tick): görev kilitleri ve son çalışma zamanları (ms).
+  -- locked_until: görev bu zamana kadar başka bir çağrıda çalıştırılmaz (atomik UPDATE … RETURNING ile alınır).
+  CREATE TABLE task_leases (
+    name              TEXT PRIMARY KEY,
+    locked_until      INTEGER NOT NULL DEFAULT 0,
+    last_run_at       INTEGER,
+    last_ok_at        INTEGER,
+    last_error        TEXT,
+    last_duration_ms  INTEGER
+  );
+  -- Her nöbet çağrısı (son 500 tutulur): ne zaman, kim çağırdı, hangi görevler çalıştı.
+  CREATE TABLE tick_runs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at   INTEGER NOT NULL,
+    finished_at  INTEGER,
+    source       TEXT,
+    tasks        TEXT,
+    error        TEXT
+  );
+  CREATE INDEX idx_tick_runs_started ON tick_runs (started_at);
+  `,
 ];
-
-/** Şema sürümü (testler ve geri yükleme doğrulaması için) */
-export const SCHEMA_VERSION = MIGRATIONS.length;
-/** Testler için: belirli bir sürüme kadar olan geçişler */
-export const MIGRATION_SQL: readonly string[] = MIGRATIONS;
-
-export function dataDir(): string {
-  return DATA_DIR;
-}
-export function dbPath(): string {
-  return DB_PATH;
-}
-export function backupDir(): string {
-  return path.join(DATA_DIR, "yedekler");
-}
-
-/** SQLite dize sabiti (VACUUM INTO gibi parametre alamayan komutlar için) */
-export function sqlString(s: string): string {
-  return `'${s.replace(/'/g, "''")}'`;
-}
-
-function open(): DatabaseSync {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const db = new DatabaseSync(DB_PATH);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  migrate(db);
-  return db;
-}
-
-/**
- * Şema geçişinden önce mevcut veritabanının tutarlı bir kopyasını alır
- * (VACUUM INTO: çalışırken de güvenli). Boş / yeni veritabanında yapılmaz.
- */
-function backupBeforeMigrate(db: DatabaseSync, from: number) {
-  if (from === 0) return;
-  const dir = backupDir();
-  fs.mkdirSync(dir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-  const file = path.join(dir, `yatirim-gecis-oncesi-v${from}-${stamp}.db`);
-  if (fs.existsSync(file)) return;
-  db.exec(`VACUUM INTO ${sqlString(file)}`);
-  console.log(`[veritabanı] geçiş öncesi yedek: ${file}`);
-}
-
-function migrate(db: DatabaseSync) {
-  const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
-  let version = row.user_version;
-  if (version > MIGRATIONS.length) {
-    throw new Error(`Veritabanı bu uygulama sürümünden yeni (şema ${version} > ${MIGRATIONS.length}). Uygulamayı güncelleyin.`);
-  }
-  if (version < MIGRATIONS.length) backupBeforeMigrate(db, version);
-  while (version < MIGRATIONS.length) {
-    db.exec("BEGIN");
-    try {
-      db.exec(MIGRATIONS[version]);
-      version += 1;
-      db.exec(`PRAGMA user_version = ${version}`);
-      db.exec("COMMIT");
-    } catch (err) {
-      db.exec("ROLLBACK");
-      throw err;
-    }
-  }
-}
-
-const g = globalThis as unknown as { __yatirimDb?: DatabaseSync };
-
-/** Tekil bağlantı (dev modda HMR sırasında yeniden açılmaz). */
-export function getDb(): DatabaseSync {
-  if (!g.__yatirimDb) g.__yatirimDb = open();
-  return g.__yatirimDb;
-}
-
-/** Bağlantıyı kapatır (geri yüklemede dosya değiştirilmeden önce). Sonraki getDb() yeniden açar. */
-export function closeDb() {
-  const db = g.__yatirimDb;
-  g.__yatirimDb = undefined;
-  if (db) {
-    try {
-      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    } catch {}
-    db.close();
-  }
-}

@@ -47,8 +47,8 @@ const fromRow = (r: WatchRow): WatchItem => ({
   createdAt: r.created_at,
 });
 
-export function listWatchlist(): WatchItem[] {
-  const rows = getDb().prepare("SELECT * FROM watchlist ORDER BY id").all() as unknown as WatchRow[];
+export async function listWatchlist(): Promise<WatchItem[]> {
+  const rows = await (await getDb()).all("SELECT * FROM watchlist ORDER BY id") as unknown as WatchRow[];
   return rows.map(fromRow);
 }
 
@@ -60,22 +60,18 @@ function parseRef(assetType: unknown, rawSymbol: unknown): { assetType: AssetTyp
 }
 
 /** İzleme listesine ekler; zaten varsa mevcut kaydı döndürür. */
-export function addWatch(assetType: unknown, symbol: unknown, name?: unknown): WatchItem {
+export async function addWatch(assetType: unknown, symbol: unknown, name?: unknown): Promise<WatchItem> {
   const ref = parseRef(assetType, symbol);
   const nm = typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : null;
-  const db = getDb();
-  db.prepare("INSERT INTO watchlist (asset_type, symbol, name) VALUES (?, ?, ?) ON CONFLICT(asset_type, symbol) DO NOTHING").run(
-    ref.assetType,
-    ref.symbol,
-    nm,
-  );
-  const row = db.prepare("SELECT * FROM watchlist WHERE asset_type = ? AND symbol = ?").get(ref.assetType, ref.symbol) as unknown as WatchRow;
+  const db = await getDb();
+  await db.run("INSERT INTO watchlist (asset_type, symbol, name) VALUES (?, ?, ?) ON CONFLICT(asset_type, symbol) DO NOTHING", [ref.assetType, ref.symbol, nm]);
+  const row = await db.get("SELECT * FROM watchlist WHERE asset_type = ? AND symbol = ?", [ref.assetType, ref.symbol]) as unknown as WatchRow;
   return fromRow(row);
 }
 
 /** İzleme listesinden çıkarır. Bulunamazsa false. */
-export function removeWatch(id: number): boolean {
-  return getDb().prepare("DELETE FROM watchlist WHERE id = ?").run(id).changes > 0;
+export async function removeWatch(id: number): Promise<boolean> {
+  return (await (await getDb()).run("DELETE FROM watchlist WHERE id = ?", [id])).changes > 0;
 }
 
 // ---- Sembol arama ------------------------------------------------------------
@@ -120,7 +116,7 @@ async function binanceBases(): Promise<string[]> {
   try {
     const res = await fetch("https://api.binance.com/api/v3/ticker/price", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
     if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-    const all = (await res.json()) as { symbol: string }[];
+    const all = await res.json() as { symbol: string }[];
     const bases = all.filter((t) => t.symbol.endsWith("USDT")).map((t) => t.symbol.slice(0, -4)).filter((b) => /^[A-Z0-9]{2,12}$/.test(b));
     g.__yatirimBinanceSymbols = { at: Date.now(), bases };
     return bases;
@@ -163,7 +159,7 @@ export async function searchSymbols(rawQuery: string): Promise<SearchResult[]> {
   for (const b of BUILTIN) if (b.keys.some((k) => k.startsWith(lower) || lower.startsWith(k))) push(b);
 
   // Yatırım fonları: daha önce doğrulanan fonlar (kod / ad), 3 karakterli kod yazıldıysa TEFAS'ta doğrula.
-  for (const f of searchKnownFunds(q, lower)) push(f);
+  for (const f of (await searchKnownFunds(q, lower))) push(f);
   const fundCode = /^[A-Za-z0-9]{3}$/.test(q) ? q.toLocaleUpperCase("en-US") : null;
 
   const [yahoo, bases, fund] = await Promise.allSettled([
@@ -207,9 +203,9 @@ export async function searchSymbols(rawQuery: string): Promise<SearchResult[]> {
 }
 
 /** funds tablosundaki (daha önce doğrulanmış) fonlarda kod / ad araması */
-function searchKnownFunds(q: string, lower: string): SearchResult[] {
+async function searchKnownFunds(q: string, lower: string): Promise<SearchResult[]> {
   try {
-    const rows = getDb().prepare("SELECT code, name FROM funds ORDER BY code").all() as { code: string; name: string | null }[];
+    const rows = await (await getDb()).all("SELECT code, name FROM funds ORDER BY code") as { code: string; name: string | null }[];
     const wantAll = lower === "fon" || lower === "fonlar" || lower === "tefas";
     return rows
       .filter((r) => wantAll || r.code.startsWith(q.toLocaleUpperCase("en-US")) || (q.length >= 3 && (r.name ?? "").toLocaleLowerCase("tr-TR").includes(lower)))
@@ -285,11 +281,11 @@ async function yahooSeries(symbol: string, range: ChartRange): Promise<Series> {
   const spec = RANGE_SPEC[range];
   // 1G: hafta sonu / tatilde boş kalmasın diye son 5 günü alıp son işlem gününü kullan.
   const lookback = range === "1G" ? 5 * DAY : spec.ms;
-  const res = (await yahooClient().chart(
+  const res = await yahooClient().chart(
     symbol,
     { period1: new Date(Date.now() - lookback), interval: spec.yahoo, return: "array" },
     { validateResult: false },
-  )) as { meta?: Record<string, unknown>; quotes?: { date: Date | string | number; close: number | null }[] };
+  ) as { meta?: Record<string, unknown>; quotes?: { date: Date | string | number; close: number | null }[] };
   let points: ChartPoint[] = [];
   for (const q of res.quotes ?? []) {
     if (typeof q.close !== "number" || !Number.isFinite(q.close)) continue;
@@ -325,7 +321,7 @@ async function binanceSeries(base: string, range: ChartRange): Promise<Series> {
   const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
   if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
   // [openTime, open, high, low, close, volume, closeTime, ...]
-  const rows = (await res.json()) as [number, string, string, string, string, ...unknown[]][];
+  const rows = await res.json() as [number, string, string, string, string, ...unknown[]][];
   const points = rows
     .map((r) => ({ time: Math.floor(r[0] / 1000), value: Number(r[4]) }))
     .filter((p) => Number.isFinite(p.value));

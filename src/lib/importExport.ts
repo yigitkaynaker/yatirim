@@ -1,4 +1,5 @@
 import "server-only";
+import { background } from "./background";
 import { createHash } from "node:crypto";
 import { getDb } from "./db";
 import { ASSET_TYPE_INFO, ASSET_TYPES, isAssetType, normalizeSymbol, type AssetType } from "./assets";
@@ -23,9 +24,9 @@ const typeLabel = (t: AssetType) => ASSET_TYPE_INFO[t].label;
 
 export const TX_HEADERS = ["Tarih", "Hesap", "Tür", "Sembol", "Yön", "Miktar", "Fiyat", "Para birimi", "Komisyon", "Kur (TL)", "Not"];
 
-export function exportTransactionsCsv(opts: { account?: number | null } = {}): string {
-  const names = accountNames();
-  const txs = activeTransactions("real")
+export async function exportTransactionsCsv(opts: { account?: number | null } = {}): Promise<string> {
+  const names = await accountNames();
+  const txs = (await activeTransactions("real"))
     .filter((t) => opts.account == null || t.accountId === opts.account)
     .sort((a, b) => (a.date === b.date ? a.id - b.id : a.date < b.date ? -1 : 1));
   const rows: Cell[][] = txs.map((t) => [
@@ -46,7 +47,7 @@ export function exportTransactionsCsv(opts: { account?: number | null } = {}): s
 
 export async function exportHoldingsCsv(opts: { account?: number | null } = {}): Promise<string> {
   const p = await getPortfolio("real", { account: opts.account ?? null });
-  const names = accountNames();
+  const names = await accountNames();
   const rows: Cell[][] = [];
   for (const h of p.holdings) {
     const parts = h.accounts.length ? h.accounts : [];
@@ -72,8 +73,8 @@ export async function exportHoldingsCsv(opts: { account?: number | null } = {}):
   );
 }
 
-export function exportDividendsCsv(opts: { account?: number | null } = {}): string {
-  const list = listDividendRecords({ mode: "real", status: "confirmed" }).filter((d) => opts.account == null || d.accountId === opts.account);
+export async function exportDividendsCsv(opts: { account?: number | null } = {}): Promise<string> {
+  const list = (await listDividendRecords({ mode: "real", status: "confirmed" })).filter((d) => opts.account == null || d.accountId === opts.account);
   const rows: Cell[][] = list.map((d) => {
     const gross = d.grossAmount ?? d.amount;
     return [
@@ -115,8 +116,8 @@ export async function exportRealizedCsv(opts: { account?: number | null; year?: 
 }
 
 /** İçe aktarma şablonu: başlıklar + iki örnek satır */
-export function importTemplateCsv(): string {
-  const acc = listAccounts()[0]?.name ?? "Ana hesap";
+export async function importTemplateCsv(): Promise<string> {
+  const acc = (await listAccounts())[0]?.name ?? "Ana hesap";
   return toCsv(TX_HEADERS, [
     ["15.03.2025", acc, typeLabel("bist"), "THYAO", "Alış", 100, 245.5, "TRY", 12.5, 1, "Örnek satır — silin"],
     ["22.04.2025", acc, typeLabel("foreign"), "AAPL", "Alış", 5, 198.4, "USD", 1, 37.95, "Kur boşsa işlem günü kuru otomatik alınır"],
@@ -268,7 +269,7 @@ interface Built {
   fxTry: number | null;
 }
 
-function buildRows(text: string, opts: ImportOptions): { headers: string[]; mapping: ImportMapping; built: Built[] } {
+async function buildRows(text: string, opts: ImportOptions): Promise<{ headers: string[]; mapping: ImportMapping; built: Built[] }> {
   const table = parseCsv(text);
   if (table.length === 0) throw new ValidationError("Dosya boş.");
   if (table.length > 5001) throw new ValidationError("En fazla 5000 satır içe aktarılabilir.");
@@ -280,8 +281,8 @@ function buildRows(text: string, opts: ImportOptions): { headers: string[]; mapp
   }
   // Dışa aktarmada formül korumasıyla eklenen baştaki ' geri alınır ('=… → =…).
   const cell = (cells: string[], f: ImportField) => (mapping[f] != null ? (cells[mapping[f]!] ?? "").trim().replace(/^'(?=[=+@-])/, "") : "");
-  const accNames = new Map(listAccounts({ includeArchived: true }).map((a) => [a.name.toLocaleLowerCase("tr-TR"), a]));
-  const defaultAcc = opts.defaultAccountId != null ? listAccounts({ includeArchived: true }).find((a) => a.id === opts.defaultAccountId) : undefined;
+  const accNames = new Map((await listAccounts({ includeArchived: true })).map((a) => [a.name.toLocaleLowerCase("tr-TR"), a]));
+  const defaultAcc = opts.defaultAccountId != null ? (await listAccounts({ includeArchived: true })).find((a) => a.id === opts.defaultAccountId) : undefined;
 
   const built: Built[] = table.slice(1).map((cells, i) => {
     const errors: string[] = [];
@@ -356,20 +357,22 @@ function buildRows(text: string, opts: ImportOptions): { headers: string[]; mapp
  * Satırları tek bir veritabanı işleminde dener. dryRun: sonunda geri alınır (önizleme).
  * Satırlar tarih sırasıyla eklenir (eldekinden fazla satış kontrolü doğru çalışsın).
  */
-function run(text: string, opts: ImportOptions, mode: "preview" | "commit"): { preview: ImportPreview; inserted: number } {
-  const { headers, mapping, built } = buildRows(text, opts);
-  const db = getDb();
-  const knownNames = new Set(listAccounts({ includeArchived: true }).map((a) => a.name.toLocaleLowerCase("tr-TR")));
+async function run(text: string, opts: ImportOptions, mode: "preview" | "commit"): Promise<{ preview: ImportPreview; inserted: number }> {
+  const { headers, mapping, built } = await buildRows(text, opts);
+  const db = await getDb();
+  const knownNames = new Set((await listAccounts({ includeArchived: true })).map((a) => a.name.toLocaleLowerCase("tr-TR")));
   const unknownAccounts = [...new Set(built.map((b) => b.row.account).filter((n): n is string => !!n && !knownNames.has(n.toLocaleLowerCase("tr-TR"))))];
   let inserted = 0;
-  db.exec("BEGIN IMMEDIATE");
+  // Önizlemede işlem sonunda geri alınır (özel hata ile).
+  class PreviewRollback extends Error {}
   try {
-    if (opts.createAccounts) for (const name of unknownAccounts) createAccount({ name });
+    await db.tx(async () => {
+    if (opts.createAccounts) for (const name of unknownAccounts) await createAccount({ name });
     // Mükerrer kontrolü yalnızca veritabanında ZATEN olan kayıtlara karşı yapılır. Dosyada aynı satır
     // birden çok kez varsa (örn. aynı gün aynı fiyattan iki ayrı alım) bunlar ayrı işlemdir: k. tekrar,
     // veritabanında o satırdan en az k tane varsa mükerrer sayılır (aynı dosyayı iki kez yüklemek yine güvenli).
     const existing = new Map<string, number>();
-    for (const t of activeTransactions("real")) {
+    for (const t of (await activeTransactions("real"))) {
       const h = txHash({ date: t.date, symbol: t.symbol, side: t.side, quantity: t.quantity, price: t.price, accountId: t.accountId });
       existing.set(h, (existing.get(h) ?? 0) + 1);
     }
@@ -378,7 +381,7 @@ function run(text: string, opts: ImportOptions, mode: "preview" | "commit"): { p
     const inFile = new Map<string, number>();
     for (const b of ordered) {
       try {
-        const input = parseTransactionInput(b.body, { allowArchived: true });
+        const input = await parseTransactionInput(b.body, { allowArchived: true });
         inputs.set(b, input);
         b.row.hash = txHash({ ...input, accountId: input.accountId });
         inFile.set(b.row.hash, (inFile.get(b.row.hash) ?? 0) + 1);
@@ -399,10 +402,14 @@ function run(text: string, opts: ImportOptions, mode: "preview" | "commit"): { p
         b.row.duplicate = true;
         continue;
       }
+      // Satır hatası (Postgres'te) tüm işlemi bozmasın: kayıt noktası.
+      await db.exec("SAVEPOINT ice_aktar_satir");
       try {
-        recordTransaction(input, { fxTry: b.fxTry, deferFx: true });
+        await recordTransaction(input, { fxTry: b.fxTry, deferFx: true });
+        await db.exec("RELEASE SAVEPOINT ice_aktar_satir");
         inserted++;
       } catch (err) {
+        await db.exec("ROLLBACK TO SAVEPOINT ice_aktar_satir");
         b.row.errors.push(err instanceof ValidationError ? err.message : "Kaydedilemedi.");
       }
     }
@@ -410,15 +417,12 @@ function run(text: string, opts: ImportOptions, mode: "preview" | "commit"): { p
     if (mode === "commit" && invalid > 0) {
       throw new ValidationError(`${invalid} satırda hata var; hiçbir satır kaydedilmedi. Önizlemede hataları düzeltin.`);
     }
-    if (mode === "commit") db.exec("COMMIT");
-    else db.exec("ROLLBACK");
+    if (mode !== "commit") throw new PreviewRollback();
+    });
   } catch (err) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {}
-    throw err;
+    if (!(err instanceof PreviewRollback)) throw err;
   }
-  if (mode === "commit" && inserted > 0) void ensureFxRates({ force: true });
+  if (mode === "commit" && inserted > 0) background(() => ensureFxRates({ force: true }));
   const rows = built.map((b) => b.row);
   return {
     preview: {
@@ -438,13 +442,13 @@ function run(text: string, opts: ImportOptions, mode: "preview" | "commit"): { p
 }
 
 /** Önizleme: doğrulama + mükerrer işareti, hiçbir şey kaydedilmez. */
-export function previewImport(text: string, opts: ImportOptions = {}): ImportPreview {
-  return run(text, opts, "preview").preview;
+export async function previewImport(text: string, opts: ImportOptions = {}): Promise<ImportPreview> {
+  return (await run(text, opts, "preview")).preview;
 }
 
 /** Kaydet: hatalı satır varsa hiçbiri kaydedilmez; mükerrerler atlanır. */
-export function commitImport(text: string, opts: ImportOptions = {}): { inserted: number; skippedDuplicates: number; preview: ImportPreview } {
-  const r = run(text, opts, "commit");
+export async function commitImport(text: string, opts: ImportOptions = {}): Promise<{ inserted: number; skippedDuplicates: number; preview: ImportPreview }> {
+  const r = await run(text, opts, "commit");
   return { inserted: r.inserted, skippedDuplicates: r.preview.counts.duplicate, preview: r.preview };
 }
 

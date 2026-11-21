@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import * as actions from "@/lib/actions";
 import { handle } from "@/lib/api";
 import { parseInstrumentId } from "@/lib/assets";
+import { ValidationError } from "@/lib/portfolio";
 import { isChartRange } from "@/lib/market";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,7 @@ export async function GET(req: NextRequest) {
     try {
       return await actions.getPriceChart(ref, range);
     } catch (err) {
+      if (err instanceof ValidationError) throw err; // → 400 (Türkçe mesaj)
       console.warn("[grafik]", (err as Error).message);
       return NextResponse.json({ error: "Grafik verisi alınamadı." }, { status: 502 });
     }

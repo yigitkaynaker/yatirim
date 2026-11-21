@@ -7,6 +7,6 @@ import { handle, readJson } from "@/lib/api";
  */
 export async function POST(req: Request) {
   return handle(async () => ({
-    transaction: actions.promoteSanalToGercek((await readJson(req)) as unknown as actions.PromoteParams),
+    transaction: await actions.promoteSanalToGercek(await readJson(req) as unknown as actions.PromoteParams),
   }), 201);
 }

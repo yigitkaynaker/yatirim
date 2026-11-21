@@ -22,19 +22,19 @@ export class NoApiKeyError extends Error {
 }
 
 /** Anahtar yoksa NoApiKeyError. */
-export function getAiClient(): AiClient {
+export async function getAiClient(): Promise<AiClient> {
   if (g.__yatirimAiClientOverride) return g.__yatirimAiClientOverride;
-  const { key } = getApiKey();
+  const { key } = await getApiKey();
   if (!key) throw new NoApiKeyError();
   return new Anthropic({ apiKey: key, maxRetries: 2, timeout: 5 * 60_000 });
 }
 
-export function isAiConfigured(): boolean {
-  return !!g.__yatirimAiClientOverride || getApiKey().key != null;
+export async function isAiConfigured(): Promise<boolean> {
+  return !!g.__yatirimAiClientOverride || (await getApiKey()).key != null;
 }
 
-export function currentModel(): { key: AiModelKey; id: string } {
-  const key = getAiSettings().model;
+export async function currentModel(): Promise<{ key: AiModelKey; id: string }> {
+  const key = (await getAiSettings()).model;
   return { key, id: AI_MODELS[key].id };
 }
 
@@ -78,7 +78,7 @@ export function estimateCost(modelId: string, u: Omit<UsageTotals, "costUsd">): 
 }
 
 /** API yanıtındaki usage alanını kaydeder; tahmini maliyeti döndürür. */
-export function recordUsage(kind: UsageKind, modelId: string, usage: Anthropic.Usage | null | undefined): UsageTotals {
+export async function recordUsage(kind: UsageKind, modelId: string, usage: Anthropic.Usage | null | undefined): Promise<UsageTotals> {
   const u = {
     inputTokens: usage?.input_tokens ?? 0,
     outputTokens: usage?.output_tokens ?? 0,
@@ -87,12 +87,8 @@ export function recordUsage(kind: UsageKind, modelId: string, usage: Anthropic.U
     webSearches: usage?.server_tool_use?.web_search_requests ?? 0,
   };
   const costUsd = estimateCost(modelId, u);
-  getDb()
-    .prepare(
-      `INSERT INTO ai_usage (kind, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, web_searches, cost_usd)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(kind, modelId, u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheWriteTokens, u.webSearches, costUsd);
+  await (await getDb()).run(`INSERT INTO ai_usage (kind, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, web_searches, cost_usd)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [kind, modelId, u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheWriteTokens, u.webSearches, costUsd]);
   return { ...u, costUsd };
 }
 
@@ -130,14 +126,10 @@ export interface BudgetStatus {
   calls: number;
 }
 
-export function getBudgetStatus(now = new Date()): BudgetStatus {
+export async function getBudgetStatus(now = new Date()): Promise<BudgetStatus> {
   const { start, end } = monthRangeUtc(now);
-  const row = getDb()
-    .prepare(
-      "SELECT COALESCE(SUM(cost_usd),0) AS c, COALESCE(SUM(web_searches),0) AS s, COUNT(*) AS n FROM ai_usage WHERE created_at >= ? AND created_at < ?",
-    )
-    .get(start, end) as { c: number; s: number; n: number };
-  const budgetUsd = getAiSettings().budgetUsd;
+  const row = await (await getDb()).get("SELECT COALESCE(SUM(cost_usd),0) AS c, COALESCE(SUM(web_searches),0) AS s, COUNT(*) AS n FROM ai_usage WHERE created_at >= ? AND created_at < ?", [start, end]) as { c: number; s: number; n: number };
+  const budgetUsd = (await getAiSettings()).budgetUsd;
   return { spentUsd: row.c, budgetUsd, overBudget: row.c >= budgetUsd, searches: row.s, calls: row.n };
 }
 
@@ -179,11 +171,11 @@ export function aiErrorMessage(err: unknown): string {
 export async function testConnection(): Promise<{ ok: boolean; message: string }> {
   let client: AiClient;
   try {
-    client = getAiClient();
+    client = await getAiClient();
   } catch (err) {
     return { ok: false, message: aiErrorMessage(err) };
   }
-  const model = currentModel();
+  const model = await currentModel();
   try {
     const res = await client.messages.create({
       model: model.id,
@@ -191,7 +183,7 @@ export async function testConnection(): Promise<{ ok: boolean; message: string }
       output_config: { effort: "low" },
       messages: [{ role: "user", content: "Sadece \"tamam\" yaz." }],
     });
-    recordUsage("test", model.id, res.usage);
+    await recordUsage("test", model.id, res.usage);
     return { ok: true, message: `Bağlantı başarılı. Model: ${AI_MODELS[model.key].label}.` };
   } catch (err) {
     return { ok: false, message: aiErrorMessage(err) };

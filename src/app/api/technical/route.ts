@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import * as actions from "@/lib/actions";
 import { handle } from "@/lib/api";
 import { parseInstrumentId } from "@/lib/assets";
+import { ValidationError } from "@/lib/portfolio";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,7 @@ export async function GET(req: NextRequest) {
     try {
       return await actions.getTechnicalSignals(ref, { overlays: true });
     } catch (err) {
+      if (err instanceof ValidationError) throw err; // → 400 (Türkçe mesaj)
       console.warn("[teknik]", (err as Error).message);
       return NextResponse.json({ error: "Teknik analiz için fiyat verisi alınamadı." }, { status: 502 });
     }

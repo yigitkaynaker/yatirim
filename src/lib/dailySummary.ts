@@ -1,6 +1,7 @@
 import "server-only";
+import { background } from "./background";
 import type Anthropic from "@anthropic-ai/sdk";
-import { getDb } from "./db";
+import { getDb, sqlNow } from "./db";
 import { displaySymbol, instrumentId, parseInstrumentId, type Mode } from "./assets";
 import { AI_MODELS } from "./settings";
 import { getAiClient, getBudgetStatus, isAiConfigured, recordUsage, type AiClient } from "./aiClient";
@@ -90,21 +91,30 @@ export async function collectSummaryData(now = new Date()): Promise<SummaryData>
   movers.sort((a, b) => Math.abs(b.dayChangePct) - Math.abs(a.dayChangePct));
 
   const signals = (
-    getDb().prepare("SELECT instrument, label, checked_date FROM technical_signals ORDER BY checked_date DESC").all() as { instrument: string; label: string; checked_date: string }[]
+    await (await getDb()).all("SELECT instrument, label, checked_date FROM technical_signals ORDER BY checked_date DESC") as { instrument: string; label: string; checked_date: string }[]
   )
     .filter((s) => held.has(s.instrument))
     .map((s) => ({ name: held.get(s.instrument)!.name, label: s.label, date: s.checked_date }));
 
   const since = now.getTime() - 24 * 3600_000;
-  const kap = [...tickersOfInterest().keys()].flatMap((t) =>
-    listKap({ ticker: t, sinceMs: since, limit: 3 }).map((d) => ({ ticker: t, subject: d.subject ?? d.summary ?? "", url: d.url })),
-  );
+  const kap = (
+    await Promise.all(
+      [...(await tickersOfInterest()).keys()].map(async (t) =>
+        (await listKap({ ticker: t, sinceMs: since, limit: 3 })).map((d) => ({ ticker: t, subject: d.subject ?? d.summary ?? "", url: d.url })),
+      ),
+    )
+  ).flat();
 
-  const headlines = [...held.values()]
-    .map((h) => ({ name: h.name, items: cachedHeadlines(h.type, h.symbol).items.filter((x) => !x.publishedAt || x.publishedAt >= since).slice(0, 3) }))
-    .filter((h) => h.items.length > 0);
+  const headlines = (
+    await Promise.all(
+      [...held.values()].map(async (h) => ({
+        name: h.name,
+        items: (await cachedHeadlines(h.type, h.symbol)).items.filter((x) => !x.publishedAt || x.publishedAt >= since).slice(0, 3),
+      })),
+    )
+  ).filter((h) => h.items.length > 0);
 
-  const alarms = alarmEventsSince(since).map((e) => e.message);
+  const alarms = (await alarmEventsSince(since)).map((e) => e.message);
   return { date, portfolios, movers: movers.slice(0, 5), signals: signals.slice(0, 8), kap: kap.slice(0, 8), headlines: headlines.slice(0, 6), alarms: alarms.slice(0, 8) };
 }
 
@@ -147,7 +157,7 @@ async function askCheap(client: AiClient, kind: "ozet" | "neden", system: string
   const msg = await client.messages
     .stream({ model: CHEAP_MODEL, max_tokens: 900, system, messages: [{ role: "user", content: user }], output_config: { effort: "low" } })
     .finalMessage();
-  const usage = recordUsage(kind, CHEAP_MODEL, msg.usage);
+  const usage = await recordUsage(kind, CHEAP_MODEL, msg.usage);
   const text = msg.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)
@@ -174,11 +184,11 @@ export async function generateDailySummary(opts: { now?: Date; client?: AiClient
   let model: string | null = null;
   let costUsd = 0;
   let unverified: string[] = [];
-  const canAi = !!opts.client || isAiConfigured();
-  if (canAi && d.portfolios.length > 0 && !getBudgetStatus(now).overBudget) {
+  const canAi = !!opts.client || (await isAiConfigured());
+  if (canAi && d.portfolios.length > 0 && !(await getBudgetStatus(now)).overBudget) {
     try {
       const user = `Bugünün verisi (${d.date}, kaynak: uygulamanın önbelleği):\n${dataBlock(d)}`;
-      const r = await askCheap(opts.client ?? getAiClient(), "ozet", SUMMARY_SYSTEM, user);
+      const r = await askCheap(opts.client ?? (await getAiClient()), "ozet", SUMMARY_SYSTEM, user);
       text = r.text;
       ai = true;
       model = CHEAP_MODEL;
@@ -188,28 +198,24 @@ export async function generateDailySummary(opts: { now?: Date; client?: AiClient
       console.warn("[özet] yapay zeka özeti alınamadı, kurallı özet kullanılıyor:", (err as Error).message);
     }
   }
-  getDb()
-    .prepare(
-      `INSERT INTO daily_summaries (date, text, ai, model, cost_usd, data) VALUES (?, ?, ?, ?, ?, ?)
+  await (await getDb()).run(`INSERT INTO daily_summaries (date, text, ai, model, cost_usd, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(date) DO UPDATE SET text = excluded.text, ai = excluded.ai, model = excluded.model, cost_usd = excluded.cost_usd,
-         data = excluded.data, created_at = datetime('now')`,
-    )
-    .run(d.date, text, ai ? 1 : 0, model, costUsd, JSON.stringify({ unverified }));
+         data = excluded.data, created_at = excluded.created_at`, [d.date, text, ai ? 1 : 0, model, costUsd, JSON.stringify({ unverified }), sqlNow()]);
   if (opts.notify) {
     const first = text.split("\n").find((l) => l.trim()) ?? text;
     const n = { kind: "daily_summary", title: "Günlük özet", body: first.replace(/^[-•*\s]+/, "").slice(0, 300) };
-    addNotification(n);
-    void sendPushToAll({ title: n.title, body: n.body, url: "/", tag: `ozet-${d.date}` });
+    await addNotification(n);
+    background(() => sendPushToAll({ title: n.title, body: n.body, url: "/", tag: `ozet-${d.date}` }));
   }
-  return getLatestSummary(d.date)!;
+  return (await getLatestSummary(d.date))!;
 }
 
 /** Son özet (date verilirse o günün özeti) */
-export function getLatestSummary(date?: string): DailySummary | null {
+export async function getLatestSummary(date?: string): Promise<DailySummary | null> {
   const r = (
     date
-      ? getDb().prepare("SELECT * FROM daily_summaries WHERE date = ?").get(date)
-      : getDb().prepare("SELECT * FROM daily_summaries ORDER BY date DESC LIMIT 1").get()
+      ? await (await getDb()).get("SELECT * FROM daily_summaries WHERE date = ?", [date])
+      : await (await getDb()).get("SELECT * FROM daily_summaries ORDER BY date DESC LIMIT 1")
   ) as
     | { date: string; text: string; ai: number; model: string | null; cost_usd: number; data: string | null; created_at: string }
     | undefined;
@@ -229,7 +235,7 @@ export async function maybeRunDailySummary(now = new Date(), client?: AiClient):
   if (p.weekday === "Sat" || p.weekday === "Sun") return { ran: false, reason: "hafta_sonu" };
   const [h, m] = SUMMARY_TIME.split(":").map(Number);
   if (p.minutes < h * 60 + m) return { ran: false, reason: "zamani_degil" };
-  const claim = getDb().prepare("INSERT OR IGNORE INTO scheduled_runs (slot) VALUES (?)").run(`ozet ${p.date}`);
+  const claim = await (await getDb()).run("INSERT INTO scheduled_runs (slot, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING", [`ozet ${p.date}`, sqlNow()]);
   if (Number(claim.changes) !== 1) return { ran: false, reason: "zaten_calisti" };
   try {
     const s = await generateDailySummary({ now, client, notify: true });
@@ -266,14 +272,14 @@ export async function whyMoving(id: string, opts: { client?: AiClient; force?: b
   const instrument = instrumentId(ref.type, ref.symbol);
   const key = `why:${instrument}`;
   if (!opts.force) {
-    const row = getDb().prepare("SELECT value, fetched_at FROM ext_cache WHERE key = ?").get(key) as { value: string; fetched_at: number } | undefined;
+    const row = await (await getDb()).get("SELECT value, fetched_at FROM ext_cache WHERE key = ?", [key]) as { value: string; fetched_at: number } | undefined;
     if (row && Date.now() - row.fetched_at < WHY_TTL_MS) return JSON.parse(row.value) as WhyMoving;
   }
   const [q] = await getQuotes([ref]);
   const changePct = q.price != null && q.prevClose ? ((q.price - q.prevClose) / q.prevClose) * 100 : q.changePct;
   const name = displaySymbol(ref.type, ref.symbol);
   const hs = await getHeadlines(ref.type, ref.symbol, { limit: 8 });
-  const kap = ref.type === "bist" ? listKap({ ticker: ref.symbol, sinceMs: Date.now() - 48 * 3600_000, limit: 5 }).map((d) => ({ subject: d.subject ?? d.summary ?? "", url: d.url, publishAt: d.publishAt })) : [];
+  const kap = ref.type === "bist" ? (await listKap({ ticker: ref.symbol, sinceMs: Date.now() - 48 * 3600_000, limit: 5 })).map((d) => ({ subject: d.subject ?? d.summary ?? "", url: d.url, publishAt: d.publishAt })) : [];
   const priceTime = q.sourceTime ?? q.fetchedAt;
   const when = priceTime ? new Date(priceTime).toLocaleString("tr-TR", { timeZone: "Europe/Istanbul", dateStyle: "short", timeStyle: "short" }) : "?";
 
@@ -287,7 +293,7 @@ export async function whyMoving(id: string, opts: { client?: AiClient; force?: b
       : "Son 1 günde bu varlıkla ilgili haber başlığı ya da KAP bildirimi bulunamadı. Hareket genel piyasa yönünden, büyük alım satımlardan ya da henüz yayımlanmamış bir gelişmeden kaynaklanabilir.",
   ].join(" ");
   text = fallback;
-  if ((opts.client || isAiConfigured()) && !getBudgetStatus().overBudget && (hs.items.length > 0 || kap.length > 0)) {
+  if ((opts.client || (await isAiConfigured())) && !(await getBudgetStatus()).overBudget && (hs.items.length > 0 || kap.length > 0)) {
     const user = [
       `Varlık: ${name} (${instrument}). Bugünkü değişim: ${changePct == null ? "?" : changePct.toFixed(2)}%, veri zamanı ${when}.`,
       kap.length ? `KAP (son 48 saat): ${kap.map((k) => `${k.subject} (${k.url})`).join(" | ")}` : "KAP bildirimi yok.",
@@ -300,7 +306,7 @@ export async function whyMoving(id: string, opts: { client?: AiClient; force?: b
       "Başlıklar nedeni açıklamıyorsa bunu açıkça söyle ve güveni düşük ver. Al/sat tavsiyesi verme.",
     ].join("\n");
     try {
-      const r = await askCheap(opts.client ?? getAiClient(), "neden", system, user);
+      const r = await askCheap(opts.client ?? (await getAiClient()), "neden", system, user);
       text = r.text;
       ai = true;
       unverified = unverifiedNumbers(text, [user]);
@@ -309,8 +315,6 @@ export async function whyMoving(id: string, opts: { client?: AiClient; force?: b
     }
   }
   const out: WhyMoving = { instrument, changePct, text, ai, headlines: hs.items, kap, createdAt: Date.now(), unverified };
-  getDb()
-    .prepare(`INSERT INTO ext_cache (key, value, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, fetched_at = excluded.fetched_at`)
-    .run(key, JSON.stringify(out), out.createdAt);
+  await (await getDb()).run(`INSERT INTO ext_cache (key, value, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, fetched_at = excluded.fetched_at`, [key, JSON.stringify(out), out.createdAt]);
   return out;
 }

@@ -1,6 +1,6 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
-import { getDb } from "./db";
+import { getDb, sqlNow } from "./db";
 import { aiErrorMessage, currentModel, getAiClient, getBudgetStatus, recordUsage, type AiClient } from "./aiClient";
 import { getAiSettings } from "./settings";
 import { CHAT_TOOLS, executeChatTool, toolLabel, type ActionCard } from "./chatTools";
@@ -48,8 +48,8 @@ interface MsgRow {
 
 // ---- Saklama ----------------------------------------------------------------------
 
-export function listConversations(limit = 50): Conversation[] {
-  const rows = getDb().prepare("SELECT * FROM chat_conversations ORDER BY updated_at DESC, id DESC LIMIT ?").all(limit) as unknown as {
+export async function listConversations(limit = 50): Promise<Conversation[]> {
+  const rows = await (await getDb()).all("SELECT * FROM chat_conversations ORDER BY updated_at DESC, id DESC LIMIT ?", [limit]) as unknown as {
     id: number;
     title: string;
     created_at: string;
@@ -58,25 +58,23 @@ export function listConversations(limit = 50): Conversation[] {
   return rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at }));
 }
 
-export function getConversation(id: number): Conversation | null {
-  return listConversations(1000).find((c) => c.id === id) ?? null;
+export async function getConversation(id: number): Promise<Conversation | null> {
+  return (await listConversations(1000)).find((c) => c.id === id) ?? null;
 }
 
-export function deleteConversation(id: number): boolean {
-  return Number(getDb().prepare("DELETE FROM chat_conversations WHERE id = ?").run(id).changes) > 0;
+export async function deleteConversation(id: number): Promise<boolean> {
+  return Number((await (await getDb()).run("DELETE FROM chat_conversations WHERE id = ?", [id])).changes) > 0;
 }
 
-function createConversation(firstMessage: string): number {
+async function createConversation(firstMessage: string): Promise<number> {
   const title = firstMessage.replace(/\s+/g, " ").trim().slice(0, 60) || "Yeni sohbet";
-  return Number(getDb().prepare("INSERT INTO chat_conversations (title) VALUES (?)").run(title).lastInsertRowid);
+  return (await (await getDb()).run("INSERT INTO chat_conversations (title) VALUES (?) RETURNING id", [title])).lastId!;
 }
 
-function insertMessage(conversationId: number, role: "user" | "assistant", content: unknown, cards?: ActionCard[]): number {
-  const res = getDb()
-    .prepare("INSERT INTO chat_messages (conversation_id, role, content, cards) VALUES (?, ?, ?, ?)")
-    .run(conversationId, role, JSON.stringify(content), cards && cards.length ? JSON.stringify(cards) : null);
-  getDb().prepare("UPDATE chat_conversations SET updated_at = datetime('now') WHERE id = ?").run(conversationId);
-  return Number(res.lastInsertRowid);
+async function insertMessage(conversationId: number, role: "user" | "assistant", content: unknown, cards?: ActionCard[]): Promise<number> {
+  const res = await (await getDb()).run("INSERT INTO chat_messages (conversation_id, role, content, cards) VALUES (?, ?, ?, ?) RETURNING id", [conversationId, role, JSON.stringify(content), cards && cards.length ? JSON.stringify(cards) : null]);
+  await (await getDb()).run("UPDATE chat_conversations SET updated_at = ? WHERE id = ?", [sqlNow(), conversationId]);
+  return res.lastId!;
 }
 
 /**
@@ -84,10 +82,10 @@ function insertMessage(conversationId: number, role: "user" | "assistant", conte
  * kullanıcı mesajlarında ya da sistem bağlamında geçiyor mu? Geçmeyenler için uyarı kartı
  * (engellemez). Kart son asistan mesajına kaydedilir, böylece geçmişte de görünür.
  */
-function verifyNumbers(conversationId: number, turnText: string, system: string): ActionCard | null {
+async function verifyNumbers(conversationId: number, turnText: string, system: string): Promise<ActionCard | null> {
   if (!turnText.trim()) return null;
   const sources = [system];
-  for (const r of rowsFor(conversationId)) {
+  for (const r of (await rowsFor(conversationId))) {
     if (r.role !== "user") continue;
     sources.push(r.content); // araç sonuçları (JSON) ve kullanıcı metinleri
   }
@@ -96,16 +94,16 @@ function verifyNumbers(conversationId: number, turnText: string, system: string)
   return { tone: "warn", title: "Doğrulanamayan rakam", lines: bad.slice(0, 8) };
 }
 
-function rowsFor(conversationId: number): MsgRow[] {
-  return getDb().prepare("SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY id").all(conversationId) as unknown as MsgRow[];
+async function rowsFor(conversationId: number): Promise<MsgRow[]> {
+  return await (await getDb()).all("SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY id", [conversationId]) as unknown as MsgRow[];
 }
 
 type Block = { type: string; text?: string; citations?: { type: string; url?: string; title?: string | null }[] | null };
 
 /** Kullanıcıya gösterilecek mesajlar: metinler, işlem kartları, kaynaklar. Araç sonucu mesajları kart olarak birleşir. */
-export function getDisplayMessages(conversationId: number): DisplayMessage[] {
+export async function getDisplayMessages(conversationId: number): Promise<DisplayMessage[]> {
   const out: DisplayMessage[] = [];
-  for (const r of rowsFor(conversationId)) {
+  for (const r of (await rowsFor(conversationId))) {
     const content = JSON.parse(r.content) as string | Block[];
     const blocks: Block[] = typeof content === "string" ? [{ type: "text", text: content }] : content;
     const text = blocks
@@ -145,8 +143,8 @@ export function getDisplayMessages(conversationId: number): DisplayMessage[] {
 const MAX_HISTORY_ROWS = 60;
 
 /** API'ye gönderilecek geçmiş. Uzunsa, bir kullanıcı metin mesajından başlayacak şekilde kırpılır. */
-function historyFor(conversationId: number): Anthropic.MessageParam[] {
-  let rows = rowsFor(conversationId);
+async function historyFor(conversationId: number): Promise<Anthropic.MessageParam[]> {
+  let rows = await rowsFor(conversationId);
   if (rows.length > MAX_HISTORY_ROWS) {
     const tail = rows.slice(-MAX_HISTORY_ROWS);
     const start = tail.findIndex((r) => {
@@ -161,7 +159,7 @@ function historyFor(conversationId: number): Anthropic.MessageParam[] {
 
 // ---- Sistem istemi ------------------------------------------------------------------
 
-function systemPrompt(): string {
+async function systemPrompt(): Promise<string> {
   return [
     "Sen \"Yatırım\" adlı kişisel yatırım uygulamasının Türkçe yapay zeka asistanısın. Tek bir kullanıcın var ve yatırıma yeni başlıyor.",
     "",
@@ -190,14 +188,14 @@ function systemPrompt(): string {
     "- Varlık türleri: fund = TEFAS yatırım fonu (fiyatı günde bir açıklanır), gold = altın (GRAM, CEYREK, YARIM, TAM, CUMHURIYET, ATA, BILEZIK22). Sikke altın fiyatı kuyumcu satış fiyatıdır; satarken alış fiyatı alınır (makas).",
     "",
     `Bugünün tarihi (İstanbul): ${todayIstanbul()}.`,
-    ...kapSystemLines(),
+    ...await kapSystemLines(),
   ].join("\n");
 }
 
 /** Portföy / izleme listesi hisselerinin son 48 saatlik KAP bildirimleri (ücretsiz bağlam). */
-function kapSystemLines(): string[] {
+async function kapSystemLines(): Promise<string[]> {
   try {
-    const ctx = kapContext([...tickersOfInterest().keys()], 48, 3);
+    const ctx = await kapContext([...(await tickersOfInterest()).keys()], 48, 3);
     if (ctx.size === 0) return [];
     const lines = [...ctx.entries()].slice(0, 12).flatMap(([t, items]) => items.map((x) => `- ${t}: ${x}`));
     return ["", "Son 48 saatin KAP bildirimleri (kullanıcının hisseleri; resmi kaynak):", ...lines];
@@ -231,7 +229,7 @@ export async function runChatTurn(opts: {
 
   let client: AiClient;
   try {
-    client = opts.client ?? getAiClient();
+    client = opts.client ?? (await getAiClient());
   } catch (err) {
     emit({ type: "error", message: aiErrorMessage(err) });
     emit({ type: "done" });
@@ -239,12 +237,12 @@ export async function runChatTurn(opts: {
   }
 
   let conversationId = opts.conversationId ?? null;
-  if (conversationId != null && !getConversation(conversationId)) conversationId = null;
+  if (conversationId != null && !(await getConversation(conversationId))) conversationId = null;
   const isNew = conversationId == null;
-  if (conversationId == null) conversationId = createConversation(text);
+  if (conversationId == null) conversationId = await createConversation(text);
   emit({ type: "conversation", id: conversationId });
 
-  const budget = getBudgetStatus();
+  const budget = await getBudgetStatus();
   if (budget.overBudget) {
     emit({
       type: "warning",
@@ -252,15 +250,15 @@ export async function runChatTurn(opts: {
     });
   }
 
-  insertMessage(conversationId, "user", [{ type: "text", text }]);
+  await insertMessage(conversationId, "user", [{ type: "text", text }]);
 
-  const model = currentModel();
-  const { maxSearches } = getAiSettings();
+  const model = await currentModel();
+  const { maxSearches } = await getAiSettings();
   const tools: Anthropic.ToolUnion[] = [
     ...CHAT_TOOLS,
     ...(maxSearches > 0 ? [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: maxSearches }] : []),
   ];
-  const system = systemPrompt();
+  const system = await systemPrompt();
   let turnText = "";
   let lastAssistantId: number | null = null;
 
@@ -272,7 +270,7 @@ export async function runChatTurn(opts: {
           max_tokens: 8000,
           system,
           tools,
-          messages: historyFor(conversationId),
+          messages: await historyFor(conversationId),
           output_config: { effort: "medium" },
           cache_control: { type: "ephemeral" },
         },
@@ -288,22 +286,22 @@ export async function runChatTurn(opts: {
         }
       }
       const msg = await stream.finalMessage();
-      recordUsage("sohbet", model.id, msg.usage);
+      await recordUsage("sohbet", model.id, msg.usage);
 
       if (msg.stop_reason === "pause_turn") {
-        insertMessage(conversationId, "assistant", msg.content);
+        await insertMessage(conversationId, "assistant", msg.content);
         continue;
       }
       const toolUses = msg.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
       if (toolUses.length === 0 || msg.stop_reason === "refusal") {
-        lastAssistantId = insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
+        lastAssistantId = await insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
         if (msg.stop_reason === "refusal") emit({ type: "warning", message: "Yapay zeka bu isteği yanıtlamadı." });
         if (msg.stop_reason === "max_tokens") emit({ type: "warning", message: "Yanıt uzunluk sınırına ulaştı ve kesildi." });
         break;
       }
       if (msg.stop_reason === "max_tokens") {
         // Araç girdisi yarım kalmış olabilir: çalıştırma.
-        insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
+        await insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
         emit({ type: "warning", message: "Yanıt uzunluk sınırına ulaştı; işlem yapılmadı. Lütfen tekrar deneyin." });
         break;
       }
@@ -319,16 +317,10 @@ export async function runChatTurn(opts: {
           emit({ type: "card", card: outcome.card });
         }
       }
-      const db = getDb();
-      db.exec("BEGIN");
-      try {
-        insertMessage(conversationId, "assistant", msg.content);
-        insertMessage(conversationId, "user", results, cards);
-        db.exec("COMMIT");
-      } catch (err) {
-        db.exec("ROLLBACK");
-        throw err;
-      }
+      await (await getDb()).tx(async () => {
+        await insertMessage(conversationId, "assistant", msg.content);
+        await insertMessage(conversationId, "user", results, cards);
+      });
       if (step === MAX_STEPS - 1) emit({ type: "warning", message: "Çok fazla adım gerekti; yanıt burada durduruldu." });
     }
   } catch (err) {
@@ -337,17 +329,17 @@ export async function runChatTurn(opts: {
       emit({ type: "error", message: aiErrorMessage(err) });
     }
     // İlk mesajda hiç yanıt alınamadıysa boş sohbeti geçmişte bırakma.
-    if (isNew && !rowsFor(conversationId).some((r) => r.role === "assistant")) {
-      deleteConversation(conversationId);
+    if (isNew && !(await rowsFor(conversationId)).some((r) => r.role === "assistant")) {
+      await deleteConversation(conversationId);
       emit({ type: "done" });
       return { conversationId: null };
     }
   }
   try {
-    const warn = verifyNumbers(conversationId, turnText, system);
+    const warn = await verifyNumbers(conversationId, turnText, system);
     if (warn) {
       emit({ type: "card", card: warn });
-      if (lastAssistantId != null) getDb().prepare("UPDATE chat_messages SET cards = ? WHERE id = ?").run(JSON.stringify([warn]), lastAssistantId);
+      if (lastAssistantId != null) await (await getDb()).run("UPDATE chat_messages SET cards = ? WHERE id = ?", [JSON.stringify([warn]), lastAssistantId]);
     }
   } catch (err) {
     console.warn("[sohbet] rakam kontrolü yapılamadı", err);

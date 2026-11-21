@@ -1,5 +1,6 @@
 import "server-only";
-import { getDb } from "./db";
+import { background } from "./background";
+import { getDb, sqlNow } from "./db";
 import {
   ASSET_TYPES,
   instrumentId,
@@ -122,23 +123,23 @@ function fromRow(r: TxRow): Transaction {
   };
 }
 
-export function listTransactions(mode?: Mode): Transaction[] {
-  const db = getDb();
+export async function listTransactions(mode?: Mode): Promise<Transaction[]> {
+  const db = await getDb();
   const rows = (
     mode
-      ? db.prepare("SELECT * FROM transactions WHERE mode = ? ORDER BY date DESC, id DESC").all(mode)
-      : db.prepare("SELECT * FROM transactions ORDER BY date DESC, id DESC").all()
+      ? await db.all("SELECT * FROM transactions WHERE mode = ? ORDER BY date DESC, id DESC", [mode])
+      : await db.all("SELECT * FROM transactions ORDER BY date DESC, id DESC")
   ) as unknown as TxRow[];
   return rows.map(fromRow);
 }
 
 /** Toplamlara giren işlemler: gerçeğe dönüştürülmüş (arşiv) sanal işlemler hariç */
-export function activeTransactions(mode: Mode): Transaction[] {
-  return listTransactions(mode).filter((t) => !t.convertedAt);
+export async function activeTransactions(mode: Mode): Promise<Transaction[]> {
+  return (await listTransactions(mode)).filter((t) => !t.convertedAt);
 }
 
-export function getTransaction(id: number): Transaction | null {
-  const row = getDb().prepare("SELECT * FROM transactions WHERE id = ?").get(id) as unknown as TxRow | undefined;
+export async function getTransaction(id: number): Promise<Transaction | null> {
+  const row = await (await getDb()).get("SELECT * FROM transactions WHERE id = ?", [id]) as unknown as TxRow | undefined;
   return row ? fromRow(row) : null;
 }
 
@@ -186,7 +187,7 @@ export function parseFee(b: Record<string, unknown>, gross: number, account: Acc
 }
 
 /** İstek gövdesini doğrular ve normalize eder. Hatalı ise ValidationError fırlatır. */
-export function parseTransactionInput(body: unknown, opts: { allowArchived?: boolean } = {}): TransactionInput {
+export async function parseTransactionInput(body: unknown, opts: { allowArchived?: boolean } = {}): Promise<TransactionInput> {
   if (!body || typeof body !== "object") throw new ValidationError("Geçersiz istek.");
   const b = body as Record<string, unknown>;
   const { mode, assetType, symbol, note } = parseCommon(b);
@@ -204,7 +205,7 @@ export function parseTransactionInput(body: unknown, opts: { allowArchived?: boo
   const date = String(b.date ?? "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) throw new ValidationError("Tarih geçersiz.");
 
-  const account = mode === "real" ? resolveAccount(b, opts) : null;
+  const account = mode === "real" ? await resolveAccount(b, opts) : null;
   const fee = parseFee(b, quantity * price, account);
   return { mode, accountId: account?.id ?? null, fee, assetType, symbol, side: b.side, quantity, price, currency: b.currency, date, note };
 }
@@ -226,8 +227,8 @@ function assertNoOversell(txs: SeqItem[]) {
 }
 
 /** Aynı hesaptaki aynı varlığın aktif işlemleri (pozisyonlar hesap başına ayrıdır) */
-function sameAsset(mode: Mode, assetType: AssetType, symbol: string, accountId: number | null, excludeId?: number) {
-  return activeTransactions(mode).filter(
+async function sameAsset(mode: Mode, assetType: AssetType, symbol: string, accountId: number | null, excludeId?: number) {
+  return (await activeTransactions(mode)).filter(
     (t) => t.assetType === assetType && t.symbol === symbol && (mode === "virtual" || t.accountId === accountId) && t.id !== excludeId,
   );
 }
@@ -245,81 +246,58 @@ export interface InsertExtras {
   deferFx?: boolean;
 }
 
-function insert(input: TransactionInput, extras: InsertExtras = {}): number {
-  const res = getDb()
-    .prepare(
-      `INSERT INTO transactions (mode, asset_type, symbol, side, quantity, price, currency, date, note,
+async function insert(input: TransactionInput, extras: InsertExtras = {}): Promise<number> {
+  const res = await (await getDb()).run(`INSERT INTO transactions (mode, asset_type, symbol, side, quantity, price, currency, date, note,
          amount, amount_currency, price_time, source_id, order_id, fx_try, account_id, fee)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      input.mode,
-      input.assetType,
-      input.symbol,
-      input.side,
-      input.quantity,
-      input.price,
-      input.currency,
-      input.date,
-      input.note,
-      extras.amount ?? null,
-      extras.amountCurrency ?? null,
-      extras.priceTime ?? null,
-      extras.sourceId ?? null,
-      extras.orderId ?? null,
-      input.currency === "TRY" ? 1 : (extras.fxTry ?? null),
-      input.mode === "real" ? input.accountId : null,
-      input.fee,
-    );
-  const id = Number(res.lastInsertRowid);
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [input.mode, input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, extras.amount ?? null, extras.amountCurrency ?? null, extras.priceTime ?? null, extras.sourceId ?? null, extras.orderId ?? null, input.currency === "TRY" ? 1 : (extras.fxTry ?? null), input.mode === "real" ? input.accountId : null, input.fee]);
+  const id = res.lastId!;
   // Kur bilinmiyorsa (elle girilen USD/EUR işlem) arka planda o günün kuruyla doldur.
-  if (input.currency !== "TRY" && extras.fxTry == null && !extras.deferFx) void ensureFxRates({ force: true });
+  if (input.currency !== "TRY" && extras.fxTry == null && !extras.deferFx) background(() => ensureFxRates({ force: true }));
   return id;
 }
 
 /** Eldekinden fazla satışı engelleyerek işlem kaydeder. */
-export function recordTransaction(input: TransactionInput, extras: InsertExtras = {}): Transaction {
-  assertNoOversell([
-    ...sameAsset(input.mode, input.assetType, input.symbol, input.accountId),
-    { ...input, id: Number.MAX_SAFE_INTEGER },
-  ]);
-  return getTransaction(insert(input, extras))!;
+export async function recordTransaction(input: TransactionInput, extras: InsertExtras = {}): Promise<Transaction> {
+  // Kontrol + ekleme tek işlemde (eşzamanlı iki satış birlikte eldekini aşmasın).
+  return (await getDb()).tx(async () => {
+    assertNoOversell([
+      ...(await sameAsset(input.mode, input.assetType, input.symbol, input.accountId)),
+      { ...input, id: Number.MAX_SAFE_INTEGER },
+    ]);
+    return (await getTransaction(await insert(input, extras)))!;
+  });
 }
 
-export function createTransaction(input: TransactionInput): Transaction {
-  return recordTransaction(input);
+export async function createTransaction(input: TransactionInput): Promise<Transaction> {
+  return await recordTransaction(input);
 }
 
 /** Düzenleme. İşlemin modu değiştirilemez (sanal → gerçek için convertVirtualPosition). */
-export function updateTransaction(id: number, input: TransactionInput): Transaction | null {
-  const existing = getTransaction(id);
+export async function updateTransaction(id: number, input: TransactionInput): Promise<Transaction | null> {
+  const existing = await getTransaction(id);
   if (!existing) return null;
   const mode = existing.mode;
   const accountId = mode === "real" ? input.accountId : null;
   if (!existing.convertedAt) {
-    assertNoOversell([...sameAsset(mode, input.assetType, input.symbol, accountId, id), { ...input, id }]);
+    assertNoOversell([...await sameAsset(mode, input.assetType, input.symbol, accountId, id), { ...input, id }]);
     if (existing.assetType !== input.assetType || existing.symbol !== input.symbol || existing.accountId !== accountId) {
-      assertNoOversell(sameAsset(mode, existing.assetType, existing.symbol, existing.accountId, id));
+      assertNoOversell(await sameAsset(mode, existing.assetType, existing.symbol, existing.accountId, id));
     }
   }
   // Tarih ya da para birimi değiştiyse işlem tarihi kuru yeniden alınır.
   const fxTry =
     input.currency === "TRY" ? 1 : existing.currency === input.currency && existing.date === input.date ? existing.fxTry : null;
-  getDb()
-    .prepare(
-      `UPDATE transactions SET asset_type=?, symbol=?, side=?, quantity=?, price=?, currency=?, date=?, note=?,
-         fx_try=?, account_id=?, fee=?, updated_at=datetime('now') WHERE id=?`,
-    )
-    .run(input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, fxTry, accountId, input.fee, id);
-  if (fxTry == null) void ensureFxRates({ force: true });
-  return getTransaction(id);
+  await (await getDb()).run(`UPDATE transactions SET asset_type=?, symbol=?, side=?, quantity=?, price=?, currency=?, date=?, note=?,
+         fx_try=?, account_id=?, fee=?, updated_at=? WHERE id=?`, [input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, fxTry, accountId, input.fee, sqlNow(), id]);
+  if (fxTry == null) background(() => ensureFxRates({ force: true }));
+  return await getTransaction(id);
 }
 
-export function deleteTransaction(id: number): boolean {
-  const existing = getTransaction(id);
+export async function deleteTransaction(id: number): Promise<boolean> {
+  const existing = await getTransaction(id);
   if (!existing) return false;
-  if (!existing.convertedAt) assertNoOversell(sameAsset(existing.mode, existing.assetType, existing.symbol, existing.accountId, id));
-  getDb().prepare("DELETE FROM transactions WHERE id = ?").run(id);
+  if (!existing.convertedAt) assertNoOversell(await sameAsset(existing.mode, existing.assetType, existing.symbol, existing.accountId, id));
+  await (await getDb()).run("DELETE FROM transactions WHERE id = ?", [id]);
   return true;
 }
 
@@ -411,7 +389,7 @@ export async function createVirtualEntry(body: unknown): Promise<Transaction> {
   const { assetType, symbol, note } = parseCommon({ ...b, mode: "virtual" });
   const sizing = parseSizing(b);
   const p = await priceAtMarket(assetType, symbol, sizing, { force: true });
-  return recordTransaction(
+  return await recordTransaction(
     { mode: "virtual", accountId: null, fee: 0, assetType, symbol, side: "buy", quantity: p.quantity, price: p.price, currency: p.currency, date: todayIstanbul(), note },
     { amount: sizing.amount, amountCurrency: sizing.amountCurrency, priceTime: p.priceTime, fxTry: p.fxTry },
   );
@@ -422,27 +400,22 @@ export async function createVirtualEntry(body: unknown): Promise<Transaction> {
  * kullanıcının onayladığı (düzenleyebildiği) gerçek bir alış işlemi oluşturur.
  * Sanal işlemler silinmez; converted_at / converted_to_id ile gerçeğe bağlanır.
  */
-export function convertVirtualPosition(body: unknown): Transaction {
-  const input = parseTransactionInput({ ...(body as object), mode: "real", side: "buy" });
-  const virtual = sameAsset("virtual", input.assetType, input.symbol, null);
+export async function convertVirtualPosition(body: unknown): Promise<Transaction> {
+  const input = await parseTransactionInput({ ...(body as object), mode: "real", side: "buy" });
+  const virtual = await sameAsset("virtual", input.assetType, input.symbol, null);
   if (virtual.length === 0) throw new ValidationError("Bu varlık için sanal pozisyon bulunamadı.");
-  assertNoOversell([...sameAsset("real", input.assetType, input.symbol, input.accountId), { ...input, id: Number.MAX_SAFE_INTEGER }]);
+  assertNoOversell([...await sameAsset("real", input.assetType, input.symbol, input.accountId), { ...input, id: Number.MAX_SAFE_INTEGER }]);
 
-  const db = getDb();
+  const db = await getDb();
   const firstBuy = [...virtual].sort(bySequence).find((t) => t.side === "buy") ?? virtual[0];
-  db.exec("BEGIN");
-  try {
-    const newId = insert(input, { sourceId: firstBuy.id });
-    const stmt = db.prepare(
-      "UPDATE transactions SET converted_at = datetime('now'), converted_to_id = ?, updated_at = datetime('now') WHERE id = ?",
-    );
-    for (const t of virtual) stmt.run(newId, t.id);
-    db.exec("COMMIT");
-    return getTransaction(newId)!;
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
-  }
+  return db.tx(async () => {
+    const newId = await insert(input, { sourceId: firstBuy.id });
+    const now = sqlNow();
+    for (const t of virtual) {
+      await db.run("UPDATE transactions SET converted_at = ?, converted_to_id = ?, updated_at = ? WHERE id = ?", [now, newId, now, t.id]);
+    }
+    return (await getTransaction(newId))!;
+  });
 }
 
 // ---- Pozisyonlar (holdings) ------------------------------------------------
@@ -604,10 +577,8 @@ interface DivRowTry {
  * Onaylanmış temettü gelirleri (TL, net). Hak kullanım günü kuru (fx_try) ile; kur
  * kaydedilmemişse güncel kur kullanılır.
  */
-function confirmedDividendRows(mode: Mode, rate: (cur: string) => number | null): DivRowTry[] {
-  const rows = getDb()
-    .prepare("SELECT account_id, asset_type, symbol, ex_date, amount, currency, fx_try FROM dividends WHERE mode = ? AND status = 'confirmed'")
-    .all(mode) as { account_id: number; asset_type: AssetType; symbol: string; ex_date: string; amount: number; currency: string; fx_try: number | null }[];
+async function confirmedDividendRows(mode: Mode, rate: (cur: string) => number | null): Promise<DivRowTry[]> {
+  const rows = await (await getDb()).all("SELECT account_id, asset_type, symbol, ex_date, amount, currency, fx_try FROM dividends WHERE mode = ? AND status = 'confirmed'", [mode]) as { account_id: number; asset_type: AssetType; symbol: string; ex_date: string; amount: number; currency: string; fx_try: number | null }[];
   const out: DivRowTry[] = [];
   for (const r of rows) {
     const fx = r.currency === "TRY" ? 1 : (r.fx_try ?? rate(r.currency));
@@ -691,8 +662,8 @@ function mergeHoldings(parts: Row[], txFlows: (rows: Row[]) => Flow[] | null): H
 export async function getPortfolio(mode: Mode, opts: { force?: boolean; account?: number | null } = {}): Promise<PortfolioSummary> {
   // Eski kayıtların / yeni elle girilen işlemlerin işlem tarihi kurunu tamamla (kısa süre bekler).
   await ensureFxRates({ timeoutMs: 5_000 });
-  const allTxs = activeTransactions(mode);
-  const accounts = mode === "real" ? listAccounts({ includeArchived: true }) : [];
+  const allTxs = await activeTransactions(mode);
+  const accounts = mode === "real" ? await listAccounts({ includeArchived: true }) : [];
   const accName = new Map(accounts.map((a) => [a.id, a.name]));
   const selectedAccount = mode === "real" && opts.account != null ? opts.account : null;
   if (selectedAccount != null && !accName.has(selectedAccount)) throw new ValidationError("Hesap bulunamadı.");
@@ -723,7 +694,7 @@ export async function getPortfolio(mode: Mode, opts: { force?: boolean; account?
   const prevRate = (cur: string): number | null => (cur === "TRY" ? 1 : (rates[cur]?.prevClose ?? rates[cur]?.price ?? null));
   const today = todayIstanbul();
 
-  const divRows = confirmedDividendRows(mode, rate);
+  const divRows = await confirmedDividendRows(mode, rate);
   const divByKey = new Map<string, number>();
   for (const d of divRows) {
     const k = `${d.accountId ?? ""}|${d.instrument}`;

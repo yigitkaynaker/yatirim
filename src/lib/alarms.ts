@@ -1,4 +1,5 @@
 import "server-only";
+import { background } from "./background";
 import { getDb } from "./db";
 import { displaySymbol, instrumentId, isAssetType, isMode, isValidSymbol, normalizeSymbol, type AssetType, type Mode } from "./assets";
 import { parseDecimal } from "./format";
@@ -102,7 +103,7 @@ function nameOf(r: { scope: AlarmScope; asset_type: AssetType | null; symbol: st
   return r.scope === "watchlist" || !r.asset_type || !r.symbol ? "İzleme listemdeki herhangi bir varlık" : displaySymbol(r.asset_type, r.symbol);
 }
 
-function fromRow(r: AlarmRow, names: Map<number, string> = accountNames()): Alarm {
+function fromRow(r: AlarmRow, names: Map<number, string>): Alarm {
   const name = nameOf(r);
   const accountName = r.account_id != null ? (names.get(r.account_id) ?? null) : null;
   return {
@@ -132,24 +133,24 @@ function fromRow(r: AlarmRow, names: Map<number, string> = accountNames()): Alar
   };
 }
 
-function rows(where = "", ...args: (string | number)[]): AlarmRow[] {
-  return getDb().prepare(`SELECT * FROM alarms ${where} ORDER BY id DESC`).all(...args) as unknown as AlarmRow[];
+async function rows(where = "", ...args: (string | number)[]): Promise<AlarmRow[]> {
+  return await (await getDb()).all(`SELECT * FROM alarms ${where} ORDER BY id DESC`, [...args]) as unknown as AlarmRow[];
 }
 
-export function listAlarms(opts: { instrument?: string; activeOnly?: boolean } = {}): Alarm[] {
-  const names = accountNames();
-  let list = rows(opts.activeOnly ? "WHERE active = 1" : "").map((r) => fromRow(r, names));
+export async function listAlarms(opts: { instrument?: string; activeOnly?: boolean } = {}): Promise<Alarm[]> {
+  const names = await accountNames();
+  let list = (await rows(opts.activeOnly ? "WHERE active = 1" : "")).map((r) => fromRow(r, names));
   if (opts.instrument) list = list.filter((a) => a.instrument === opts.instrument);
   return list;
 }
 
-export function getAlarm(id: number): Alarm | null {
-  const r = rows("WHERE id = ?", id)[0];
-  return r ? fromRow(r) : null;
+export async function getAlarm(id: number): Promise<Alarm | null> {
+  const r = (await rows("WHERE id = ?", id))[0];
+  return r ? fromRow(r, await accountNames()) : null;
 }
 
-export function listAlarmEvents(limit = 30): AlarmEvent[] {
-  const list = getDb().prepare("SELECT * FROM alarm_events ORDER BY fired_at DESC, id DESC LIMIT ?").all(limit) as {
+export async function listAlarmEvents(limit = 30): Promise<AlarmEvent[]> {
+  const list = await (await getDb()).all("SELECT * FROM alarm_events ORDER BY fired_at DESC, id DESC LIMIT ?", [limit]) as {
     id: number;
     alarm_id: number | null;
     instrument: string;
@@ -161,8 +162,8 @@ export function listAlarmEvents(limit = 30): AlarmEvent[] {
 }
 
 /** Belirli bir zamandan beri çalan alarmlar (günlük özet için) */
-export function alarmEventsSince(ms: number): AlarmEvent[] {
-  return listAlarmEvents(200).filter((e) => e.firedAt >= ms);
+export async function alarmEventsSince(ms: number): Promise<AlarmEvent[]> {
+  return (await listAlarmEvents(200)).filter((e) => e.firedAt >= ms);
 }
 
 // ---- Oluşturma / değiştirme --------------------------------------------------------
@@ -207,13 +208,13 @@ export async function createAlarm(body: Record<string, unknown>, source = "manue
   let accountId: number | null = null;
   if (kind === "cost_change") {
     mode = isMode(body.mode) ? body.mode : "real";
-    if (mode === "real" && accountGiven) accountId = resolveAccount(body).id;
+    if (mode === "real" && accountGiven) accountId = (await resolveAccount(body)).id;
     const p = await getPortfolio(mode, { account: accountId });
     if (!p.holdings.some((h) => h.assetType === assetType && h.symbol === symbol)) {
       throw new ValidationError(`${mode === "real" ? "Gerçek" : "Sanal"} portföyde ${displaySymbol(assetType!, symbol!)} pozisyonu yok; maliyet alarmı kurulamaz.`);
     }
   } else {
-    accountId = resolveAccount(accountGiven ? body : {}, { allowArchived: true }).id;
+    accountId = (await resolveAccount(accountGiven ? body : {}, { allowArchived: true })).id;
   }
 
   if (scope === "asset" && kind === "price") {
@@ -226,23 +227,19 @@ export async function createAlarm(body: Record<string, unknown>, source = "manue
   if (!Number.isFinite(cooldownRaw) || cooldownRaw < 0 || cooldownRaw > 7 * 24 * 60) throw new ValidationError("Bekleme süresi 0 ile 10080 dakika arasında olmalı.");
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, 300) : null;
 
-  const res = getDb()
-    .prepare(
-      `INSERT INTO alarms (kind, scope, asset_type, symbol, mode, direction, threshold, repeat, cooldown_min, note, source, account_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(kind, scope, assetType, symbol, mode, direction, threshold, repeat, Math.round(cooldownRaw), note, source, accountId);
-  return getAlarm(Number(res.lastInsertRowid))!;
+  const res = await (await getDb()).run(`INSERT INTO alarms (kind, scope, asset_type, symbol, mode, direction, threshold, repeat, cooldown_min, note, source, account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [kind, scope, assetType, symbol, mode, direction, threshold, repeat, Math.round(cooldownRaw), note, source, accountId]);
+  return (await getAlarm(res.lastId!))!;
 }
 
-export function deleteAlarm(id: number): boolean {
-  return Number(getDb().prepare("DELETE FROM alarms WHERE id = ?").run(id).changes) > 0;
+export async function deleteAlarm(id: number): Promise<boolean> {
+  return Number((await (await getDb()).run("DELETE FROM alarms WHERE id = ?", [id])).changes) > 0;
 }
 
 /** Alarmı açar / kapatır. Yeniden açılan alarmın durumu sıfırlanır (koşul sağlanıyorsa bir kez çalar). */
-export function setAlarmActive(id: number, active: boolean): Alarm | null {
-  getDb().prepare("UPDATE alarms SET active = ?, state = CASE WHEN ? = 1 THEN NULL ELSE state END WHERE id = ?").run(active ? 1 : 0, active ? 1 : 0, id);
-  return getAlarm(id);
+export async function setAlarmActive(id: number, active: boolean): Promise<Alarm | null> {
+  await (await getDb()).run("UPDATE alarms SET active = ?, state = CASE WHEN ? = 1 THEN NULL ELSE state END WHERE id = ?", [active ? 1 : 0, active ? 1 : 0, id]);
+  return await getAlarm(id);
 }
 
 // ---- Kontrol ------------------------------------------------------------------------
@@ -264,14 +261,14 @@ function targetsOf(r: AlarmRow, watch: Target[]): Target[] {
 
 const fmt = (v: number, d = 2) => v.toLocaleString("tr-TR", { maximumFractionDigits: d });
 
-function fireMessage(r: AlarmRow, t: Target, obs: Observation, q: Quote | undefined, fromLabel?: string | null): { title: string; body: string } {
+async function fireMessage(r: AlarmRow, t: Target, obs: Observation, q: Quote | undefined, fromLabel?: string | null): Promise<{ title: string; body: string }> {
   const name = displaySymbol(t.type, t.symbol);
   const price = q?.price != null ? ` Fiyat: ${fmt(q.price, 4)} ${q.currency}.` : "";
   const v = obs.value ?? 0;
   switch (r.kind) {
     case "price": {
       // Eşik bir pozisyon notunun stop / hedef fiyatıysa notunuz hatırlatılır.
-      const reminder = t.type && t.symbol ? noteReminder(t.type, t.symbol, r.direction, r.threshold) : null;
+      const reminder = t.type && t.symbol ? await noteReminder(t.type, t.symbol, r.direction, r.threshold) : null;
       return {
         title: `Alarm: ${name} ${r.direction === "down" ? "eşiğin altına indi" : "eşiğin üstüne çıktı"}`,
         body: `${name} ${fmt(v, 4)} ${q?.currency ?? ""} (eşik ${fmt(r.threshold ?? 0, 4)}).${reminder ? ` ${reminder}` : ""}`,
@@ -295,22 +292,23 @@ function fireMessage(r: AlarmRow, t: Target, obs: Observation, q: Quote | undefi
  * Etkin alarmları kontrol eder. Hata fırlatmaz. now: testler için.
  * Dönüş: çalan alarm sayısı.
  */
-export async function checkAlarms(opts: { now?: number; forceSlow?: boolean } = {}): Promise<{ checked: number; fired: number }> {
+export async function checkAlarms(opts: { now?: number; forceSlow?: boolean; skipSlow?: boolean } = {}): Promise<{ checked: number; fired: number }> {
   if (g.__yatirimAlarmRunning) return { checked: 0, fired: 0 };
-  const active = rows("WHERE active = 1");
+  const active = await rows("WHERE active = 1");
   if (active.length === 0) return { checked: 0, fired: 0 };
   g.__yatirimAlarmRunning = true;
   try {
-    return await runCheck(active, opts.now ?? Date.now(), !!opts.forceSlow);
+    return await runCheck(active, opts.now ?? Date.now(), opts.forceSlow ? "force" : opts.skipSlow ? "skip" : "auto");
   } finally {
     g.__yatirimAlarmRunning = false;
   }
 }
 
-async function runCheck(active: AlarmRow[], now: number, forceSlow: boolean) {
-  const slowDue = forceSlow || now - (g.__yatirimAlarmSlowAt ?? 0) >= SLOW_EVERY_MS;
+/** slow: "auto" = hacim/sinyal 15 dk'da bir (bellek), "force" = şimdi, "skip" = hiç (bulut nöbeti ayrı görevle çalıştırır) */
+async function runCheck(active: AlarmRow[], now: number, slow: "auto" | "force" | "skip") {
+  const slowDue = slow === "force" || (slow === "auto" && now - (g.__yatirimAlarmSlowAt ?? 0) >= SLOW_EVERY_MS);
   const watch: Target[] = active.some((a) => a.scope === "watchlist")
-    ? listWatchlist().map((w) => ({ type: w.assetType, symbol: w.symbol, id: instrumentId(w.assetType, w.symbol) }))
+    ? (await listWatchlist()).map((w) => ({ type: w.assetType, symbol: w.symbol, id: instrumentId(w.assetType, w.symbol) }))
     : [];
 
   const isSlow = (k: AlarmKind) => k === "volume_spike" || k === "signal_change";
@@ -362,7 +360,7 @@ async function runCheck(active: AlarmRow[], now: number, forceSlow: boolean) {
     }
   }
 
-  const db = getDb();
+  const db = await getDb();
   let fired = 0;
   for (const a of todo) {
     const state: AlarmState = a.state ? (JSON.parse(a.state) as AlarmState) : {};
@@ -382,22 +380,14 @@ async function runCheck(active: AlarmRow[], now: number, forceSlow: boolean) {
       if (!ev.fire) continue;
       anyFired = true;
       fired++;
-      const msg = fireMessage(a, t, obs, q, ev.fromLabel);
-      db.prepare("INSERT INTO alarm_events (alarm_id, instrument, message, value, fired_at) VALUES (?, ?, ?, ?, ?)").run(
-        a.id,
-        t.id,
-        `${msg.title}. ${msg.body}`,
-        obs.value ?? null,
-        now,
-      );
-      addNotification({ kind: "alarm", title: msg.title, body: msg.body, data: { alarmId: a.id, instrument: t.id } });
-      void sendPushToAll({ title: msg.title, body: msg.body, url: `/piyasa/detay?id=${encodeURIComponent(t.id)}`, tag: `alarm-${a.id}-${t.id}` });
+      const msg = await fireMessage(a, t, obs, q, ev.fromLabel);
+      await db.run("INSERT INTO alarm_events (alarm_id, instrument, message, value, fired_at) VALUES (?, ?, ?, ?, ?)", [a.id, t.id, `${msg.title}. ${msg.body}`, obs.value ?? null, now]);
+      await addNotification({ kind: "alarm", title: msg.title, body: msg.body, data: { alarmId: a.id, instrument: t.id } });
+      background(() => sendPushToAll({ title: msg.title, body: msg.body, url: `/piyasa/detay?id=${encodeURIComponent(t.id)}`, tag: `alarm-${a.id}-${t.id}` }));
       if (a.repeat === "once") break; // tek sefer: ilk çalan varlıktan sonra kapanır
     }
-    db.prepare(
-      `UPDATE alarms SET state = ?, fire_count = fire_count + ?, last_fired_at = CASE WHEN ? > 0 THEN ? ELSE last_fired_at END,
-         active = CASE WHEN ? > 0 AND repeat = 'once' THEN 0 ELSE active END WHERE id = ?`,
-    ).run(JSON.stringify(state), anyFired ? 1 : 0, anyFired ? 1 : 0, now, anyFired ? 1 : 0, a.id);
+    await db.run(`UPDATE alarms SET state = ?, fire_count = fire_count + ?, last_fired_at = CASE WHEN ? > 0 THEN ? ELSE last_fired_at END,
+         active = CASE WHEN ? > 0 AND repeat = 'once' THEN 0 ELSE active END WHERE id = ?`, [JSON.stringify(state), anyFired ? 1 : 0, anyFired ? 1 : 0, now, anyFired ? 1 : 0, a.id]);
   }
   return { checked: todo.length, fired };
 }

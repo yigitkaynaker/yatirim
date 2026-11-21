@@ -274,16 +274,16 @@ const dataTime = (ms: number | null | undefined) =>
 
 const opt = <T,>(v: unknown): T | undefined => (v === null || v === undefined || v === "" ? undefined : (v as T));
 /** account adı → hesap kimliği (gerçek portföy); bilinmeyen ad doğrulama hatası verir */
-function accountIdOf(i: Input): number | null {
+async function accountIdOf(i: Input): Promise<number | null> {
   const name = typeof i.account === "string" ? i.account.trim() : "";
   if (!name) return null;
-  const all = actions.listAccounts({ includeArchived: true });
+  const all = await actions.listAccounts({ includeArchived: true });
   const key = name.toLocaleLowerCase("tr-TR");
   const acc = all.find((a) => a.name.toLocaleLowerCase("tr-TR") === key) ?? all.find((a) => a.name.toLocaleLowerCase("tr-TR").includes(key));
   if (!acc) throw new actions.ValidationError(`"${name}" adında hesap yok. Hesaplar: ${all.filter((a) => !a.archived).map((a) => a.name).join(", ")}.`);
   return acc.id;
 }
-const accountLabel = (id: number | null | undefined) => (id != null ? (actions.listAccounts({ includeArchived: true }).find((a) => a.id === id)?.name ?? null) : null);
+const accountLabel = async (id: number | null | undefined) => (id != null ? ((await actions.listAccounts({ includeArchived: true })).find((a) => a.id === id)?.name ?? null) : null);
 const note = (i: Input) => (typeof i.note === "string" && i.note.trim() ? `${i.note.trim()} · ${AI_NOTE}` : AI_NOTE);
 
 function sizingLine(o: { amount: number | null; amountCurrency: string | null; quantity: number | null }) {
@@ -323,12 +323,12 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
   switch (name) {
     case "get_portfolio_summary": {
       const mode: Mode = i.mode === "virtual" ? "virtual" : "real";
-      const account = mode === "real" ? accountIdOf(i) : null;
+      const account = mode === "real" ? await accountIdOf(i) : null;
       const p = await actions.getPortfolioSummary(mode, { account });
       return {
         result: {
           portfoy: modeName(mode),
-          hesap: account != null ? accountLabel(account) : mode === "real" ? "toplama dahil tüm hesaplar" : null,
+          hesap: account != null ? await accountLabel(account) : mode === "real" ? "toplama dahil tüm hesaplar" : null,
           veri_zamani: dataTime(p.updatedAt),
           ...(mode === "real"
             ? {
@@ -444,14 +444,14 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
         priceNote = " (güncel piyasa fiyatı)";
       }
       if (!currency) currency = isCurrency(h.currency) ? h.currency : "TRY";
-      const tx = actions.promoteSanalToGercek({
+      const tx = await actions.promoteSanalToGercek({
         ...a,
         quantity,
         price,
         currency,
         date: typeof i.date === "string" && i.date ? i.date : todayIstanbul(),
         note: note(i),
-        accountId: accountIdOf(i),
+        accountId: await accountIdOf(i),
         fee: opt<number>(i.fee) ?? null,
       });
       const name = displaySymbol(tx.assetType, tx.symbol);
@@ -463,7 +463,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           lines: [
             `${formatQuantity(tx.quantity)} adet × ${formatMoney(tx.price, tx.currency, 4)}${priceNote}`,
             `Toplam: ${formatMoney(tx.quantity * tx.price, tx.currency)} · Tarih: ${tx.date}`,
-            `Hesap: ${accountLabel(tx.accountId) ?? "—"}${tx.fee > 0 ? ` · Komisyon: ${formatMoney(tx.fee, tx.currency)}` : ""}`,
+            `Hesap: ${(await accountLabel(tx.accountId)) ?? "—"}${tx.fee > 0 ? ` · Komisyon: ${formatMoney(tx.fee, tx.currency)}` : ""}`,
             "Sanal kayıt arşivlendi. Gerçek fiyat farklıysa İşlemler sayfasından düzeltebilirsiniz.",
           ],
           href: "/islemler",
@@ -475,7 +475,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
       const a = ref(i);
       const mode: Mode = i.mode === "virtual" ? "virtual" : "real";
       if (!isCurrency(i.currency)) throw new actions.ValidationError("Para birimi TRY, USD ya da EUR olmalı.");
-      const tx = actions.addTransaction({
+      const tx = await actions.addTransaction({
         mode,
         ...a,
         side: i.side === "sell" ? "sell" : "buy",
@@ -484,19 +484,19 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
         currency: i.currency,
         date: typeof i.date === "string" && i.date ? i.date : todayIstanbul(),
         note: note(i),
-        accountId: mode === "real" ? accountIdOf(i) : null,
+        accountId: mode === "real" ? await accountIdOf(i) : null,
         fee: opt<number>(i.fee) ?? null,
         feePct: opt<number>(i.fee_pct) ?? null,
       });
       const name = displaySymbol(tx.assetType, tx.symbol);
       return {
-        result: { tamam: true, islem_id: tx.id, hesap: accountLabel(tx.accountId), komisyon: r(tx.fee, 4) },
+        result: { tamam: true, islem_id: tx.id, hesap: await accountLabel(tx.accountId), komisyon: r(tx.fee, 4) },
         card: {
           tone: "ok",
           title: `İşlem eklendi: ${name} ${tx.side === "buy" ? "alış" : "satış"}`,
           lines: [
             `${formatQuantity(tx.quantity)} adet × ${formatMoney(tx.price, tx.currency, 4)} = ${formatMoney(tx.quantity * tx.price, tx.currency)}`,
-            `${modeName(tx.mode)} portföy${tx.accountId != null ? ` · ${accountLabel(tx.accountId)}` : ""} · ${tx.date}${tx.fee > 0 ? ` · komisyon ${formatMoney(tx.fee, tx.currency)}` : ""}`,
+            `${modeName(tx.mode)} portföy${tx.accountId != null ? ` · ${await accountLabel(tx.accountId)}` : ""} · ${tx.date}${tx.fee > 0 ? ` · komisyon ${formatMoney(tx.fee, tx.currency)}` : ""}`,
           ],
           href: "/islemler",
         },
@@ -517,7 +517,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           triggerPrice: i.trigger_price as number,
           ...(quantity != null ? { quantity } : { amount, amountCurrency: isCurrency(i.amount_currency) ? i.amount_currency : "TRY" }),
           note: note(i),
-          accountId: i.mode === "virtual" ? null : accountIdOf(i),
+          accountId: i.mode === "virtual" ? null : await accountIdOf(i),
         },
         "yapay_zeka",
       );
@@ -541,7 +541,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
     case "cancel_order": {
       const id = Number(i.order_id);
       if (!Number.isInteger(id) || id <= 0) throw new actions.ValidationError("Emir numarası geçersiz.");
-      const o = actions.cancelOrder(id);
+      const o = await actions.cancelOrder(id);
       if (!o) throw new actions.ValidationError(`#${id} numaralı emir bulunamadı.`);
       return {
         result: { tamam: true, emir_id: o.id, durum: o.status },
@@ -557,7 +557,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
     case "list_orders": {
       const status = ["pending", "executed", "cancelled", "failed"].includes(String(i.status)) ? (i.status as actions.OrderStatus) : undefined;
       return {
-        result: actions.listOrders(status).slice(0, 30).map((o) => ({
+        result: (await actions.listOrders(status)).slice(0, 30).map((o) => ({
           emir_id: o.id,
           portfoy: modeName(o.mode),
           asset_type: o.assetType,
@@ -578,7 +578,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
     case "get_latest_news_report": {
       const one = i.asset_type && i.symbol ? ref(i) : null;
       const instrument = one ? `${one.assetType}:${one.symbol}` : undefined;
-      const rep = getLatestReport(instrument);
+      const rep = await getLatestReport(instrument);
       if (!rep) return { result: { rapor: null, aciklama: "Henüz haber analizi raporu yok. Kullanıcı Analizler sayfasından 'Şimdi analiz et' diyebilir." } };
       return {
         result: {
@@ -642,7 +642,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
       const one = i.symbol ? (i.asset_type ? ref(i) : guessRef(String(i.symbol))) : null;
       if (one) {
         const h = await actions.getDividendHistory({ type: one.assetType, symbol: one.symbol });
-        const records = actions.listDividends({ status: "confirmed" }).filter((d) => d.assetType === one.assetType && d.symbol === one.symbol);
+        const records = (await actions.listDividends({ status: "confirmed" })).filter((d) => d.assetType === one.assetType && d.symbol === one.symbol);
         const sugg = (await actions.getDividendSuggestions()).filter((d) => d.assetType === one.assetType && d.symbol === one.symbol);
         return {
           result: {
@@ -678,7 +678,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
       const sym = normalizeSymbol("bist", String(i.symbol ?? ""));
       if (!sym) throw new actions.ValidationError("symbol eksik.");
       const hours = Math.min(24 * 60, Math.max(1, Number(i.hours) || 168));
-      const items = actions.listKapDisclosures({ ticker: sym, sinceMs: Date.now() - hours * 3600_000, limit: 20 });
+      const items = await actions.listKapDisclosures({ ticker: sym, sinceMs: Date.now() - hours * 3600_000, limit: 20 });
       return {
         result: {
           symbol: sym,
@@ -722,7 +722,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           repeat: i.repeat === "every" ? "every" : "once",
           cooldownMin: opt<number>(i.cooldown_min),
           note: typeof i.note === "string" ? i.note : null,
-          accountId: accountIdOf(i),
+          accountId: await accountIdOf(i),
         },
         "yapay_zeka",
       );
@@ -740,8 +740,8 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
     case "list_alarms": {
       return {
         result: {
-          alarmlar: actions.listAlarms().map((x) => ({ alarm_id: x.id, kosul: x.description, tekrar: x.repeat, bekleme_dk: x.cooldownMin, acik: x.active, calma_sayisi: x.fireCount, son_calma: x.lastFiredAt ? new Date(x.lastFiredAt).toISOString() : null })),
-          son_calanlar: actions.listAlarmEvents(10).map((e) => ({ zaman_utc: new Date(e.firedAt).toISOString(), mesaj: e.message })),
+          alarmlar: (await actions.listAlarms()).map((x) => ({ alarm_id: x.id, kosul: x.description, tekrar: x.repeat, bekleme_dk: x.cooldownMin, acik: x.active, calma_sayisi: x.fireCount, son_calma: x.lastFiredAt ? new Date(x.lastFiredAt).toISOString() : null })),
+          son_calanlar: (await actions.listAlarmEvents(10)).map((e) => ({ zaman_utc: new Date(e.firedAt).toISOString(), mesaj: e.message })),
         },
       };
     }
@@ -749,7 +749,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
     case "delete_alarm": {
       const id = Number(i.alarm_id);
       if (!Number.isInteger(id) || id <= 0) throw new actions.ValidationError("Alarm numarası geçersiz.");
-      if (!actions.deleteAlarm(id)) throw new actions.ValidationError(`#${id} numaralı alarm bulunamadı.`);
+      if (!(await actions.deleteAlarm(id))) throw new actions.ValidationError(`#${id} numaralı alarm bulunamadı.`);
       return { result: { tamam: true, alarm_id: id }, card: { tone: "ok", title: `Alarm silindi #${id}`, lines: [], href: "/alarmlar" } };
     }
 

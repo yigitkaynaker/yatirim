@@ -21,6 +21,8 @@ const accounts = await import("../src/lib/accounts");
 const io = await import("../src/lib/importExport");
 const backup = await import("../src/lib/backup");
 const { maxDrawdown } = await import("../src/lib/perfMath");
+const { PG, resetDatabase } = await import("./test-db");
+if (PG) console.log("(Postgres modu: SQLite dosya geçişi ve dosya yedeği testleri atlanır)");
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -30,17 +32,13 @@ async function test(name: string, fn: () => void | Promise<void>) {
 }
 const near = (a: number | null | undefined, b: number, eps = 1e-6) => assert.ok(a != null && Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
-/** Veritabanını tamamen sıfırlar (aynı klasörde yeni, boş dosya). */
-function freshDb() {
-  db.closeDb();
-  for (const ext of ["", "-wal", "-shm"]) fs.rmSync(db.dbPath() + ext, { force: true });
-  fs.rmSync(db.backupDir(), { recursive: true, force: true });
-}
+/** Veritabanını tamamen sıfırlar (SQLite: aynı klasörde yeni, boş dosya; Postgres: şema yeniden kurulur). */
+const freshDb = resetDatabase;
 
 /** Hesap + enstrüman başına miktar / TL maliyet / gerçekleşen K/Z (ağ olmadan, işlem kurlarıyla) */
-function holdingsSnapshot() {
-  const names = accounts.accountNames();
-  const txs = portfolio.activeTransactions("real");
+async function holdingsSnapshot() {
+  const names = await accounts.accountNames();
+  const txs = await portfolio.activeTransactions("real");
   const out: Record<string, { q: number; cost: number; realized: number; fees: number }> = {};
   for (const p of buildPositions(txs, () => null)) {
     const key = `${names.get(p.accountId!) ?? "?"}|${p.assetType}:${p.symbol}`;
@@ -159,22 +157,22 @@ await test("komisyon alışta maliyete, satışta gelire yansır (TL ve döviz)"
   near(u.costTry, 101 * 40);
 });
 
-await test("hesap varsayılan oranı ve açık komisyon (veritabanı)", () => {
-  freshDb();
-  const acc = accounts.createAccount({ name: "Midas", feePct: "0,2" });
-  const tx = portfolio.createTransaction(
-    portfolio.parseTransactionInput({ mode: "real", accountId: acc.id, assetType: "bist", symbol: "ASELS", side: "buy", quantity: "100", price: "50", currency: "TRY", date: "2025-02-03" }),
+await test("hesap varsayılan oranı ve açık komisyon (veritabanı)", async () => {
+  await freshDb();
+  const acc = await accounts.createAccount({ name: "Midas", feePct: "0,2" });
+  const tx = await portfolio.createTransaction(
+    await portfolio.parseTransactionInput({ mode: "real", accountId: acc.id, assetType: "bist", symbol: "ASELS", side: "buy", quantity: "100", price: "50", currency: "TRY", date: "2025-02-03" }),
   );
   near(tx.fee, 10); // 5000 × %0,2
-  const t2 = portfolio.parseTransactionInput({ mode: "real", accountId: acc.id, assetType: "bist", symbol: "ASELS", side: "buy", quantity: "1", price: "50", currency: "TRY", date: "2025-02-03", fee: "0" });
+  const t2 = await portfolio.parseTransactionInput({ mode: "real", accountId: acc.id, assetType: "bist", symbol: "ASELS", side: "buy", quantity: "1", price: "50", currency: "TRY", date: "2025-02-03", fee: "0" });
   assert.equal(t2.fee, 0);
-  const t3 = portfolio.parseTransactionInput({ mode: "real", accountId: acc.id, assetType: "bist", symbol: "ASELS", side: "buy", quantity: "10", price: "50", currency: "TRY", date: "2025-02-03", feePct: "1" });
+  const t3 = await portfolio.parseTransactionInput({ mode: "real", accountId: acc.id, assetType: "bist", symbol: "ASELS", side: "buy", quantity: "10", price: "50", currency: "TRY", date: "2025-02-03", feePct: "1" });
   near(t3.fee, 5);
-  assert.throws(() => portfolio.parseTransactionInput({ mode: "real", assetType: "bist", symbol: "ASELS", side: "buy", quantity: "1", price: "1", currency: "TRY", date: "2025-02-03", fee: "5" }), /Komisyon/);
+  await assert.rejects(async () => (await portfolio.parseTransactionInput({ mode: "real", assetType: "bist", symbol: "ASELS", side: "buy", quantity: "1", price: "1", currency: "TRY", date: "2025-02-03", fee: "5" })), /Komisyon/);
   // Pozisyonlar hesap başına: Ana hesapta olmayan ASELS satılamaz.
-  const main = accounts.defaultAccount();
-  assert.throws(
-    () => portfolio.createTransaction(portfolio.parseTransactionInput({ mode: "real", accountId: main.id, assetType: "bist", symbol: "ASELS", side: "sell", quantity: "1", price: "50", currency: "TRY", date: "2025-03-03" })),
+  const main = await accounts.defaultAccount();
+  await assert.rejects(
+    async () => (await portfolio.createTransaction(await portfolio.parseTransactionInput({ mode: "real", accountId: main.id, assetType: "bist", symbol: "ASELS", side: "sell", quantity: "1", price: "50", currency: "TRY", date: "2025-03-03" }))),
     /eldekinden fazla/,
   );
 });
@@ -223,106 +221,106 @@ await test("sayı okuma: 0.500 binlik sayılmaz; 1.234 Türkçe okunur ama belir
 });
 
 let exported = "";
-let before: ReturnType<typeof holdingsSnapshot> = {};
-await test("dışa aktar → boş veritabanına içe aktar → aynı pozisyonlar", () => {
-  freshDb();
-  const midas = accounts.createAccount({ name: "Midas", feePct: "0,1" });
-  const banka = accounts.createAccount({ name: "Banka" });
-  const main = accounts.defaultAccount();
-  const add = (o: Record<string, unknown>, fx?: number) =>
-    portfolio.recordTransaction(portfolio.parseTransactionInput({ mode: "real", currency: "TRY", ...o }), { fxTry: fx ?? null });
-  add({ accountId: main.id, assetType: "bist", symbol: "THYAO", side: "buy", quantity: "100", price: "245,5", date: "2025-03-12", fee: "12,25", note: "İlk; noktalı \"virgül\"" });
-  add({ accountId: midas.id, assetType: "bist", symbol: "THYAO", side: "buy", quantity: "50", price: "288", date: "2025-09-02" });
-  add({ accountId: main.id, assetType: "bist", symbol: "THYAO", side: "sell", quantity: "40", price: "312,25", date: "2026-02-10", fee: "6" });
-  add({ accountId: midas.id, assetType: "foreign", symbol: "AAPL", side: "buy", quantity: "5", price: "198,4", currency: "USD", date: "2025-04-22", fee: "1" }, 37.95);
-  add({ accountId: midas.id, assetType: "foreign", symbol: "AAPL", side: "sell", quantity: "2", price: "231,1", currency: "USD", date: "2026-01-15", fee: "1" }, 43.05);
-  add({ accountId: banka.id, assetType: "gold", symbol: "GRAM", side: "buy", quantity: "20", price: "3410", date: "2025-05-09" });
-  add({ accountId: banka.id, assetType: "fund", symbol: "AFT", side: "buy", quantity: "1200", price: "0,238517", date: "2025-10-14", note: "=2+3 @x" });
-  before = holdingsSnapshot();
-  exported = io.exportTransactionsCsv();
+let before: Awaited<ReturnType<typeof holdingsSnapshot>> = {};
+await test("dışa aktar → boş veritabanına içe aktar → aynı pozisyonlar", async () => {
+  await freshDb();
+  const midas = await accounts.createAccount({ name: "Midas", feePct: "0,1" });
+  const banka = await accounts.createAccount({ name: "Banka" });
+  const main = await accounts.defaultAccount();
+  const add = async (o: Record<string, unknown>, fx?: number) =>
+    (await portfolio.recordTransaction(await portfolio.parseTransactionInput({ mode: "real", currency: "TRY", ...o }), { fxTry: fx ?? null }));
+  await add({ accountId: main.id, assetType: "bist", symbol: "THYAO", side: "buy", quantity: "100", price: "245,5", date: "2025-03-12", fee: "12,25", note: "İlk; noktalı \"virgül\"" });
+  await add({ accountId: midas.id, assetType: "bist", symbol: "THYAO", side: "buy", quantity: "50", price: "288", date: "2025-09-02" });
+  await add({ accountId: main.id, assetType: "bist", symbol: "THYAO", side: "sell", quantity: "40", price: "312,25", date: "2026-02-10", fee: "6" });
+  await add({ accountId: midas.id, assetType: "foreign", symbol: "AAPL", side: "buy", quantity: "5", price: "198,4", currency: "USD", date: "2025-04-22", fee: "1" }, 37.95);
+  await add({ accountId: midas.id, assetType: "foreign", symbol: "AAPL", side: "sell", quantity: "2", price: "231,1", currency: "USD", date: "2026-01-15", fee: "1" }, 43.05);
+  await add({ accountId: banka.id, assetType: "gold", symbol: "GRAM", side: "buy", quantity: "20", price: "3410", date: "2025-05-09" });
+  await add({ accountId: banka.id, assetType: "fund", symbol: "AFT", side: "buy", quantity: "1200", price: "0,238517", date: "2025-10-14", note: "=2+3 @x" });
+  before = await holdingsSnapshot();
+  exported = await io.exportTransactionsCsv();
   assert.ok(exported.startsWith("﻿"), "BOM");
   assert.ok(exported.split("\r\n")[0].includes(";"), "; ayırıcı");
   assert.match(exported, /245,5;/);
   assert.match(exported, /12\.03\.2025;Ana hesap;/);
 
-  freshDb(); // yepyeni veritabanı (yalnızca "Ana hesap")
-  const pv = io.previewImport(exported, { createAccounts: true });
+  await freshDb(); // yepyeni veritabanı (yalnızca "Ana hesap")
+  const pv = await io.previewImport(exported, { createAccounts: true });
   assert.equal(pv.counts.invalid, 0, JSON.stringify(pv.rows.filter((r) => r.errors.length).map((r) => r.errors)));
   assert.equal(pv.counts.valid, 7);
   assert.deepEqual(pv.unknownAccounts.sort(), ["Banka", "Midas"]);
-  assert.equal(portfolio.activeTransactions("real").length, 0, "önizleme hiçbir şey kaydetmez");
-  assert.equal(accounts.listAccounts().length, 1, "önizleme hesap da oluşturmaz");
-  const r = io.commitImport(exported, { createAccounts: true });
+  assert.equal((await portfolio.activeTransactions("real")).length, 0, "önizleme hiçbir şey kaydetmez");
+  assert.equal((await accounts.listAccounts()).length, 1, "önizleme hesap da oluşturmaz");
+  const r = await io.commitImport(exported, { createAccounts: true });
   assert.equal(r.inserted, 7);
-  assert.deepEqual(holdingsSnapshot(), before);
-  const note = portfolio.activeTransactions("real").find((t) => t.note?.startsWith("İlk"))!.note;
+  assert.deepEqual(await holdingsSnapshot(), before);
+  const note = (await portfolio.activeTransactions("real")).find((t) => t.note?.startsWith("İlk"))!.note;
   assert.equal(note, 'İlk; noktalı "virgül"');
   assert.match(exported, /;'=2\+3 @x\r\n/, "formül koruması");
-  assert.equal(portfolio.activeTransactions("real").find((t) => t.symbol === "AFT")!.note, "=2+3 @x", "içe aktarmada ' geri alınır");
+  assert.equal((await portfolio.activeTransactions("real")).find((t) => t.symbol === "AFT")!.note, "=2+3 @x", "içe aktarmada ' geri alınır");
 });
 
-await test("aynı dosya ikinci kez: hepsi mükerrer, hiçbir şey eklenmez", () => {
-  const r = io.commitImport(exported, { createAccounts: true });
+await test("aynı dosya ikinci kez: hepsi mükerrer, hiçbir şey eklenmez", async () => {
+  const r = await io.commitImport(exported, { createAccounts: true });
   assert.equal(r.inserted, 0);
   assert.equal(r.skippedDuplicates, 7);
-  assert.deepEqual(holdingsSnapshot(), before);
+  assert.deepEqual(await holdingsSnapshot(), before);
 });
 
-await test("hatalı satır önizlemede gösterilir; kayıt atomik (hiçbiri eklenmez)", () => {
-  const n = portfolio.activeTransactions("real").length;
+await test("hatalı satır önizlemede gösterilir; kayıt atomik (hiçbiri eklenmez)", async () => {
+  const n = (await portfolio.activeTransactions("real")).length;
   const bad = [
     "Tarih;Hesap;Tür;Sembol;Yön;Miktar;Fiyat;Para birimi",
     "01.06.2026;Ana hesap;BIST hissesi;KCHOL;Alış;10;172,1;TRY",
     "32.13.2026;Ana hesap;BIST hissesi;SISE;Alış;abc;38,6;TRY",
     "02.06.2026;Ana hesap;BIST hissesi;TUPRS;Satış;5;150;TRY",
   ].join("\n");
-  const pv = io.previewImport(bad);
+  const pv = await io.previewImport(bad);
   assert.equal(pv.counts.total, 3);
   assert.equal(pv.rows[0].errors.length, 0);
   assert.ok(pv.rows[1].errors.some((e) => /Tarih/.test(e)) && pv.rows[1].errors.some((e) => /Miktar/.test(e)));
   assert.ok(pv.rows[2].errors.some((e) => /fazla satış/.test(e)), pv.rows[2].errors.join());
-  assert.throws(() => io.commitImport(bad), /hiçbir satır kaydedilmedi/);
-  assert.equal(portfolio.activeTransactions("real").length, n);
+  await assert.rejects(async () => (await io.commitImport(bad)), /hiçbir satır kaydedilmedi/);
+  assert.equal((await portfolio.activeTransactions("real")).length, n);
 });
 
-await test("başka kurum dosyası: sütun eşleme ve varsayılan tür", () => {
+await test("başka kurum dosyası: sütun eşleme ve varsayılan tür", async () => {
   const other = ["İşlem Tarihi,Hisse,İşlem Tipi,Adet,Fiyat", "2026-06-03,KCHOL,ALIM,10,172.1", "2026-06-04,KCHOL,Satım,4,180.5"].join("\n");
   // "ALIM" / "Satım" tanınır; eşleme otomatik
-  const pv = io.previewImport(other, { defaultAssetType: "bist" });
+  const pv = await io.previewImport(other, { defaultAssetType: "bist" });
   assert.equal(pv.counts.valid, 2, JSON.stringify(pv.rows.map((r) => r.errors)));
   assert.equal(pv.rows[0].price, 172.1);
   assert.equal(pv.rows[0].symbol, "KCHOL");
   assert.equal(pv.rows[0].account, null);
   // elle eşleme: sütunları farklı yerlerde göster
-  const pv2 = io.previewImport("x;y;z;w;v\n05.06.2026;THYAO;S;1;300", { mapping: { date: 0, symbol: 1, side: 2, quantity: 3, price: 4 }, defaultAssetType: "bist" });
+  const pv2 = await io.previewImport("x;y;z;w;v\n05.06.2026;THYAO;S;1;300", { mapping: { date: 0, symbol: 1, side: 2, quantity: 3, price: 4 }, defaultAssetType: "bist" });
   assert.equal(pv2.rows[0].side, "sell");
   assert.equal(pv2.counts.valid, 1);
 });
 
-await test("dosyada aynı satır iki kez: ikisi de eklenir; yeniden yüklemede ikisi de mükerrer", () => {
-  const n = portfolio.activeTransactions("real").length;
+await test("dosyada aynı satır iki kez: ikisi de eklenir; yeniden yüklemede ikisi de mükerrer", async () => {
+  const n = (await portfolio.activeTransactions("real")).length;
   const twice = [
     "Tarih;Hesap;Tür;Sembol;Yön;Miktar;Fiyat;Para birimi",
     "08.06.2026;Ana hesap;BIST hissesi;EREGL;Alış;10;45,2;TRY",
     "08.06.2026;Ana hesap;BIST hissesi;EREGL;Alış;10;45,2;TRY",
   ].join("\n");
-  const pv = io.previewImport(twice);
+  const pv = await io.previewImport(twice);
   assert.equal(pv.counts.valid, 2);
   assert.equal(pv.counts.duplicate, 0);
   assert.ok(pv.rows.every((r) => r.info.some((x) => /dosyada 2 kez var/.test(x))), JSON.stringify(pv.rows.map((r) => r.info)));
-  assert.equal(io.commitImport(twice).inserted, 2);
-  assert.equal(portfolio.activeTransactions("real").length, n + 2);
-  const again = io.commitImport(twice);
+  assert.equal((await io.commitImport(twice)).inserted, 2);
+  assert.equal((await portfolio.activeTransactions("real")).length, n + 2);
+  const again = await io.commitImport(twice);
   assert.equal(again.inserted, 0);
   assert.equal(again.skippedDuplicates, 2);
   // Üç kez geçen satır: veritabanında 2 tane var → yalnızca biri yeni
-  const thrice = io.previewImport(twice + "\n08.06.2026;Ana hesap;BIST hissesi;EREGL;Alış;10;45,2;TRY");
+  const thrice = await io.previewImport(twice + "\n08.06.2026;Ana hesap;BIST hissesi;EREGL;Alış;10;45,2;TRY");
   assert.equal(thrice.counts.duplicate, 2);
   assert.equal(thrice.counts.valid, 1);
 });
 
-await test("belirsiz sayı önizlemede uyarı olarak gösterilir (kaydı engellemez)", () => {
-  const pv = io.previewImport(["Tarih;Hesap;Tür;Sembol;Yön;Miktar;Fiyat;Para birimi", "09.06.2026;Ana hesap;BIST hissesi;SISE;Alış;1.250;0.500;TRY"].join("\n"));
+await test("belirsiz sayı önizlemede uyarı olarak gösterilir (kaydı engellemez)", async () => {
+  const pv = await io.previewImport(["Tarih;Hesap;Tür;Sembol;Yön;Miktar;Fiyat;Para birimi", "09.06.2026;Ana hesap;BIST hissesi;SISE;Alış;1.250;0.500;TRY"].join("\n"));
   assert.equal(pv.counts.invalid, 0);
   assert.equal(pv.rows[0].quantity, 1250);
   assert.equal(pv.rows[0].price, 0.5);
@@ -330,23 +328,23 @@ await test("belirsiz sayı önizlemede uyarı olarak gösterilir (kaydı engelle
   assert.match(pv.rows[0].warnings[0], /Belirsiz sayı: Miktar "1\.250"/);
 });
 
-await test("işlemde hesap: ad ya da numara; bulunamazsa varsayılana düşmez, hata verir", () => {
-  const main = accounts.defaultAccount();
-  const other = accounts.createAccount({ name: "Deneme Kurum" });
+await test("işlemde hesap: ad ya da numara; bulunamazsa varsayılana düşmez, hata verir", async () => {
+  const main = await accounts.defaultAccount();
+  const other = await accounts.createAccount({ name: "Deneme Kurum" });
   const base = { mode: "real", assetType: "bist", symbol: "THYAO", side: "buy", quantity: "1", price: "10", currency: "TRY", date: "2026-06-10" };
-  assert.equal(portfolio.parseTransactionInput({ ...base, account: other.id }).accountId, other.id);
-  assert.equal(portfolio.parseTransactionInput({ ...base, account: String(other.id) }).accountId, other.id);
-  assert.equal(portfolio.parseTransactionInput({ ...base, account: "deneme kurum" }).accountId, other.id);
-  assert.equal(portfolio.parseTransactionInput(base).accountId, main.id);
-  assert.throws(() => portfolio.parseTransactionInput({ ...base, account: 9999 }), /hesap yok/);
-  assert.throws(() => portfolio.parseTransactionInput({ ...base, account: "Olmayan" }), /hesap yok/);
+  assert.equal((await portfolio.parseTransactionInput({ ...base, account: other.id })).accountId, other.id);
+  assert.equal((await portfolio.parseTransactionInput({ ...base, account: String(other.id) })).accountId, other.id);
+  assert.equal((await portfolio.parseTransactionInput({ ...base, account: "deneme kurum" })).accountId, other.id);
+  assert.equal((await portfolio.parseTransactionInput(base)).accountId, main.id);
+  await assert.rejects(async () => (await portfolio.parseTransactionInput({ ...base, account: 9999 })), /hesap yok/);
+  await assert.rejects(async () => (await portfolio.parseTransactionInput({ ...base, account: "Olmayan" })), /hesap yok/);
 });
 
 // ---- Geçiş -------------------------------------------------------------------------------
 console.log("Şema geçişi");
 
-await test("C öncesi veritabanı 'Ana hesap'a taşınır, toplamlar değişmez, önce yedek alınır", () => {
-  freshDb();
+if (!PG) await test("C öncesi veritabanı 'Ana hesap'a taşınır, toplamlar değişmez, önce yedek alınır", async () => {
+  await freshDb();
   fs.mkdirSync(db.dataDir(), { recursive: true });
   const raw = new DatabaseSync(db.dbPath());
   for (const sql of db.MIGRATION_SQL.slice(0, 8)) raw.exec(sql);
@@ -365,80 +363,97 @@ await test("C öncesi veritabanı 'Ana hesap'a taşınır, toplamlar değişmez,
     () => null,
   ).map((p) => ({ s: p.symbol, q: p.quantity, c: p.costTry, r: p.realizedTry }));
 
-  const conn = db.getDb(); // geçişi çalıştırır
-  assert.equal((conn.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.SCHEMA_VERSION);
-  const accs = accounts.listAccounts();
+  const conn = await db.getDb(); // geçişi çalıştırır
+  assert.equal((await conn.get("PRAGMA user_version") as { user_version: number }).user_version, db.SCHEMA_VERSION);
+  const accs = await accounts.listAccounts();
   assert.deepEqual(accs.map((a) => [a.id, a.name, a.includeInTotal]), [[1, "Ana hesap", true]]);
-  const txs = portfolio.activeTransactions("real");
+  const txs = await portfolio.activeTransactions("real");
   assert.ok(txs.every((t) => t.accountId === 1 && t.fee === 0));
-  assert.ok(portfolio.activeTransactions("virtual").every((t) => t.accountId === null));
+  assert.ok((await portfolio.activeTransactions("virtual")).every((t) => t.accountId === null));
   const post = buildPositions(txs, () => null).map((p) => ({ s: p.symbol, q: p.quantity, c: p.costTry, r: p.realizedTry }));
   assert.deepEqual(post, pre);
-  assert.equal((conn.prepare("SELECT account_id FROM dividends").get() as { account_id: number }).account_id, 1);
-  assert.equal((conn.prepare("SELECT account_id FROM orders").get() as { account_id: number }).account_id, 1);
+  assert.equal((await conn.get("SELECT account_id FROM dividends") as { account_id: number }).account_id, 1);
+  assert.equal((await conn.get("SELECT account_id FROM orders") as { account_id: number }).account_id, 1);
   assert.ok(
     backup.listBackups().some((b) => b.kind === "gecis-oncesi"),
     "geçiş öncesi yedek",
   );
   // Eski şemalı yedek: geçici kopyada geçişler çalışır, sütun denetimi geçer
   const old = backup.listBackups().find((b) => b.kind === "gecis-oncesi")!;
-  assert.equal(backup.validateBackupFile(path.join(db.backupDir(), old.name)).schemaVersion, 8);
+  assert.equal((await backup.validateBackupFile(path.join(db.backupDir(), old.name))).schemaVersion, 8);
 });
 
 await test("pozisyon notu: stop alarmında satış planı hatırlatılır", async () => {
   const notes = await import("../src/lib/notes");
-  notes.saveNote({ mode: "real", assetType: "bist", symbol: "THYAO", why: "Uzun vade", exitPlan: "250 altında çıkarım", targetPrice: "360", stopPrice: "250" });
-  assert.match(notes.noteReminder("bist", "THYAO", "down", 250) ?? "", /Stop fiyatınıza geldi.*250 altında çıkarım.*Uzun vade/);
-  assert.match(notes.noteReminder("bist", "THYAO", "up", 360) ?? "", /Hedef/);
-  assert.equal(notes.noteReminder("bist", "THYAO", "down", 240), null);
-  assert.throws(() => notes.saveNote({ mode: "real", assetType: "bist", symbol: "THYAO", targetPrice: "200", stopPrice: "250" }), /Stop/);
-  assert.equal(notes.saveNote({ mode: "real", assetType: "bist", symbol: "THYAO" }), null); // boş → silinir
+  await notes.saveNote({ mode: "real", assetType: "bist", symbol: "THYAO", why: "Uzun vade", exitPlan: "250 altında çıkarım", targetPrice: "360", stopPrice: "250" });
+  assert.match((await notes.noteReminder("bist", "THYAO", "down", 250)) ?? "", /Stop fiyatınıza geldi.*250 altında çıkarım.*Uzun vade/);
+  assert.match((await notes.noteReminder("bist", "THYAO", "up", 360)) ?? "", /Hedef/);
+  assert.equal(await notes.noteReminder("bist", "THYAO", "down", 240), null);
+  await assert.rejects(async () => (await notes.saveNote({ mode: "real", assetType: "bist", symbol: "THYAO", targetPrice: "200", stopPrice: "250" })), /Stop/);
+  assert.equal(await notes.saveNote({ mode: "real", assetType: "bist", symbol: "THYAO" }), null); // boş → silinir
 });
 
 // ---- Yedek / geri yükleme --------------------------------------------------------------------
 console.log("Yedekleme");
 
-await test("yedek al, doğrula, sonradan eklenen işlem geri yüklemede geri alınır", () => {
-  const n0 = portfolio.activeTransactions("real").length;
-  const b = backup.createBackup("elle");
-  const check = backup.validateBackupFile(path.join(db.backupDir(), b.name));
-  assert.equal(check.transactions, n0 + portfolio.listTransactions("virtual").length);
+if (!PG) await test("yedek al, doğrula, sonradan eklenen işlem geri yüklemede geri alınır", async () => {
+  const n0 = (await portfolio.activeTransactions("real")).length;
+  const b = await backup.createBackup("elle");
+  const check = await backup.validateBackupFile(path.join(db.backupDir(), b.name));
+  assert.equal(check.transactions, n0 + (await portfolio.listTransactions("virtual")).length);
   assert.equal(check.schemaVersion, db.SCHEMA_VERSION);
 
-  portfolio.createTransaction(
-    portfolio.parseTransactionInput({ mode: "real", assetType: "bist", symbol: "ASELS", side: "buy", quantity: "10", price: "60", currency: "TRY", date: "2026-07-01" }),
+  await portfolio.createTransaction(
+    await portfolio.parseTransactionInput({ mode: "real", assetType: "bist", symbol: "ASELS", side: "buy", quantity: "10", price: "60", currency: "TRY", date: "2026-07-01" }),
   );
-  assert.equal(portfolio.activeTransactions("real").length, n0 + 1);
+  assert.equal((await portfolio.activeTransactions("real")).length, n0 + 1);
 
-  const staged = backup.stageUpload(new Uint8Array(fs.readFileSync(path.join(db.backupDir(), b.name))));
-  const r = backup.restoreFromFile(path.join(db.backupDir(), "yukleme", staged.token));
+  const staged = await backup.stageUpload(new Uint8Array(fs.readFileSync(path.join(db.backupDir(), b.name))));
+  const r = await backup.restoreFromFile(path.join(db.backupDir(), "yukleme", staged.token));
   assert.equal(r.before.kind, "geri-yukleme-oncesi");
-  assert.equal(portfolio.activeTransactions("real").length, n0);
-  const ic = db.getDb().prepare("PRAGMA integrity_check").get() as { integrity_check: string };
+  assert.equal((await portfolio.activeTransactions("real")).length, n0);
+  const ic = (await (await db.getDb()).get("PRAGMA integrity_check")) as { integrity_check: string };
   assert.equal(ic.integrity_check, "ok");
   // geri yükleme öncesi yedekte eklenen işlem duruyor
-  assert.equal(backup.validateBackupFile(path.join(db.backupDir(), r.before.name)).transactions, check.transactions + 1);
+  assert.equal((await backup.validateBackupFile(path.join(db.backupDir(), r.before.name))).transactions, check.transactions + 1);
 });
 
-await test("geçersiz dosya reddedilir; en fazla 14 yedek tutulur", () => {
-  assert.throws(() => backup.stageUpload(new TextEncoder().encode("merhaba".repeat(200))), /SQLite/);
+if (!PG) await test("geçersiz dosya reddedilir; en fazla 14 yedek tutulur", async () => {
+  await assert.rejects(async () => (await backup.stageUpload(new TextEncoder().encode("merhaba".repeat(200)))), /SQLite/);
   const junk = path.join(DIR, "bos.db");
   const j = new DatabaseSync(junk);
   j.exec("CREATE TABLE x (a); INSERT INTO x VALUES (1);");
   j.close();
-  assert.throws(() => backup.validateBackupFile(junk), /yatırım uygulaması yedeği değil|eksik/);
+  await assert.rejects(async () => (await backup.validateBackupFile(junk)), /yatırım uygulaması yedeği değil|eksik/);
   // Tablo adları doğru ama sütunlar eksik (güncel şema sürümü): reddedilir
   const hollow = path.join(DIR, "oyuk.db");
   const h = new DatabaseSync(hollow);
   h.exec("CREATE TABLE transactions (id INTEGER PRIMARY KEY, date TEXT); CREATE TABLE settings (key TEXT); CREATE TABLE orders (id INTEGER); CREATE TABLE portfolio_snapshots (id INTEGER); CREATE TABLE accounts (id INTEGER);");
   h.exec(`PRAGMA user_version = ${db.SCHEMA_VERSION}`);
   h.close();
-  assert.throws(() => backup.validateBackupFile(hollow), /beklenen sütunlar eksik.*transactions/);
+  await assert.rejects(async () => (await backup.validateBackupFile(hollow)), /beklenen sütunlar eksik.*transactions/);
   assert.deepEqual(fs.readdirSync(DIR).filter((n) => n.includes("dogrula")), [], "geçici kopya silinir");
-  for (let i = 0; i < 16; i++) backup.createBackup("elle");
+  for (let i = 0; i < 16; i++) await backup.createBackup("elle");
   assert.equal(backup.listBackups().length, backup.KEEP_BACKUPS);
 });
 
-db.closeDb();
+await test("JSON veri dökümü: indir → sıfırla → geri yükle → aynı pozisyonlar ve sayılar", async () => {
+  const dx = await import("../src/lib/dataExport");
+  const { rowCounts } = await import("../src/lib/db/transfer");
+  const snap = await holdingsSnapshot();
+  const counts = await rowCounts(await db.getDb());
+  const dump = JSON.parse(JSON.stringify(await dx.exportAllData({ includeCaches: true }))) as unknown;
+  await freshDb();
+  const r = await dx.importAllData(dump);
+  assert.equal(r.transactions, counts.transactions);
+  assert.deepEqual(await rowCounts(await db.getDb()), counts);
+  assert.deepEqual(await holdingsSnapshot(), snap);
+  // Yeni kayıtlar çakışmadan eklenir (kimlik sayaçları ayarlandı)
+  const acc = await accounts.createAccount({ name: "Döküm sonrası" });
+  assert.ok(acc.id > 1);
+  await assert.rejects(async () => dx.importAllData({ format: "baska", tables: {} }), /veri dosyası değil/);
+});
+
+await db.closeDb();
 fs.rmSync(DIR, { recursive: true, force: true });
 console.log(`\n${passed} test geçti.`);

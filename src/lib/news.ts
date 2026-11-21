@@ -1,6 +1,7 @@
 import "server-only";
+import { background } from "./background";
 import type Anthropic from "@anthropic-ai/sdk";
-import { getDb } from "./db";
+import { getDb, isCloud, sqlNow } from "./db";
 import { ASSET_TYPES, displaySymbol, instrumentId, isAssetType, normalizeSymbol, parseInstrumentId, type AssetType } from "./assets";
 import * as actions from "./actions";
 import {
@@ -126,19 +127,19 @@ function fromRow(r: ReportRow): NewsReport {
   };
 }
 
-export function listReports(limit = 30): NewsReport[] {
-  const rows = getDb().prepare("SELECT * FROM news_reports ORDER BY id DESC LIMIT ?").all(limit) as unknown as ReportRow[];
+export async function listReports(limit = 30): Promise<NewsReport[]> {
+  const rows = await (await getDb()).all("SELECT * FROM news_reports ORDER BY id DESC LIMIT ?", [limit]) as unknown as ReportRow[];
   return rows.map(fromRow);
 }
 
-export function getReport(id: number): NewsReport | null {
-  const row = getDb().prepare("SELECT * FROM news_reports WHERE id = ?").get(id) as unknown as ReportRow | undefined;
+export async function getReport(id: number): Promise<NewsReport | null> {
+  const row = await (await getDb()).get("SELECT * FROM news_reports WHERE id = ?", [id]) as unknown as ReportRow | undefined;
   return row ? fromRow(row) : null;
 }
 
 /** En son başarılı rapor; instrument verilirse o varlığı içeren en son rapor. */
-export function getLatestReport(instrument?: string): NewsReport | null {
-  const rows = getDb().prepare("SELECT * FROM news_reports WHERE status = 'ok' ORDER BY id DESC LIMIT 50").all() as unknown as ReportRow[];
+export async function getLatestReport(instrument?: string): Promise<NewsReport | null> {
+  const rows = await (await getDb()).all("SELECT * FROM news_reports WHERE status = 'ok' ORDER BY id DESC LIMIT 50") as unknown as ReportRow[];
   for (const r of rows) {
     const rep = fromRow(r);
     if (!instrument || rep.items.some((i) => i.instrument === instrument)) return rep;
@@ -186,14 +187,14 @@ export async function collectScanAssets(only?: { type: AssetType; symbol: string
       console.error("[haber] portföy okunamadı", err);
     }
   }
-  for (const o of actions.listOrders("pending")) {
+  for (const o of (await actions.listOrders("pending"))) {
     add(
       o.assetType,
       o.symbol,
       `bekleyen ${o.side === "buy" ? "alış" : "satış"} emri: fiyat ${o.condition === "lte" ? "≤" : "≥"} ${formatNumber(o.triggerPrice, 4)} ${o.triggerCurrency}`,
     );
   }
-  for (const w of actions.listWatchlist()) add(w.assetType, w.symbol, "izleme listesinde");
+  for (const w of (await actions.listWatchlist())) add(w.assetType, w.symbol, "izleme listesinde");
   if (only && map.size === 0) map.set(instrumentId(only.type, only.symbol), { assetType: only.type, symbol: only.symbol, instrument: instrumentId(only.type, only.symbol), notes: ["kullanıcı bu varlığı inceliyor (pozisyon yok)"] });
   return [...map.values()].slice(0, MAX_ASSETS);
 }
@@ -358,13 +359,34 @@ export class ScanBusyError extends Error {
   }
 }
 
-/** Sunucu yeniden başlatıldığında yarım kalmış "running" raporları kapatır. */
-function closeStaleRuns() {
-  getDb()
-    .prepare(
-      "UPDATE news_reports SET status = 'error', error = 'Analiz yarıda kesildi (sunucu yeniden başlatıldı).', finished_at = datetime('now') WHERE status = 'running'",
-    )
-    .run();
+/** Bulut modunda bir taramanın en uzun süresi (işlev süre sınırı 300 sn) */
+const CLOUD_SCAN_MAX_MS = 6 * 60_000;
+
+/**
+ * Sunucu yeniden başlatıldığında yarım kalmış "running" raporları kapatır. Bulut modunda
+ * başka bir örnekte süren tarama olabileceği için yalnızca süre sınırını aşmış olanlar.
+ */
+async function closeStaleRuns() {
+  const db = await getDb();
+  const msg = "Analiz yarıda kesildi (sunucu yeniden başlatıldı).";
+  if (isCloud()) {
+    await db.run("UPDATE news_reports SET status = 'error', error = ?, finished_at = ? WHERE status = 'running' AND created_at < ?", [
+      msg,
+      sqlNow(),
+      sqlNow(Date.now() - CLOUD_SCAN_MAX_MS),
+    ]);
+  } else {
+    await db.run("UPDATE news_reports SET status = 'error', error = ?, finished_at = ? WHERE status = 'running'", [msg, sqlNow()]);
+  }
+}
+
+/** Bulut modunda başka bir örnekte süren tarama var mı (bellek bayrağı örnek başınadır) */
+async function runningElsewhere(): Promise<boolean> {
+  if (!isCloud()) return false;
+  const r = await (await getDb()).get("SELECT 1 AS x FROM news_reports WHERE status = 'running' AND created_at >= ? LIMIT 1", [
+    sqlNow(Date.now() - CLOUD_SCAN_MAX_MS),
+  ]);
+  return !!r;
 }
 
 /**
@@ -378,19 +400,18 @@ export async function startNewsScan(opts: {
   client?: AiClient;
 }): Promise<NewsReport> {
   if (g.__yatirimNewsRunning) throw new ScanBusyError();
-  const client = opts.client ?? getAiClient(); // anahtar yoksa NoApiKeyError
+  const client = opts.client ?? (await getAiClient()); // anahtar yoksa NoApiKeyError
   const only = opts.instrument ? parseInstrumentId(opts.instrument) : null;
   if (opts.instrument && !only) throw new actions.ValidationError("Varlık geçersiz.");
 
+  if (await runningElsewhere()) throw new ScanBusyError();
   g.__yatirimNewsRunning = true;
   let reportId: number;
   try {
-    closeStaleRuns();
-    const model = currentModel();
-    const res = getDb()
-      .prepare("INSERT INTO news_reports (trigger, scope, model) VALUES (?, ?, ?)")
-      .run(opts.trigger, only ? instrumentId(only.type, only.symbol) : null, model.id);
-    reportId = Number(res.lastInsertRowid);
+    await closeStaleRuns();
+    const model = await currentModel();
+    const res = await (await getDb()).run("INSERT INTO news_reports (trigger, scope, model, created_at) VALUES (?, ?, ?, ?) RETURNING id", [opts.trigger, only ? instrumentId(only.type, only.symbol) : null, model.id, sqlNow()]);
+    reportId = res.lastId!;
   } catch (err) {
     g.__yatirimNewsRunning = false;
     throw err;
@@ -400,14 +421,14 @@ export async function startNewsScan(opts: {
     g.__yatirimNewsRunning = false;
   });
   if (opts.wait) await job;
-  else void job;
-  return getReport(reportId)!;
+  else background(job);
+  return (await getReport(reportId))!;
 }
 
 async function runScan(reportId: number, client: AiClient, only?: { type: AssetType; symbol: string }) {
-  const db = getDb();
-  const model = currentModel();
-  const { maxSearches } = getAiSettings();
+  const db = await getDb();
+  const model = await currentModel();
+  const { maxSearches } = await getAiSettings();
   let usage = emptyUsage();
   const sources = new Map<string, string>();
   try {
@@ -416,7 +437,7 @@ async function runScan(reportId: number, client: AiClient, only?: { type: AssetT
       throw new actions.ValidationError("Analiz edilecek varlık yok. Portföyünüze, izleme listesine ya da emirlere varlık ekleyin.");
     }
     const technical = await technicalContext(assets);
-    const kap = kapContext(assets.filter((a) => a.assetType === "bist").map((a) => a.symbol));
+    const kap = await kapContext(assets.filter((a) => a.assetType === "bist").map((a) => a.symbol));
     const headlines = await headlinesFor(assets);
     const freeCount = [...headlines.values()].reduce((n, l) => n + l.length, 0);
     const headlineByUrl = new Map<string, string>();
@@ -438,7 +459,7 @@ async function runScan(reportId: number, client: AiClient, only?: { type: AssetT
           output_config: { effort: "medium" },
         })
         .finalMessage();
-      usage = addUsage(usage, recordUsage("haber", model.id, msg.usage));
+      usage = addUsage(usage, await recordUsage("haber", model.id, msg.usage));
       collectSources(msg.content, sources);
 
       const submit = msg.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === SUBMIT_TOOL.name);
@@ -477,30 +498,24 @@ async function runScan(reportId: number, client: AiClient, only?: { type: AssetT
     }
     // Ücretsiz bağlam varken kullanılmayan arama hakkı = tahmini tasarruf
     const saved = freeCount > 0 ? Math.max(0, maxSearches - usage.webSearches) : 0;
-    db.prepare("UPDATE news_reports SET free_headlines = ?, searches_saved = ? WHERE id = ?").run(freeCount, saved, reportId);
-    saveReport(reportId, report, [...sources].map(([url, title]) => ({ url, title })), usage);
+    await db.run("UPDATE news_reports SET free_headlines = ?, searches_saved = ? WHERE id = ?", [freeCount, saved, reportId]);
+    await saveReport(reportId, report, [...sources].map(([url, title]) => ({ url, title })), usage);
   } catch (err) {
     const message = err instanceof actions.ValidationError ? err.message : aiErrorMessage(err);
     if (!(err instanceof actions.ValidationError) && !(err instanceof NoApiKeyError)) console.error("[haber] analiz hatası", err);
-    db.prepare(
-      "UPDATE news_reports SET status = 'error', error = ?, web_searches = ?, cost_usd = ?, finished_at = datetime('now') WHERE id = ?",
-    ).run(message === "Beklenmeyen bir hata oluştu." && err instanceof Error ? err.message : message, usage.webSearches, usage.costUsd, reportId);
+    await db.run("UPDATE news_reports SET status = 'error', error = ?, web_searches = ?, cost_usd = ?, finished_at = ? WHERE id = ?", [message === "Beklenmeyen bir hata oluştu." && err instanceof Error ? err.message : message, usage.webSearches, usage.costUsd, sqlNow(), reportId]);
   }
 }
 
 /** Raporu kaydeder ve önemli (4+) maddeler için bildirim + push üretir. */
-export function saveReport(
+export async function saveReport(
   reportId: number,
   report: { marketSummary: string; items: NewsItem[] },
   sources: NewsSource[],
   usage: { webSearches: number; costUsd: number },
 ) {
-  getDb()
-    .prepare(
-      `UPDATE news_reports SET status = 'ok', market_summary = ?, items = ?, sources = ?, web_searches = ?, cost_usd = ?,
-         finished_at = datetime('now') WHERE id = ?`,
-    )
-    .run(report.marketSummary, JSON.stringify(report.items), JSON.stringify(sources.slice(0, 40)), usage.webSearches, usage.costUsd, reportId);
+  await (await getDb()).run(`UPDATE news_reports SET status = 'ok', market_summary = ?, items = ?, sources = ?, web_searches = ?, cost_usd = ?,
+         finished_at = ? WHERE id = ?`, [report.marketSummary, JSON.stringify(report.items), JSON.stringify(sources.slice(0, 40)), usage.webSearches, usage.costUsd, sqlNow(), reportId]);
 
   for (const it of report.items) {
     if (it.importance < 4) continue;
@@ -512,8 +527,8 @@ export function saveReport(
       body: it.summary,
       data: { reportId, instrument: it.instrument, importance: it.importance },
     };
-    addNotification(n);
-    void sendPushToAll({ title: n.title, body: n.body, url: "/analizler", tag: `haber-${reportId}-${it.instrument}` });
+    await addNotification(n);
+    background(() => sendPushToAll({ title: n.title, body: n.body, url: "/analizler", tag: `haber-${reportId}-${it.instrument}` }));
   }
 }
 
@@ -524,10 +539,6 @@ const SLOT_GRACE_MIN = 60;
 /** Hata veren taramanın aynı dilim içinde yeniden denenmesinden önce beklenecek süre */
 const RETRY_DELAY_MIN = 10;
 
-/** SQLite datetime biçimi (UTC): "YYYY-MM-DD HH:MM:SS" */
-function sqlTime(d: Date) {
-  return d.toISOString().slice(0, 19).replace("T", " ");
-}
 
 function istanbulParts(now: Date) {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -560,9 +571,9 @@ export type ScheduleResult =
  * bütçe dolduysa ya da anahtar yoksa otomatik tarama yapılmaz (yeniden denenmez).
  */
 export async function maybeRunScheduledScan(now = new Date(), client?: AiClient): Promise<ScheduleResult> {
-  const s = getAiSettings();
+  const s = await getAiSettings();
   if (!s.scheduleEnabled || s.scheduleTimes.length === 0) return { ran: false, reason: "kapali" };
-  if (!client && !isAiConfigured()) return { ran: false, reason: "anahtar_yok" };
+  if (!client && !(await isAiConfigured())) return { ran: false, reason: "anahtar_yok" };
   const p = istanbulParts(now);
   if (p.weekday === "Sat" || p.weekday === "Sun") return { ran: false, reason: "hafta_sonu" };
 
@@ -575,26 +586,26 @@ export async function maybeRunScheduledScan(now = new Date(), client?: AiClient)
   if (g.__yatirimNewsRunning) return { ran: false, reason: "mesgul" };
 
   const slot = `${p.date} ${due}`;
-  const db = getDb();
-  const claim = (key: string) =>
-    Number(db.prepare("INSERT OR IGNORE INTO scheduled_runs (slot, created_at) VALUES (?, ?)").run(key, sqlTime(now)).changes) === 1;
+  const db = await getDb();
+  const claim = async (key: string) =>
+    Number((await db.run("INSERT INTO scheduled_runs (slot, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING", [key, sqlNow(now.getTime())])).changes) === 1;
   // Dilim zaten alındıysa: yalnızca önceki deneme hata verdiyse ve üzerinden
   // RETRY_DELAY_MIN geçtiyse, aynı dilim penceresinde BİR kez daha denenir
   // ("<dilim> tekrar" kaydı da birincil anahtarla korunur; çift çalışma olmaz).
   let isRetry = false;
-  if (!claim(slot)) {
-    const failed = db.prepare("SELECT created_at FROM scheduled_runs WHERE slot = ?").get(`${slot} hata`) as { created_at: string } | undefined;
+  if (!(await claim(slot))) {
+    const failed = await db.get("SELECT created_at FROM scheduled_runs WHERE slot = ?", [`${slot} hata`]) as { created_at: string } | undefined;
     if (!failed) return { ran: false, reason: "zaten_calisti" };
     if (now.getTime() - Date.parse(`${failed.created_at.replace(" ", "T")}Z`) < RETRY_DELAY_MIN * 60_000) return { ran: false, reason: "zaten_calisti" };
-    if (!claim(`${slot} tekrar`)) return { ran: false, reason: "zaten_calisti" };
+    if (!(await claim(`${slot} tekrar`))) return { ran: false, reason: "zaten_calisti" };
     isRetry = true;
   }
-  const markFailed = () => {
-    if (!isRetry) claim(`${slot} hata`);
+  const markFailed = async () => {
+    if (!isRetry) await claim(`${slot} hata`);
   };
 
   // Bütçe doluysa dilim atlanır (yeniden denenmez).
-  const budget = getBudgetStatus(now);
+  const budget = await getBudgetStatus(now);
   if (budget.overBudget) {
     console.log(`[haber] ${slot} otomatik tarama atlandı: aylık bütçe doldu ($${budget.spentUsd.toFixed(2)} / $${budget.budgetUsd})`);
     return { ran: false, reason: "butce" };
@@ -602,8 +613,8 @@ export async function maybeRunScheduledScan(now = new Date(), client?: AiClient)
   try {
     console.log(`[haber] ${slot} otomatik tarama ${isRetry ? "yeniden deneniyor" : "başlıyor"}`);
     const rep = await startNewsScan({ trigger: "otomatik", wait: true, client });
-    if (getReport(rep.id)?.status === "error") {
-      markFailed();
+    if ((await getReport(rep.id))?.status === "error") {
+      await markFailed();
       console.warn(`[haber] ${slot} otomatik tarama hata verdi${isRetry ? "" : `; ${RETRY_DELAY_MIN} dk sonra bir kez daha denenecek`}`);
       return { ran: false, reason: "hata", reportId: rep.id };
     }
@@ -611,17 +622,15 @@ export async function maybeRunScheduledScan(now = new Date(), client?: AiClient)
   } catch (err) {
     // Anahtar yoksa yalnızca atla; diğer başlatma hataları yeniden denenebilir.
     if (err instanceof NoApiKeyError) return { ran: false, reason: "anahtar_yok" };
-    markFailed();
+    await markFailed();
     console.error("[haber] otomatik tarama başlatılamadı", err);
     return { ran: false, reason: "hata" };
   }
 }
 
 /** Bu ay ücretsiz kaynaklar sayesinde yapılmayan tahmini ücretli arama ve tutarı */
-export function monthlySavings(now = new Date()): { searches: number; usd: number } {
+export async function monthlySavings(now = new Date()): Promise<{ searches: number; usd: number }> {
   const { start, end } = monthRangeUtc(now);
-  const row = getDb()
-    .prepare("SELECT COALESCE(SUM(searches_saved),0) AS n FROM news_reports WHERE created_at >= ? AND created_at < ? AND status = 'ok'")
-    .get(start, end) as { n: number };
+  const row = await (await getDb()).get("SELECT COALESCE(SUM(searches_saved),0) AS n FROM news_reports WHERE created_at >= ? AND created_at < ? AND status = 'ok'", [start, end]) as { n: number };
   return { searches: row.n, usd: row.n * WEB_SEARCH_USD };
 }

@@ -49,9 +49,9 @@ const BENCHMARKS: { key: string; label: string; color: string; type: AssetType; 
  * Gün başına net nakit akışı (TL): alış +, satış − (işlem tarihi kuruyla, komisyon dahil).
  * Gerçek portföyde yalnızca "toplama dahil" hesaplar (anlık görüntüler de onları içerir).
  */
-function cashFlows(mode: Mode) {
-  const included = mode === "real" ? new Set(listAccounts({ includeArchived: true }).filter((a) => a.includeInTotal).map((a) => a.id)) : null;
-  return activeTransactions(mode)
+async function cashFlows(mode: Mode) {
+  const included = mode === "real" ? new Set((await listAccounts({ includeArchived: true })).filter((a) => a.includeInTotal).map((a) => a.id)) : null;
+  return (await activeTransactions(mode))
     .filter((t) => !included || (t.accountId != null && included.has(t.accountId)))
     .map((t) => ({
       date: t.date,
@@ -65,9 +65,9 @@ function cashFlows(mode: Mode) {
  * getiridir: para eklemek/çekmek getiri sayılmaz.
  */
 export async function getBenchmark(mode: Mode): Promise<BenchmarkResult> {
-  const txs = activeTransactions(mode);
+  const txs = await activeTransactions(mode);
   const firstTxDate = txs.length ? txs.map((t) => t.date).sort()[0] : null;
-  const snaps = listSnapshots(mode).filter((s) => !firstTxDate || s.date >= firstTxDate);
+  const snaps = (await listSnapshots(mode)).filter((s) => !firstTxDate || s.date >= firstTxDate);
   const values = snaps.map((s) => ({ date: s.date, value: s.valueTry }));
   // Bugünün değeri henüz kaydedilmediyse canlı değeri ekle
   try {
@@ -77,7 +77,7 @@ export async function getBenchmark(mode: Mode): Promise<BenchmarkResult> {
       if (!p.totals.incomplete && p.holdings.length) values.push({ date: today, value: p.totals.valueTry });
     }
   } catch {}
-  const index = twrIndex(values, cashFlows(mode));
+  const index = twrIndex(values, await cashFlows(mode));
   const dates = index.map((p) => p.date);
   const series: BenchmarkSeries[] = [
     { key: "portfolio", label: "Portföyüm", color: "#a78bfa", points: index.map((p) => p.value), returnPct: index.length ? index[index.length - 1].value - 100 : null },
@@ -108,7 +108,7 @@ export async function getBenchmark(mode: Mode): Promise<BenchmarkResult> {
 
 /** Pozisyon için "aldığımdan beri": varlık vs BIST 100 (ABD hissesinde S&P 500), fiyat getirisi. */
 export async function getPositionBenchmark(mode: Mode, type: AssetType, symbol: string) {
-  const txs = activeTransactions(mode).filter((t) => t.assetType === type && t.symbol === symbol && t.side === "buy");
+  const txs = (await activeTransactions(mode)).filter((t) => t.assetType === type && t.symbol === symbol && t.side === "buy");
   const since = txs.map((t) => t.date).sort()[0];
   if (!since) return null;
   const bench = type === "foreign" ? { label: "S&P 500", type: "foreign" as const, symbol: "^GSPC" } : { label: "BIST 100", type: "bist" as const, symbol: "XU100" };
@@ -132,8 +132,8 @@ export interface RiskResult {
 
 const TARGET_KEY = "target_allocation";
 
-export function getTargetAllocation(): Partial<Record<AssetType, number>> | null {
-  const raw = getSetting(TARGET_KEY);
+export async function getTargetAllocation(): Promise<Partial<Record<AssetType, number>> | null> {
+  const raw = await getSetting(TARGET_KEY);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as Partial<Record<AssetType, number>>;
@@ -143,9 +143,9 @@ export function getTargetAllocation(): Partial<Record<AssetType, number>> | null
 }
 
 /** Hedef dağılımı kaydeder: { bist: 40, gold: 20, … } toplam 100. null/boş → siler. */
-export function setTargetAllocation(body: unknown) {
+export async function setTargetAllocation(body: unknown) {
   if (body == null || (typeof body === "object" && Object.keys(body as object).length === 0)) {
-    getDb().prepare("DELETE FROM settings WHERE key = ?").run(TARGET_KEY);
+    await (await getDb()).run("DELETE FROM settings WHERE key = ?", [TARGET_KEY]);
     return null;
   }
   if (typeof body !== "object") throw new ValidationError("Hedef dağılım geçersiz.");
@@ -159,7 +159,7 @@ export function setTargetAllocation(body: unknown) {
     sum += n;
   }
   if (Math.abs(sum - 100) > 0.5) throw new ValidationError(`Hedef yüzdelerin toplamı 100 olmalı (şu an ${sum.toLocaleString("tr-TR")}).`);
-  setSetting(TARGET_KEY, JSON.stringify(out));
+  await setSetting(TARGET_KEY, JSON.stringify(out));
   return out;
 }
 
@@ -168,11 +168,11 @@ export async function getRisk(mode: Mode): Promise<RiskResult> {
   const holdings = p.holdings
     .filter((h) => h.valueTry != null)
     .map((h) => ({ name: displaySymbol(h.assetType, h.symbol), assetType: h.assetType, currency: h.currency, valueTry: h.valueTry! }));
-  const values = listSnapshots(mode).map((s) => ({ date: s.date, value: s.valueTry }));
-  const returns = dailyReturns(twrIndex(values, cashFlows(mode)));
+  const values = (await listSnapshots(mode)).map((s) => ({ date: s.date, value: s.valueTry }));
+  const returns = dailyReturns(twrIndex(values, await cashFlows(mode)));
   const metrics = riskMetrics(holdings, returns);
   const allocation = p.allocation.map((a) => ({ key: a.assetType, label: ASSET_TYPE_INFO[a.assetType].label, valueTry: a.valueTry }));
-  const target = getTargetAllocation();
+  const target = await getTargetAllocation();
   const drift = target
     ? rebalance(Object.fromEntries(allocation.map((a) => [a.key, a.valueTry])), target as Record<string, number>).map((d) => ({
         ...d,
@@ -220,8 +220,8 @@ export function parseFng(text: string): { value: number; classification: string;
 
 /** Günde bir kez çekilir (İstanbul günü değişince); hata olursa son bilinen değer. */
 export async function getMarketMood(): Promise<MarketMood | null> {
-  const db = getDb();
-  const row = db.prepare("SELECT value, fetched_at FROM ext_cache WHERE key = ?").get(FNG_KEY) as { value: string; fetched_at: number } | undefined;
+  const db = await getDb();
+  const row = await db.get("SELECT value, fetched_at FROM ext_cache WHERE key = ?", [FNG_KEY]) as { value: string; fetched_at: number } | undefined;
   const sameDay = row && new Date(row.fetched_at).toLocaleDateString("en-CA", { timeZone: "Europe/Istanbul" }) === todayIstanbul();
   let text = row?.value ?? null;
   let fetchedAt = row?.fetched_at ?? 0;
@@ -232,7 +232,7 @@ export async function getMarketMood(): Promise<MarketMood | null> {
       if (parseFng(fresh).length === 0) throw new Error("boş veri");
       text = fresh;
       fetchedAt = Date.now();
-      db.prepare("INSERT INTO ext_cache (key, value, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, fetched_at = excluded.fetched_at").run(FNG_KEY, text, fetchedAt);
+      await db.run("INSERT INTO ext_cache (key, value, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, fetched_at = excluded.fetched_at", [FNG_KEY, text, fetchedAt]);
     } catch (err) {
       console.warn("[duygu] alınamadı:", (err as Error).message);
       stale = true;

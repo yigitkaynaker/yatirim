@@ -70,11 +70,11 @@ const g = globalThis as unknown as { __yatirimRss?: Map<string, { at: number; it
 const mem = () => (g.__yatirimRss ??= new Map());
 const inflight = () => (g.__yatirimRssInflight ??= new Map());
 
-function loadCached(key: string): { at: number; items: Headline[] } | null {
+async function loadCached(key: string): Promise<{ at: number; items: Headline[] } | null> {
   const m = mem().get(key);
   if (m) return m;
   try {
-    const row = getDb().prepare("SELECT value, fetched_at FROM ext_cache WHERE key = ?").get(`rss:${key}`) as { value: string; fetched_at: number } | undefined;
+    const row = await (await getDb()).get("SELECT value, fetched_at FROM ext_cache WHERE key = ?", [`rss:${key}`]) as { value: string; fetched_at: number } | undefined;
     if (!row) return null;
     const e = { at: row.fetched_at, items: JSON.parse(row.value) as Headline[] };
     mem().set(key, e);
@@ -84,24 +84,20 @@ function loadCached(key: string): { at: number; items: Headline[] } | null {
   }
 }
 
-function saveCached(key: string, items: Headline[], at: number) {
+async function saveCached(key: string, items: Headline[], at: number) {
   mem().set(key, { at, items });
   try {
-    getDb()
-      .prepare(
-        `INSERT INTO ext_cache (key, value, fetched_at) VALUES (?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, fetched_at = excluded.fetched_at`,
-      )
-      .run(`rss:${key}`, JSON.stringify(items), at);
+    await (await getDb()).run(`INSERT INTO ext_cache (key, value, fetched_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, fetched_at = excluded.fetched_at`, [`rss:${key}`, JSON.stringify(items), at]);
   } catch {
     // önbellek yazılamadıysa yalnızca bellekte kalır
   }
 }
 
 /** Yalnızca önbellekteki başlıklar (ağ yok). Günlük özet gibi ücretsiz/çevrimdışı kullanım için. */
-export function cachedHeadlines(type: AssetType, symbol: string): HeadlineSet {
+export async function cachedHeadlines(type: AssetType, symbol: string): Promise<HeadlineSet> {
   const id = instrumentId(type, symbol);
-  const c = loadCached(id);
+  const c = await loadCached(id);
   return { instrument: id, items: c?.items ?? [], fetchedAt: c?.at ?? null, stale: !c || Date.now() - c.at > RSS_TTL_MS };
 }
 
@@ -112,7 +108,7 @@ export function cachedHeadlines(type: AssetType, symbol: string): HeadlineSet {
 export async function getHeadlines(type: AssetType, symbol: string, opts: { name?: string | null; force?: boolean; limit?: number } = {}): Promise<HeadlineSet> {
   const id = instrumentId(type, symbol);
   const limit = opts.limit ?? 12;
-  const cached = loadCached(id);
+  const cached = await loadCached(id);
   if (!opts.force && cached && Date.now() - cached.at < RSS_TTL_MS) {
     return { instrument: id, items: cached.items.slice(0, limit), fetchedAt: cached.at, stale: false };
   }
@@ -134,7 +130,7 @@ export async function getHeadlines(type: AssetType, symbol: string, opts: { name
       30,
     );
     const at = Date.now();
-    saveCached(id, items, at);
+    await saveCached(id, items, at);
     return { instrument: id, items: items.slice(0, limit), fetchedAt: at, stale: false };
   })().finally(() => inflight().delete(id));
   inflight().set(id, job);

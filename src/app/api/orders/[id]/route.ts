@@ -7,8 +7,8 @@ type Ctx = { params: Promise<{ id: string }> };
 export async function DELETE(_req: Request, ctx: Ctx) {
   const id = parseId((await ctx.params).id);
   if (!id) return notFound("Emir bulunamadı.");
-  return handle(() => {
-    const order = actions.cancelOrder(id);
+  return handle(async () => {
+    const order = await actions.cancelOrder(id);
     return order ? { order } : notFound("Emir bulunamadı.");
   });
 }

@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 
 /** POST /api/push/subscribe — tarayıcının PushSubscription.toJSON() çıktısı */
 export async function POST(req: Request) {
-  return handle(async () => saveSubscription(await readJson(req), req.headers.get("user-agent")), 201);
+  return handle(async () => (await saveSubscription(await readJson(req), req.headers.get("user-agent"))), 201);
 }

@@ -1,8 +1,8 @@
 import "server-only";
 import YahooFinance from "yahoo-finance2";
-import { getDb } from "./db";
+import { getDb, sqlNow } from "./db";
 import { GOLD_KINDS, GOLD_SYMBOL, goldKind, instrumentId, isDelayedType, type AssetType } from "./assets";
-import { politeFetch } from "./http";
+import { inBackoff, markFailure, markSuccess, politeFetch } from "./http";
 import {
   parseFundPrices,
   parseGenelparaEntry,
@@ -15,7 +15,7 @@ import {
 
 // Sunucu tarafı fiyat servisi.
 // - Hisse / döviz / gram altın: Yahoo Finance (yahoo-finance2). BIST ~15 dk gecikmeli.
-// - Kripto: Binance herkese açık REST API
+// - Kripto: Binance herkese açık REST API (engellenirse data-api.binance.vision aynası)
 // - Yatırım fonları: TEFAS (günde bir fiyat; 0 gelen fiyatlar geçersiz sayılır)
 // - Çeyrek / yarım / tam / cumhuriyet / ata altın, 22 ayar bilezik: Truncgil
 //   (yedek: Genelpara; ikisi de yoksa gram altından "yaklaşık" hesap)
@@ -150,7 +150,17 @@ async function fetchYahoo(symbols: string[]): Promise<Map<string, RawQuote>> {
   const out = new Map<string, RawQuote>();
   if (symbols.length === 0) return out;
   const { yf } = state();
-  const results = await yf.quote(symbols, { return: "array" }, { validateResult: false });
+  // Yahoo bulut IP'lerine sık sık 429 (çok istek) döner: o zaman bir süre hiç sorma
+  // (son bilinen fiyat "bayat" işaretiyle gösterilir).
+  if (inBackoff("Yahoo")) throw new Error("Yahoo geçici olarak denenmiyor (çok istek)");
+  let results;
+  try {
+    results = await yf.quote(symbols, { return: "array" }, { validateResult: false });
+    markSuccess("Yahoo");
+  } catch (err) {
+    if (/429|Too Many|rate/i.test(String((err as Error)?.message ?? err))) markFailure("Yahoo", 60_000, 15 * 60_000);
+    throw err;
+  }
   for (const q of results) {
     const p = q.regularMarketPrice;
     if (typeof p !== "number" || !Number.isFinite(p) || p <= 0) continue;
@@ -178,24 +188,51 @@ interface BinanceTicker {
 
 async function fetchBinanceUrl(url: string): Promise<BinanceTicker[]> {
   const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
-  if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`Binance HTTP ${res.status}`), { status: res.status });
   const data = (await res.json()) as BinanceTicker | BinanceTicker[];
   return Array.isArray(data) ? data : [data];
+}
+
+// Ana uç nokta bazı bulut / ABD IP'lerine 451 (yasal kısıt) ya da 403 döner; o zaman herkese
+// açık piyasa verisi aynası data-api.binance.vision kullanılır (yalnızca spot fiyat verisi).
+const BINANCE_BASES = ["https://api.binance.com", "https://data-api.binance.vision"];
+const gb = globalThis as unknown as { __yatirimBinanceBase?: number };
+
+async function fetchBinanceFrom(base: string, symbols: string[]): Promise<BinanceTicker[]> {
+  const url = `${base}/api/v3/ticker/24hr`;
+  try {
+    return await fetchBinanceUrl(`${url}?symbols=${encodeURIComponent(JSON.stringify(symbols))}`);
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    // Erişim engeli: aynı uç noktada tek tek denemenin anlamı yok.
+    if (status === 451 || status === 403 || status === 418 || status === 429) throw err;
+    // Geçersiz tek bir sembol tüm toplu isteği bozar; tek tek dene.
+    const tickers: BinanceTicker[] = [];
+    const settled = await Promise.allSettled(symbols.map((s) => fetchBinanceUrl(`${url}?symbol=${s}`)));
+    for (const r of settled) if (r.status === "fulfilled") tickers.push(...r.value);
+    if (tickers.length === 0) throw err;
+    return tickers;
+  }
 }
 
 async function fetchBinance(symbols: string[]): Promise<Map<string, RawQuote>> {
   const out = new Map<string, RawQuote>();
   if (symbols.length === 0) return out;
-  const base = "https://api.binance.com/api/v3/ticker/24hr";
   let tickers: BinanceTicker[] = [];
-  try {
-    tickers = await fetchBinanceUrl(`${base}?symbols=${encodeURIComponent(JSON.stringify(symbols))}`);
-  } catch {
-    // Geçersiz tek bir sembol tüm toplu isteği bozar; tek tek dene.
-    const settled = await Promise.allSettled(symbols.map((s) => fetchBinanceUrl(`${base}?symbol=${s}`)));
-    for (const r of settled) if (r.status === "fulfilled") tickers.push(...r.value);
-    if (tickers.length === 0) throw new Error("Binance yanıt vermedi");
+  const start = gb.__yatirimBinanceBase ?? 0;
+  let lastErr: unknown = null;
+  for (let i = 0; i < BINANCE_BASES.length; i++) {
+    const idx = (start + i) % BINANCE_BASES.length;
+    try {
+      tickers = await fetchBinanceFrom(BINANCE_BASES[idx], symbols);
+      gb.__yatirimBinanceBase = idx;
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  if (lastErr) throw new Error(`Binance yanıt vermedi (${(lastErr as Error).message})`);
   for (const t of tickers) {
     const price = Number(t.lastPrice);
     if (!Number.isFinite(price) || price <= 0) continue;
@@ -231,20 +268,16 @@ export async function fetchFundPrices(code: string, months: number): Promise<Fun
     throw new Error("TEFAS yanıtı okunamadı");
   }
   const parsed = parseFundPrices(code, data.resultList);
-  if (parsed.last) rememberFund(parsed);
+  if (parsed.last) await rememberFund(parsed);
   return parsed;
 }
 
 /** Doğrulanmış fonu (kod, ad, son fiyat) funds tablosuna yazar. */
-function rememberFund(f: FundPrices) {
+async function rememberFund(f: FundPrices) {
   try {
-    getDb()
-      .prepare(
-        `INSERT INTO funds (code, name, last_price, last_date, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+    await (await getDb()).run(`INSERT INTO funds (code, name, last_price, last_date, updated_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = COALESCE(excluded.name, funds.name), last_price = excluded.last_price,
-           last_date = excluded.last_date, updated_at = excluded.updated_at`,
-      )
-      .run(f.code, f.name, f.last!.price, f.last!.date);
+           last_date = excluded.last_date, updated_at = excluded.updated_at`, [f.code, f.name, f.last!.price, f.last!.date, sqlNow()]);
   } catch (err) {
     console.error("[fon] kaydedilemedi", err);
   }
@@ -334,19 +367,17 @@ async function fetchGoldKinds(symbols: string[]): Promise<Map<string, RawQuote>>
   return out;
 }
 
-// ---- Önbellek -------------------------------------------------------------
+/// ---- Önbellek -------------------------------------------------------------
 
-function persist(key: string, e: CacheEntry) {
+async function persist(key: string, e: CacheEntry) {
   try {
-    getDb()
-      .prepare(
-        `INSERT INTO price_cache (key, price, currency, change_pct, source_time, fetched_at, prev_close, extra)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET price=excluded.price, currency=excluded.currency,
-           change_pct=excluded.change_pct, source_time=excluded.source_time, fetched_at=excluded.fetched_at,
-           prev_close=excluded.prev_close, extra=excluded.extra`,
-      )
-      .run(
+    await (await getDb()).run(
+      `INSERT INTO price_cache (key, price, currency, change_pct, source_time, fetched_at, prev_close, extra)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET price=excluded.price, currency=excluded.currency,
+         change_pct=excluded.change_pct, source_time=excluded.source_time, fetched_at=excluded.fetched_at,
+         prev_close=excluded.prev_close, extra=excluded.extra`,
+      [
         key,
         e.quote.price,
         e.quote.currency,
@@ -355,40 +386,55 @@ function persist(key: string, e: CacheEntry) {
         e.fetchedAt,
         e.quote.prevClose ?? null,
         e.quote.extra ? JSON.stringify(e.quote.extra) : null,
-      );
+      ],
+    );
   } catch (err) {
     console.error("[prices] önbellek yazılamadı", err);
   }
 }
 
-function loadPersisted(key: string): CacheEntry | undefined {
+interface PriceRow {
+  key: string;
+  price: number;
+  currency: string;
+  change_pct: number | null;
+  source_time: number | null;
+  fetched_at: number;
+  prev_close: number | null;
+  extra: string | null;
+}
+
+/**
+ * Anahtarların veritabanındaki son kayıtlarını tek sorguda okur. Bulut modunda birden çok
+ * sunucu örneği olabilir; başka bir örneğin yeni çektiği fiyat kullanılsın diye bellekteki
+ * kayıt eski olsa bile buradan okunur.
+ */
+async function loadPersisted(keys: string[]): Promise<Map<string, CacheEntry>> {
+  const out = new Map<string, CacheEntry>();
+  if (keys.length === 0) return out;
   try {
-    const row = getDb().prepare("SELECT * FROM price_cache WHERE key = ?").get(key) as
-      | {
-          price: number;
-          currency: string;
-          change_pct: number | null;
-          source_time: number | null;
-          fetched_at: number;
-          prev_close: number | null;
-          extra: string | null;
-        }
-      | undefined;
-    // Geçersiz (0 / eksi) fiyat asla kullanılmaz.
-    if (!row || !(row.price > 0)) return undefined;
-    let extra: RawExtra | undefined;
-    try {
-      extra = row.extra ? (JSON.parse(row.extra) as RawExtra) : undefined;
-    } catch {
-      extra = undefined;
+    const rows = await (await getDb()).all<PriceRow>(
+      `SELECT * FROM price_cache WHERE key IN (${keys.map(() => "?").join(", ")})`,
+      keys,
+    );
+    for (const row of rows) {
+      // Geçersiz (0 / eksi) fiyat asla kullanılmaz.
+      if (!(row.price > 0)) continue;
+      let extra: RawExtra | undefined;
+      try {
+        extra = row.extra ? (JSON.parse(row.extra) as RawExtra) : undefined;
+      } catch {
+        extra = undefined;
+      }
+      out.set(row.key, {
+        quote: { price: row.price, currency: row.currency, changePct: row.change_pct, sourceTime: row.source_time, prevClose: row.prev_close, extra },
+        fetchedAt: row.fetched_at,
+      });
     }
-    return {
-      quote: { price: row.price, currency: row.currency, changePct: row.change_pct, sourceTime: row.source_time, prevClose: row.prev_close, extra },
-      fetchedAt: row.fetched_at,
-    };
   } catch {
-    return undefined;
+    // veritabanı okunamazsa yalnızca bellek / kaynak
   }
+  return out;
 }
 
 /** Taze olmayan kaynakları tek seferde çekip önbelleğe yazar. Hata fırlatmaz. */
@@ -396,6 +442,20 @@ async function refresh(keys: SourceKey[], force: boolean) {
   const s = state();
   const now = Date.now();
   const waitFor: Promise<void>[] = [];
+  const isDue = (k: string, e: CacheEntry | undefined) => {
+    // Fon ve altın kaynaklarında "zorla yenile" de en az 1 dk bekler (kibar olmak için).
+    const minAge = k.startsWith("tefas:") || k.startsWith("gold:") ? 60_000 : 0;
+    return !e || now - e.fetchedAt >= ttlFor(k) || (force && now - e.fetchedAt >= minAge);
+  };
+  // Bellekte olmayan ya da süresi dolmuş anahtarlar için önce veritabanına bak.
+  const check = keys.filter((k) => !s.inflight.has(k) && isDue(k, s.mem.get(k)));
+  if (check.length > 0) {
+    const stored = await loadPersisted(check);
+    for (const [k, e] of stored) {
+      const m = s.mem.get(k);
+      if (!m || e.fetchedAt > m.fetchedAt) s.mem.set(k, e);
+    }
+  }
   const due: SourceKey[] = [];
   for (const k of keys) {
     const pending = s.inflight.get(k);
@@ -403,11 +463,7 @@ async function refresh(keys: SourceKey[], force: boolean) {
       waitFor.push(pending);
       continue;
     }
-    const e = s.mem.get(k) ?? loadPersisted(k);
-    if (e && !s.mem.has(k)) s.mem.set(k, e);
-    // Fon ve altın kaynaklarında "zorla yenile" de en az 1 dk bekler (kibar olmak için).
-    const minAge = k.startsWith("tefas:") || k.startsWith("gold:") ? 60_000 : 0;
-    if (!e || now - e.fetchedAt >= ttlFor(k) || (force && now - e.fetchedAt >= minAge)) due.push(k);
+    if (isDue(k, s.mem.get(k))) due.push(k);
   }
 
   if (due.length > 0) {
@@ -419,6 +475,7 @@ async function refresh(keys: SourceKey[], force: boolean) {
     const job = (async () => {
       const [y, b, f, au] = await Promise.allSettled([fetchYahoo(yahoo), fetchBinance(binance), fetchFunds(funds), fetchGoldKinds(golds)]);
       const fetchedAt = Date.now();
+      const writes: Promise<void>[] = [];
       const store = (prefix: string, r: PromiseSettledResult<Map<string, RawQuote>>, label: string) => {
         if (r.status === "rejected") {
           console.warn(`[prices] ${label} hatası:`, (r.reason as Error)?.message ?? r.reason);
@@ -427,13 +484,14 @@ async function refresh(keys: SourceKey[], force: boolean) {
         for (const [sym, quote] of r.value) {
           const entry = { quote, fetchedAt };
           s.mem.set(`${prefix}${sym}`, entry);
-          persist(`${prefix}${sym}`, entry);
+          writes.push(persist(`${prefix}${sym}`, entry));
         }
       };
       store("yahoo:", y, "Yahoo");
       store("binance:", b, "Binance");
       store("tefas:", f, "TEFAS");
       store("gold:", au, "Altın");
+      await Promise.all(writes);
     })().finally(() => {
       for (const k of due) s.inflight.delete(k);
     });
@@ -443,13 +501,9 @@ async function refresh(keys: SourceKey[], force: boolean) {
   await Promise.all(waitFor);
 }
 
+/** refresh() sonrasında: bellekteki kayıt (refresh veritabanından da yükler) */
 function readSource(key: SourceKey): { entry?: CacheEntry; fresh: boolean } {
-  const s = state();
-  let entry = s.mem.get(key);
-  if (!entry) {
-    entry = loadPersisted(key);
-    if (entry) s.mem.set(key, entry);
-  }
+  const entry = state().mem.get(key);
   // Son başarılı çekim 2 TTL'den eskiyse kaynak şu an başarısız demektir.
   const fresh = !!entry && Date.now() - entry.fetchedAt < ttlFor(key) * 2;
   return { entry, fresh };

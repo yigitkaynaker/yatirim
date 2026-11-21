@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 /** GET /api/transactions?mode=real|virtual (mod verilmezse hepsi) */
 export async function GET(req: NextRequest) {
   const mode = req.nextUrl.searchParams.get("mode");
-  return handle(() => ({ transactions: actions.listTransactions(isMode(mode) ? mode : undefined) }));
+  return handle(async () => ({ transactions: await actions.listTransactions(isMode(mode) ? mode : undefined) }));
 }
 
 /**
@@ -25,6 +25,6 @@ export async function POST(req: Request) {
       else delete p.quantity;
       return { transaction: await actions.createSanalPosition(p) };
     }
-    return { transaction: actions.addTransaction(body as unknown as actions.AddTransactionParams) };
+    return { transaction: await actions.addTransaction(body as unknown as actions.AddTransactionParams) };
   }, 201);
 }

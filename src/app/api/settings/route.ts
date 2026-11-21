@@ -18,33 +18,33 @@ import { monthlySavings } from "@/lib/news";
 
 export const dynamic = "force-dynamic";
 
-function snapshot() {
-  const { key, source } = getApiKey();
+async function snapshot() {
+  const { key, source } = await getApiKey();
   return {
     key: { source, masked: maskKey(key) },
-    settings: getAiSettings(),
+    settings: await getAiSettings(),
     models: Object.entries(AI_MODELS).map(([k, m]) => ({ key: k, id: m.id, label: m.label, inputPerMTok: m.inputPerMTok, outputPerMTok: m.outputPerMTok })),
-    budget: getBudgetStatus(),
-    savings: monthlySavings(),
-    signalAlerts: getSignalAlertsEnabled(),
-    kapNotify: getKapNotifyScope(),
-    withholding: getDividendWithholding(),
+    budget: await getBudgetStatus(),
+    savings: await monthlySavings(),
+    signalAlerts: await getSignalAlertsEnabled(),
+    kapNotify: await getKapNotifyScope(),
+    withholding: await getDividendWithholding(),
   };
 }
 
 /** GET /api/settings — yapay zeka ayarları, anahtar durumu (maskeli), bu ayki harcama */
 export async function GET() {
-  return handle(() => snapshot());
+  return handle(async () => (await snapshot()));
 }
 
 /** PUT /api/settings — { model?, scheduleEnabled?, scheduleTimes?, maxSearches?, budgetUsd?, signalAlerts?, kapNotify? } */
 export async function PUT(req: Request) {
   return handle(async () => {
     const { signalAlerts, kapNotify, withholding, ...rest } = await readJson(req);
-    if (withholding !== undefined) setDividendWithholding(withholding);
-    if (signalAlerts !== undefined) setSignalAlertsEnabled(!!signalAlerts);
-    if (kapNotify !== undefined) setKapNotifyScope(kapNotify);
-    if (Object.keys(rest).length > 0) updateAiSettings(rest);
-    return NextResponse.json(snapshot());
+    if (withholding !== undefined) await setDividendWithholding(withholding);
+    if (signalAlerts !== undefined) await setSignalAlertsEnabled(!!signalAlerts);
+    if (kapNotify !== undefined) await setKapNotifyScope(kapNotify);
+    if (Object.keys(rest).length > 0) await updateAiSettings(rest);
+    return NextResponse.json(await snapshot());
   });
 }

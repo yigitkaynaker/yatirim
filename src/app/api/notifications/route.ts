@@ -4,13 +4,13 @@ import { handle } from "@/lib/api";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return handle(() => actions.listNotifications());
+  return handle(async () => (await actions.listNotifications()));
 }
 
 /** POST /api/notifications — tümünü okundu işaretle */
 export async function POST() {
-  return handle(() => {
-    actions.markNotificationsRead();
+  return handle(async () => {
+    await actions.markNotificationsRead();
     return { ok: true };
   });
 }

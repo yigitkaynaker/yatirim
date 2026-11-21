@@ -1,5 +1,6 @@
 import "server-only";
-import { getDb } from "./db";
+import { background } from "./background";
+import { getDb, sqlNow } from "./db";
 import { displaySymbol, GOLD_SYMBOL, goldKind, instrumentId, type AssetType } from "./assets";
 import { fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
 import { listWatchlist } from "./market";
@@ -56,11 +57,11 @@ const cache = (() => {
 const utcDay = (t: number) => Math.floor(t / DAY_S);
 
 async function yahooCandles(symbol: string): Promise<CandleSet> {
-  const res = (await yahooClient().chart(
+  const res = await yahooClient().chart(
     symbol,
     { period1: new Date(Date.now() - LOOKBACK_DAYS * DAY_S * 1000), interval: "1d", return: "array" },
     { validateResult: false },
-  )) as { meta?: Record<string, unknown>; quotes?: { date: Date | string | number; close: number | null; volume?: number | null }[] };
+  ) as { meta?: Record<string, unknown>; quotes?: { date: Date | string | number; close: number | null; volume?: number | null }[] };
   const candles: Candle[] = [];
   for (const q of res.quotes ?? []) {
     if (typeof q.close !== "number" || !Number.isFinite(q.close)) continue;
@@ -100,7 +101,7 @@ async function binanceCandles(base: string): Promise<CandleSet> {
   const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(`${base}USDT`)}&interval=1d&limit=${BINANCE_LIMIT}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
   if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-  const rows = (await res.json()) as [number, string, string, string, string, string, number, ...unknown[]][];
+  const rows = await res.json() as [number, string, string, string, string, string, number, ...unknown[]][];
   const candles = rows
     .map((r) => ({ time: Math.floor(r[0] / 1000), close: Number(r[4]), volume: Number(r[5]) > 0 ? Number(r[5]) : null }))
     .filter((c) => Number.isFinite(c.close));
@@ -287,7 +288,7 @@ export async function collectSignalAssets(): Promise<{ assetType: AssetType; sym
       console.error("[teknik] portföy okunamadı", err);
     }
   }
-  for (const w of listWatchlist()) add(w.assetType, w.symbol, "izleme", w.name);
+  for (const w of (await listWatchlist())) add(w.assetType, w.symbol, "izleme", w.name);
   return [...map.values()];
 }
 
@@ -391,18 +392,18 @@ export interface SignalChange {
  * için bildirim + push üretir ve değişiklikleri döndürür. İlk kez görülen varlıkta
  * bildirim yapılmaz (yalnızca kaydedilir).
  */
-export function recordSignals(rows: SignalRow[], date: string): SignalChange[] {
-  const db = getDb();
+export async function recordSignals(rows: SignalRow[], date: string): Promise<SignalChange[]> {
+  const db = await getDb();
   const changes: SignalChange[] = [];
-  const get = db.prepare("SELECT label FROM technical_signals WHERE instrument = ?");
-  const put = db.prepare(
-    `INSERT INTO technical_signals (instrument, label, score, checked_date, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
-     ON CONFLICT(instrument) DO UPDATE SET label = excluded.label, score = excluded.score, checked_date = excluded.checked_date, updated_at = excluded.updated_at`,
-  );
+
   for (const r of rows) {
     if (!r.label || r.score == null || r.insufficient) continue;
-    const prev = get.get(r.instrument) as { label: SignalLabel } | undefined;
-    put.run(r.instrument, r.label, r.score, date);
+    const prev = await db.get<{ label: SignalLabel }>("SELECT label FROM technical_signals WHERE instrument = ?", [r.instrument]);
+    await db.run(
+      `INSERT INTO technical_signals (instrument, label, score, checked_date, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(instrument) DO UPDATE SET label = excluded.label, score = excluded.score, checked_date = excluded.checked_date, updated_at = excluded.updated_at`,
+      [r.instrument, r.label, Math.round(r.score), date, sqlNow()],
+    );
     if (prev && prev.label !== r.label) changes.push({ instrument: r.instrument, name: r.name, from: prev.label, to: r.label, score: r.score });
   }
   for (const c of changes) {
@@ -412,8 +413,8 @@ export function recordSignals(rows: SignalRow[], date: string): SignalChange[] {
       body: `${c.from} → ${c.to} (puan ${c.score > 0 ? "+" : ""}${c.score}). Teknik sinyaller geçmiş fiyatlara dayanır, yatırım tavsiyesi değildir.`,
       data: c,
     };
-    addNotification(n);
-    void sendPushToAll({ title: n.title, body: n.body, url: `/piyasa/detay?id=${encodeURIComponent(c.instrument)}`, tag: `sinyal-${c.instrument}` });
+    await addNotification(n);
+    background(() => sendPushToAll({ title: n.title, body: n.body, url: `/piyasa/detay?id=${encodeURIComponent(c.instrument)}`, tag: `sinyal-${c.instrument}` }));
   }
   return changes;
 }
@@ -430,18 +431,18 @@ export type SignalAlertResult =
  * çift çalışma engellenir.
  */
 export async function maybeRunSignalAlerts(now = new Date()): Promise<SignalAlertResult> {
-  if (!getSignalAlertsEnabled()) return { ran: false, reason: "kapali" };
+  if (!(await getSignalAlertsEnabled())) return { ran: false, reason: "kapali" };
   const p = istanbulParts(now);
   const [h, m] = SIGNAL_CHECK_TIME.split(":").map(Number);
   if (p.minutes < h * 60 + m) return { ran: false, reason: "zamani_degil" };
   if (gs.__yatirimSignalRunning) return { ran: false, reason: "mesgul" };
   const slot = `teknik ${p.date}`;
-  const claim = getDb().prepare("INSERT OR IGNORE INTO scheduled_runs (slot) VALUES (?)").run(slot);
+  const claim = await (await getDb()).run("INSERT INTO scheduled_runs (slot, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING", [slot, sqlNow()]);
   if (Number(claim.changes) !== 1) return { ran: false, reason: "zaten_calisti" };
   gs.__yatirimSignalRunning = true;
   try {
     const rows = await computeSignalRows(await collectSignalAssets(), { force: true });
-    const changes = recordSignals(rows, p.date);
+    const changes = await recordSignals(rows, p.date);
     console.log(`[teknik] ${slot}: ${rows.length} varlık kontrol edildi, ${changes.length} sinyal değişti`);
     return { ran: true, checked: rows.length, changes };
   } catch (err) {

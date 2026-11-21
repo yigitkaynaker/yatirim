@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 
 /** GET /api/ai/status — anahtar var mı, bu ayki harcama */
 export async function GET() {
-  return handle(() => ({ configured: isAiConfigured(), budget: getBudgetStatus() }));
+  return handle(async () => ({ configured: await isAiConfigured(), budget: await getBudgetStatus() }));
 }

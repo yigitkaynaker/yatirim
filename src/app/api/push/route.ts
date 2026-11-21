@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 
 /** GET /api/push — VAPID açık anahtarı (ilk çağrıda üretilir) ve kayıtlı cihazlar */
 export async function GET() {
-  return handle(() => ({ publicKey: getVapidKeys().publicKey, devices: listSubscriptions() }));
+  return handle(async () => ({ publicKey: (await getVapidKeys()).publicKey, devices: await listSubscriptions() }));
 }

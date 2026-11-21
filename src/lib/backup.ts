@@ -1,8 +1,9 @@
 import "server-only";
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { backupDir, closeDb, dbPath, getDb, MIGRATION_SQL, SCHEMA_VERSION, sqlString } from "./db";
+import type { DatabaseSync } from "node:sqlite";
+import { backupDir, closeDb, dbPath, getDb, isCloud, MIGRATION_SQL, rawSqlite, SCHEMA_VERSION, sqlString } from "./db";
+import { loadSqlite } from "./db/sqlite";
 import { ValidationError } from "./portfolio";
 
 // YEDEKLEME VE GERİ YÜKLEME
@@ -12,6 +13,12 @@ import { ValidationError } from "./portfolio";
 // - Yedek SQLite'ın VACUUM INTO komutuyla alınır: uygulama çalışırken bile tutarlı bir kopya.
 // - Geri yükleme: dosya doğrulanır (SQLite mi, bütünlük, şema sürümü, gerekli tablolar),
 //   önce mevcut veri yedeklenir, sonra bağlantı kapatılıp dosya değiştirilir.
+// - YALNIZCA yerel mod. Bulut modunda (Neon) dosya yoktur: yerine "Tüm verilerimi indir (JSON)"
+//   ve "JSON'dan geri yükle" kullanılır (dataTransfer.ts); Neon ayrıca kısa süreli geri dönüş sunar.
+
+function assertLocal() {
+  if (isCloud()) throw new ValidationError("Bulut modunda dosya yedeği yok; Ayarlar'dan \"Tüm verilerimi indir (JSON)\" kullanın.");
+}
 
 export const KEEP_BACKUPS = 14;
 const NAME_RE = /^yatirim-[a-z0-9-]+\.db$/;
@@ -50,6 +57,7 @@ function stamp(d = new Date()): string {
 }
 
 export function listBackups(): BackupFile[] {
+  if (isCloud()) return [];
   const dir = backupDir();
   if (!fs.existsSync(dir)) return [];
   return fs
@@ -76,24 +84,26 @@ export function pruneBackups(keep = KEEP_BACKUPS): number {
 }
 
 /** Çalışırken güvenli yedek (VACUUM INTO). kind: dosya adındaki etiket. */
-export function createBackup(kind: "gunluk" | "elle" | "geri-yukleme-oncesi" = "elle"): BackupFile {
+export async function createBackup(kind: "gunluk" | "elle" | "geri-yukleme-oncesi" = "elle"): Promise<BackupFile> {
+  assertLocal();
   const dir = backupDir();
   fs.mkdirSync(dir, { recursive: true });
   let name = `yatirim-${kind}-${stamp()}.db`;
   for (let i = 2; fs.existsSync(path.join(dir, name)); i++) name = `yatirim-${kind}-${stamp()}-${i}.db`;
   const file = path.join(dir, name);
-  getDb().exec(`VACUUM INTO ${sqlString(file)}`);
+  (await rawSqlite()).exec(`VACUUM INTO ${sqlString(file)}`);
   if (kind !== "geri-yukleme-oncesi") pruneBackups();
   const st = fs.statSync(file);
   return { name, size: st.size, createdAt: st.mtimeMs, kind: kindOf(name) };
 }
 
 /** Bugün (İstanbul) günlük yedek alınmadıysa alır. Hata fırlatmaz. */
-export function maybeDailyBackup(): BackupFile | null {
+export async function maybeDailyBackup(): Promise<BackupFile | null> {
+  if (isCloud()) return null;
   try {
     const today = stamp().slice(0, 10);
     if (listBackups().some((b) => b.name.startsWith(`yatirim-gunluk-${today}`))) return null;
-    const b = createBackup("gunluk");
+    const b = await createBackup("gunluk");
     console.log(`[yedek] günlük yedek alındı: ${b.name}`);
     return b;
   } catch (err) {
@@ -104,7 +114,7 @@ export function maybeDailyBackup(): BackupFile | null {
 
 /** İndirme için yedek dosyasının yolu (ad doğrulanır). */
 export function backupFilePath(name: string): string | null {
-  if (!NAME_RE.test(name)) return null;
+  if (isCloud() || !NAME_RE.test(name)) return null;
   const file = path.join(backupDir(), name);
   return fs.existsSync(file) ? file : null;
 }
@@ -126,8 +136,9 @@ function columnsOf(db: DatabaseSync, table: string): string[] {
 let referenceColumns: Map<string, string[]> | null = null;
 
 /** Güncel şemadaki ana tabloların sütunları (boş bir bellek veritabanına tüm geçişler uygulanarak). */
-function expectedColumns(): Map<string, string[]> {
+async function expectedColumns(): Promise<Map<string, string[]>> {
   if (referenceColumns) return referenceColumns;
+  const { DatabaseSync } = await loadSqlite();
   const mem = new DatabaseSync(":memory:");
   try {
     for (const sql of MIGRATION_SQL) mem.exec(sql);
@@ -142,7 +153,8 @@ function expectedColumns(): Map<string, string[]> {
  * Yedeğin geçici bir kopyasına eksik şema geçişlerini uygular ve ana tabloların (işlemler, hesaplar,
  * emirler, ayarlar) beklenen sütunlara sahip olduğunu denetler. Geçiş çalışmazsa ya da sütun eksikse reddedilir.
  */
-function checkMigratedSchema(file: string) {
+async function checkMigratedSchema(file: string) {
+  const { DatabaseSync } = await loadSqlite();
   const tmp = `${file}.dogrula-${process.pid}-${Date.now()}`;
   fs.copyFileSync(file, tmp);
   let db: DatabaseSync | null = null;
@@ -155,7 +167,7 @@ function checkMigratedSchema(file: string) {
       throw new ValidationError("Yedek bu uygulama sürümüne yükseltilemedi (şema geçişi başarısız); geçerli bir yedek değil.");
     }
     const problems: string[] = [];
-    for (const [table, cols] of expectedColumns()) {
+    for (const [table, cols] of await expectedColumns()) {
       const have = new Set(columnsOf(db, table));
       if (have.size === 0) problems.push(`${table} tablosu yok`);
       else {
@@ -172,7 +184,8 @@ function checkMigratedSchema(file: string) {
 }
 
 /** Yüklenen dosyanın geçerli bir yatırım veritabanı olduğunu doğrular. */
-export function validateBackupFile(file: string): BackupCheck {
+export async function validateBackupFile(file: string): Promise<BackupCheck> {
+  const { DatabaseSync } = await loadSqlite();
   const head = Buffer.alloc(16);
   const fd = fs.openSync(file, "r");
   try {
@@ -193,7 +206,7 @@ export function validateBackupFile(file: string): BackupCheck {
     const needed = REQUIRED_TABLES.filter((t) => t !== "settings" || user_version >= 4).filter((t) => t !== "portfolio_snapshots" || user_version >= 3).filter((t) => t !== "orders" || user_version >= 2);
     const missing = needed.filter((t) => !tables.has(t));
     if (missing.length) throw new ValidationError(`Yedekte gerekli tablolar eksik: ${missing.join(", ")}.`);
-    checkMigratedSchema(file);
+    await checkMigratedSchema(file);
     const { c } = db.prepare("SELECT COUNT(*) AS c FROM transactions").get() as { c: number };
     const last = db.prepare("SELECT MAX(date) AS d FROM transactions").get() as { d: string | null };
     const accounts = tables.has("accounts") ? (db.prepare("SELECT COUNT(*) AS c FROM accounts").get() as { c: number }).c : null;
@@ -216,7 +229,8 @@ export function stagedPath(token: string): string | null {
 }
 
 /** Yüklenen dosyayı geçici olarak kaydeder ve doğrular. token: geri yüklemeyi onaylarken gönderilir. */
-export function stageUpload(bytes: Uint8Array): { token: string; check: BackupCheck } {
+export async function stageUpload(bytes: Uint8Array): Promise<{ token: string; check: BackupCheck }> {
+  assertLocal();
   if (bytes.byteLength < 512) throw new ValidationError("Dosya çok küçük; geçerli bir yedek değil.");
   if (bytes.byteLength > 500 * 1024 * 1024) throw new ValidationError("Dosya çok büyük (en fazla 500 MB).");
   const dir = path.join(backupDir(), "yukleme");
@@ -230,7 +244,7 @@ export function stageUpload(bytes: Uint8Array): { token: string; check: BackupCh
   const file = path.join(dir, token);
   fs.writeFileSync(file, bytes);
   try {
-    return { token, check: validateBackupFile(file) };
+    return { token, check: await validateBackupFile(file) };
   } catch (err) {
     fs.rmSync(file, { force: true });
     throw err;
@@ -242,27 +256,28 @@ export function stageUpload(bytes: Uint8Array): { token: string; check: BackupCh
  * 1) mevcut veri yedeklenir, 2) bağlantı kapatılır (WAL boşaltılır), 3) dosya değiştirilir,
  * 4) bağlantı yeniden açılır (gerekirse şema geçişleri çalışır). Hata olursa eski dosya geri konur.
  */
-export function restoreFromFile(file: string): { before: BackupFile; check: BackupCheck } {
-  const check = validateBackupFile(file);
-  const before = createBackup("geri-yukleme-oncesi");
+export async function restoreFromFile(file: string): Promise<{ before: BackupFile; check: BackupCheck }> {
+  assertLocal();
+  const check = await validateBackupFile(file);
+  const before = await createBackup("geri-yukleme-oncesi");
   const live = dbPath();
   const rollback = `${live}.geri-al`;
-  closeDb();
+  await closeDb();
   try {
     for (const ext of ["-wal", "-shm"]) fs.rmSync(live + ext, { force: true });
     fs.copyFileSync(live, rollback);
     fs.copyFileSync(file, live);
-    getDb(); // yeniden aç + şema geçişleri
+    await getDb(); // yeniden aç + şema geçişleri
     fs.rmSync(rollback, { force: true });
   } catch (err) {
     console.error("[yedek] geri yükleme başarısız, eski veri geri konuyor", err);
-    closeDb();
+    await closeDb();
     try {
       for (const ext of ["-wal", "-shm"]) fs.rmSync(live + ext, { force: true });
       if (fs.existsSync(rollback)) fs.copyFileSync(rollback, live);
       fs.rmSync(rollback, { force: true });
     } catch {}
-    getDb();
+    await getDb();
     throw new ValidationError("Geri yükleme yapılamadı; mevcut verileriniz değişmedi.");
   } finally {
     fs.rmSync(file, { force: true });

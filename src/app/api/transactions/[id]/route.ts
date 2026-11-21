@@ -8,7 +8,7 @@ export async function PUT(req: Request, ctx: Ctx) {
   const id = parseId((await ctx.params).id);
   if (!id) return notFound(NF);
   return handle(async () => {
-    const tx = actions.editTransaction(id, (await readJson(req)) as unknown as actions.AddTransactionParams);
+    const tx = await actions.editTransaction(id, await readJson(req) as unknown as actions.AddTransactionParams);
     return tx ? { transaction: tx } : notFound(NF);
   });
 }
@@ -16,5 +16,5 @@ export async function PUT(req: Request, ctx: Ctx) {
 export async function DELETE(_req: Request, ctx: Ctx) {
   const id = parseId((await ctx.params).id);
   if (!id) return notFound(NF);
-  return handle(() => (actions.removeTransaction(id) ? { ok: true } : notFound(NF)));
+  return handle(async () => ((await actions.removeTransaction(id)) ? { ok: true } : notFound(NF)));
 }

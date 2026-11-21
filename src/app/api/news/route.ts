@@ -12,9 +12,9 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   const instrument = req.nextUrl.searchParams.get("instrument");
-  return handle(() => {
-    const base = { configured: isAiConfigured(), running: isScanRunning(), budget: getBudgetStatus(), settings: getAiSettings() };
-    if (instrument) return { ...base, latest: getLatestReport(instrument) };
-    return { ...base, reports: listReports(30) };
+  return handle(async () => {
+    const base = { configured: await isAiConfigured(), running: isScanRunning(), budget: await getBudgetStatus(), settings: await getAiSettings() };
+    if (instrument) return { ...base, latest: await getLatestReport(instrument) };
+    return { ...base, reports: await listReports(30) };
   });
 }

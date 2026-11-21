@@ -14,7 +14,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
     if (b.feePct !== undefined) p.feePct = b.feePct as string | number | null;
     if (b.includeInTotal !== undefined) p.includeInTotal = !!b.includeInTotal;
     if (b.archived !== undefined) p.archived = !!b.archived;
-    const account = actions.updateAccount(id, p);
+    const account = await actions.updateAccount(id, p);
     return account ? { account } : notFound("Hesap bulunamadı.");
   });
 }

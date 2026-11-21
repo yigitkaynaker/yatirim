@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     let csv: string;
     let name: string;
     if (kind === "sablon") {
-      csv = actions.importTemplateCsv();
+      csv = await actions.importTemplateCsv();
       name = "islem-sablonu.csv";
     } else if ((KINDS as string[]).includes(kind)) {
       csv = await actions.exportCsv(kind as actions.ExportKind, { account, year: year && /^\d{4}$/.test(year) ? year : null });

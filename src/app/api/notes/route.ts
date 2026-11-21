@@ -9,7 +9,7 @@ export async function PUT(req: Request) {
   return handle(async () => {
     const b = await readJson(req);
     return {
-      note: actions.savePositionNote({
+      note: await actions.savePositionNote({
         mode: b.mode as Mode,
         assetType: b.assetType as AssetType,
         symbol: String(b.symbol ?? ""),

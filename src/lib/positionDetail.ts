@@ -112,16 +112,16 @@ export function taxNoteFor(type: AssetType): string {
 export async function getPositionDetail(mode: Mode, type: AssetType, symbol: string, opts: { account?: number | null } = {}): Promise<PositionDetail> {
   const instrument = instrumentId(type, symbol);
   const account = mode === "real" && opts.account != null ? opts.account : null;
-  const txs = activeTransactions(mode).filter((t) => t.assetType === type && t.symbol === symbol && (account == null || t.accountId === account));
+  const txs = (await activeTransactions(mode)).filter((t) => t.assetType === type && t.symbol === symbol && (account == null || t.accountId === account));
   const portfolio = await getPortfolio(mode, { account });
   const holding = portfolio.holdings.find((h) => h.id === instrument) ?? null;
-  const accounts = mode === "real" ? listAccounts({ includeArchived: true }).map((a) => ({ id: a.id, name: a.name, feePct: a.feePct, archived: a.archived })) : [];
+  const accounts = mode === "real" ? (await listAccounts({ includeArchived: true })).map((a) => ({ id: a.id, name: a.name, feePct: a.feePct, archived: a.archived })) : [];
 
   // Komisyon oranı: seçili hesap; tek hesapta tutuluyorsa o; yoksa varsayılan hesap. Sanalda varsayılan hesap (tahmin).
   const feeAcc =
-    (account != null ? getAccount(account) : null) ??
-    (holding && holding.accounts.length === 1 ? getAccount(holding.accounts[0].accountId) : null) ??
-    defaultAccount();
+    (account != null ? await getAccount(account) : null) ??
+    (holding && holding.accounts.length === 1 ? await getAccount(holding.accounts[0].accountId) : null) ??
+    (await defaultAccount());
   let sell: SellEstimate | null = null;
   if (holding?.valueTry != null) {
     const parts = holding.accounts.length > 1 ? holding.accounts : null;
@@ -140,7 +140,7 @@ export async function getPositionDetail(mode: Mode, type: AssetType, symbol: str
     };
   }
 
-  const report = getLatestReport(instrument);
+  const report = await getLatestReport(instrument);
   const item = report?.items.find((i) => i.instrument === instrument) ?? null;
 
   const [suggestions, history] = await Promise.all([
@@ -161,11 +161,11 @@ export async function getPositionDetail(mode: Mode, type: AssetType, symbol: str
     accounts,
     heldIn:
       mode === "real"
-        ? [...new Set(activeTransactions(mode).filter((t) => t.assetType === type && t.symbol === symbol && t.accountId != null).map((t) => t.accountId!))]
+        ? [...new Set((await activeTransactions(mode)).filter((t) => t.assetType === type && t.symbol === symbol && t.accountId != null).map((t) => t.accountId!))]
         : [],
-    note: getNote(mode, type, symbol),
+    note: await getNote(mode, type, symbol),
     sell,
-    priceAlarms: listAlarms({ instrument, activeOnly: true })
+    priceAlarms: (await listAlarms({ instrument, activeOnly: true }))
       .filter((a) => a.kind === "price")
       .map((a) => ({ id: a.id, direction: a.direction, threshold: a.threshold, description: a.description })),
     instrument,
@@ -174,10 +174,10 @@ export async function getPositionDetail(mode: Mode, type: AssetType, symbol: str
     name: holding?.name ?? displaySymbol(type, symbol),
     holding,
     transactions: [...txs].sort((a, b) => (a.date === b.date ? b.id - a.id : a.date < b.date ? 1 : -1)),
-    orders: listOrders("pending").filter((o) => o.mode === mode && o.assetType === type && o.symbol === symbol && (account == null || o.accountId === account)),
-    dividends: listDividendRecords({ mode, status: "confirmed" }).filter((d) => d.assetType === type && d.symbol === symbol && (account == null || d.accountId === account)),
+    orders: (await listOrders("pending")).filter((o) => o.mode === mode && o.assetType === type && o.symbol === symbol && (account == null || o.accountId === account)),
+    dividends: (await listDividendRecords({ mode, status: "confirmed" })).filter((d) => d.assetType === type && d.symbol === symbol && (account == null || d.accountId === account)),
     dividendSuggestions: suggestions.filter((s) => s.mode === mode && s.assetType === type && s.symbol === symbol && (account == null || s.accountId === account)),
-    kap: type === "bist" ? listKap({ ticker: symbol, limit: 5 }) : [],
+    kap: type === "bist" ? await listKap({ ticker: symbol, limit: 5 }) : [],
     news: item && report ? { item, reportId: report.id, date: report.finishedAt ?? report.createdAt } : null,
     valueHistory: history.v,
     valueHistoryError: history.e,

@@ -20,7 +20,7 @@ export async function POST(req: Request) {
       defaultAccountId: typeof b.defaultAccountId === "number" ? b.defaultAccountId : null,
       createAccounts: b.createAccounts === true,
     };
-    if (b.commit === true) return actions.importTransactions(b.text, opts);
-    return { preview: actions.previewTransactionImport(b.text, opts) };
+    if (b.commit === true) return await actions.importTransactions(b.text, opts);
+    return { preview: await actions.previewTransactionImport(b.text, opts) };
   });
 }

@@ -1,12 +1,16 @@
+import { after } from "next/server";
 import { handle, readJson } from "@/lib/api";
+import { drainBackground } from "@/lib/background";
 import { listConversations, runChatTurn, type ChatEvent } from "@/lib/chat";
 import { getBudgetStatus, isAiConfigured } from "@/lib/aiClient";
 
 export const dynamic = "force-dynamic";
+// Yapay zeka araç döngüsü uzun sürebilir (bulut modunda işlev süre sınırı).
+export const maxDuration = 300;
 
 /** GET /api/chat — sohbet listesi ve yapay zeka durumu */
 export async function GET() {
-  return handle(() => ({ configured: isAiConfigured(), budget: getBudgetStatus(), conversations: listConversations() }));
+  return handle(async () => ({ configured: await isAiConfigured(), budget: await getBudgetStatus(), conversations: await listConversations() }));
 }
 
 /**
@@ -39,6 +43,8 @@ export async function POST(req: Request) {
       } catch {}
     },
   });
+  // Akış bitince arka plan işleri (bildirim gönderme) tamamlansın (bulut modunda işlev donmasın).
+  after(() => drainBackground(60_000));
   return new Response(stream, {
     headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no" },
   });

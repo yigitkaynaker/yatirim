@@ -4,6 +4,8 @@ import { ScanBusyError, startNewsScan } from "@/lib/news";
 import { getBudgetStatus, NoApiKeyError } from "@/lib/aiClient";
 
 export const dynamic = "force-dynamic";
+// Bulut modunda tarama yanıttan sonra aynı işlev içinde sürer (after); süre sınırı 300 sn.
+export const maxDuration = 300;
 
 /**
  * POST /api/news/scan — { instrument?: "bist:THYAO" }
@@ -15,7 +17,7 @@ export async function POST(req: Request) {
   const instrument = typeof body.instrument === "string" ? body.instrument : null;
   return handle(async () => {
     try {
-      const budget = getBudgetStatus();
+      const budget = await getBudgetStatus();
       const report = await startNewsScan({ trigger: instrument ? "varlik" : "manuel", instrument });
       return NextResponse.json(
         {

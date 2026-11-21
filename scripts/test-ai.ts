@@ -81,8 +81,8 @@ async function chat(message: string, conversationId?: number | null) {
   return { ...r, events: events as { type: string; card?: { title: string; tone: string; lines: string[] }; message?: string }[] };
 }
 
-const db = getDb();
-const count = (sql: string, ...args: (string | number)[]) => (db.prepare(sql).get(...args) as { c: number }).c;
+const db = await getDb();
+const count = async (sql: string, ...args: (string | number)[]) => (await db.get(sql, [...args]) as { c: number }).c;
 let passed = 0;
 function ok(name: string) {
   passed++;
@@ -91,20 +91,20 @@ function ok(name: string) {
 
 // ---- 1) Sohbet: sanal pozisyon aç ---------------------------------------------------------
 console.log("Sohbet araçları");
-updateAiSettings({ budgetUsd: 10, maxSearches: 3, scheduleEnabled: true, scheduleTimes: "09:45, 13:00, 18:30" });
+await updateAiSettings({ budgetUsd: 10, maxSearches: 3, scheduleEnabled: true, scheduleTimes: "09:45, 13:00, 18:30" });
 
-const virtBefore = count("SELECT COUNT(*) c FROM transactions WHERE mode='virtual' AND symbol='BTC' AND converted_at IS NULL");
+const virtBefore = await count("SELECT COUNT(*) c FROM transactions WHERE mode='virtual' AND symbol='BTC' AND converted_at IS NULL");
 script = [
   { content: [text("Açıyorum."), toolUse("create_sanal_position", { asset_type: "crypto", symbol: "BTC", amount: 1000, amount_currency: "TRY" })], stop_reason: "tool_use" },
   { content: [text("Sanal portföyünüze 1.000 TL'lik BTC eklendi.")], stop_reason: "end_turn" },
 ];
 const c1 = await chat("Sanal portföye 1000 TL'lik BTC ekle");
 assert.ok(c1.conversationId);
-const virtAfter = count("SELECT COUNT(*) c FROM transactions WHERE mode='virtual' AND symbol='BTC' AND converted_at IS NULL");
+const virtAfter = await count("SELECT COUNT(*) c FROM transactions WHERE mode='virtual' AND symbol='BTC' AND converted_at IS NULL");
 assert.equal(virtAfter, virtBefore + 1, "sanal işlem eklenmeli");
 const card1 = c1.events.find((e) => e.type === "card")?.card;
 assert.ok(card1 && card1.tone === "ok" && card1.title.includes("Sanal pozisyon açıldı"), JSON.stringify(c1.events));
-const lastTx = db.prepare("SELECT * FROM transactions ORDER BY id DESC LIMIT 1").get() as { amount: number; amount_currency: string; note: string };
+const lastTx = await db.get("SELECT * FROM transactions ORDER BY id DESC LIMIT 1") as { amount: number; amount_currency: string; note: string };
 assert.equal(lastTx.amount, 1000);
 assert.equal(lastTx.amount_currency, "TRY");
 assert.match(lastTx.note, /Yapay zeka/);
@@ -116,16 +116,16 @@ assert.ok(second.tools?.some((t) => "type" in t && t.type === "web_search_202503
 ok(`create_sanal_position → sanal işlem eklendi (${card1.lines[0]})`);
 
 // ---- 2) Sanalı gerçeğe al ---------------------------------------------------------------
-const realBefore = count("SELECT COUNT(*) c FROM transactions WHERE mode='real' AND symbol='BTC'");
+const realBefore = await count("SELECT COUNT(*) c FROM transactions WHERE mode='real' AND symbol='BTC'");
 script = [
   { content: [toolUse("promote_sanal_to_gercek", { asset_type: "crypto", symbol: "BTC" })], stop_reason: "tool_use" },
   { content: [text("BTC gerçek portföye aktarıldı.")], stop_reason: "end_turn" },
 ];
 const c2 = await chat("Sanal portföydeki BTC'yi gerçeğe al", c1.conversationId);
 assert.equal(c2.conversationId, c1.conversationId);
-assert.equal(count("SELECT COUNT(*) c FROM transactions WHERE mode='real' AND symbol='BTC'"), realBefore + 1, "gerçek işlem eklenmeli");
-assert.equal(count("SELECT COUNT(*) c FROM transactions WHERE mode='virtual' AND symbol='BTC' AND converted_at IS NULL"), 0, "sanal arşivlenmeli");
-const realTx = db.prepare("SELECT * FROM transactions WHERE mode='real' AND symbol='BTC' ORDER BY id DESC LIMIT 1").get() as { source_id: number | null; quantity: number };
+assert.equal(await count("SELECT COUNT(*) c FROM transactions WHERE mode='real' AND symbol='BTC'"), realBefore + 1, "gerçek işlem eklenmeli");
+assert.equal(await count("SELECT COUNT(*) c FROM transactions WHERE mode='virtual' AND symbol='BTC' AND converted_at IS NULL"), 0, "sanal arşivlenmeli");
+const realTx = await db.get("SELECT * FROM transactions WHERE mode='real' AND symbol='BTC' ORDER BY id DESC LIMIT 1") as { source_id: number | null; quantity: number };
 assert.ok(realTx.source_id, "gerçek işlem sanal kaynağa bağlanmalı");
 const card2 = c2.events.find((e) => e.type === "card")?.card;
 assert.ok(card2?.title.includes("Gerçek portföye aktarıldı"));
@@ -140,7 +140,7 @@ script = [
   { content: [text("Emir verildi.")], stop_reason: "end_turn" },
 ];
 const c3 = await chat("BTC 1.000$'a düşerse 5.000 TL'lik al emri ver", c1.conversationId);
-const order = db.prepare("SELECT * FROM orders ORDER BY id DESC LIMIT 1").get() as { source: string; status: string; trigger_price: number; amount: number; condition: string };
+const order = await db.get("SELECT * FROM orders ORDER BY id DESC LIMIT 1") as { source: string; status: string; trigger_price: number; amount: number; condition: string };
 assert.equal(order.source, "yapay_zeka");
 assert.equal(order.status, "pending");
 assert.equal(order.trigger_price, 1000);
@@ -176,13 +176,13 @@ assert.ok(tech.nedenler.every((n) => n.aciklama.length > 10));
 assert.match(tech.uyari, /yatırım tavsiyesi değildir/);
 ok(`get_technical_signals → BTC: ${tech.sinyal} (puan ${tech.puan}, RSI ${tech.gostergeler.rsi14})`);
 
-const display = getDisplayMessages(c1.conversationId!);
+const display = await getDisplayMessages(c1.conversationId!);
 assert.ok(display.some((m) => m.role === "assistant" && m.cards.length > 0));
 ok(`sohbet geçmişi kaydedildi (${display.length} görünen mesaj)`);
 
 // ---- 5) Haber analizi ------------------------------------------------------------------
 console.log("Haber analizi");
-const notifBefore = count("SELECT COUNT(*) c FROM notifications WHERE kind='news_alert'");
+const notifBefore = await count("SELECT COUNT(*) c FROM notifications WHERE kind='news_alert'");
 const submit = {
   market_summary: "Piyasalar karışık seyrediyor.",
   items: [
@@ -212,7 +212,7 @@ script = [
   },
 ];
 const rep0 = await startNewsScan({ trigger: "manuel", wait: true, client: fake as AiClient });
-const rep = getReport(rep0.id)!;
+const rep = (await getReport(rep0.id))!;
 assert.equal(rep.status, "ok", rep.error ?? "");
 assert.equal(rep.items.length, 1, "listede olmayan varlık atlanmalı");
 assert.equal(rep.items[0].importance, 5);
@@ -222,7 +222,7 @@ const prompt = calls[calls.length - 1];
 assert.ok(JSON.stringify(prompt.messages).includes("symbol=BTC"), "BTC taramaya girmeli");
 assert.match(JSON.stringify(prompt.messages), /symbol=BTC[^"]*teknik sinyal (Güçlü Al|Al|Nötr|Sat|Güçlü Sat)/, "istemde teknik sinyal özeti olmalı");
 assert.match(String(prompt.system), /teknik sinyal/);
-assert.equal(count("SELECT COUNT(*) c FROM notifications WHERE kind='news_alert'"), notifBefore + 1, "önem 5 → bildirim");
+assert.equal(await count("SELECT COUNT(*) c FROM notifications WHERE kind='news_alert'"), notifBefore + 1, "önem 5 → bildirim");
 ok(`rapor #${rep.id} kaydedildi, önem 5 → bildirim oluştu (maliyet ~$${rep.costUsd.toFixed(4)})`);
 
 // ---- 6) Bütçe ve zamanlayıcı ----------------------------------------------------------------
@@ -236,14 +236,14 @@ while (new Date(`${ym}-${String(wedDay).padStart(2, "0")}T12:00:00Z`).getUTCDay(
 const WED = `${ym}-${String(wedDay).padStart(2, "0")}`;
 const sat = `${ym}-${String(wedDay + 3).padStart(2, "0")}`;
 const at = (date: string, utc: string) => new Date(`${date}T${utc}:00Z`);
-db.prepare("DELETE FROM scheduled_runs WHERE slot LIKE ?").run(`${WED}%`);
+await db.run("DELETE FROM scheduled_runs WHERE slot LIKE ?", [`${WED}%`]);
 const wed = at(WED, "06:50"); // 09:50 İstanbul
-updateAiSettings({ budgetUsd: 0.000001 });
-assert.ok(getBudgetStatus().overBudget);
+await updateAiSettings({ budgetUsd: 0.000001 });
+assert.ok((await getBudgetStatus()).overBudget);
 const r1 = await maybeRunScheduledScan(wed, fake as AiClient);
 assert.deepEqual(r1, { ran: false, reason: "butce" });
 ok("bütçe dolu → otomatik tarama atlandı");
-updateAiSettings({ budgetUsd: 1000 }); // kopyalanmış veritabanında bu ayın gerçek harcaması olabilir
+await updateAiSettings({ budgetUsd: 1000 }); // kopyalanmış veritabanında bu ayın gerçek harcaması olabilir
 const r2 = await maybeRunScheduledScan(wed, fake as AiClient);
 assert.deepEqual(r2, { ran: false, reason: "zaten_calisti" });
 ok("aynı zaman dilimi ikinci kez çalışmaz");
@@ -269,57 +269,57 @@ ok("hata veren dilim 10 dk sonra bir kez yeniden denendi, sonra çift çalışma
 
 // ---- 6b) Günlük teknik sinyal değişimi uyarısı ----------------------------------------------
 console.log("Teknik sinyal uyarıları");
-db.prepare("DELETE FROM scheduled_runs WHERE slot LIKE 'teknik %'").run();
-db.prepare("DELETE FROM technical_signals").run();
+await db.run("DELETE FROM scheduled_runs WHERE slot LIKE 'teknik %'");
+await db.run("DELETE FROM technical_signals");
 const day1 = new Date("2026-11-18T17:00:00Z"); // 20:00 İstanbul
-setSignalAlertsEnabled(false);
+await setSignalAlertsEnabled(false);
 assert.deepEqual(await maybeRunSignalAlerts(day1), { ran: false, reason: "kapali" });
-setSignalAlertsEnabled(true);
+await setSignalAlertsEnabled(true);
 assert.deepEqual(await maybeRunSignalAlerts(new Date("2026-11-18T12:00:00Z")), { ran: false, reason: "zamani_degil" });
-const sigBefore = count("SELECT COUNT(*) c FROM notifications WHERE kind='signal_change'");
+const sigBefore = await count("SELECT COUNT(*) c FROM notifications WHERE kind='signal_change'");
 const s1 = await maybeRunSignalAlerts(day1);
 assert.ok(s1.ran && s1.changes.length === 0, "ilk kontrol yalnızca kaydeder: " + JSON.stringify(s1));
-assert.ok(count("SELECT COUNT(*) c FROM technical_signals WHERE instrument='crypto:BTC'") === 1);
+assert.ok((await count("SELECT COUNT(*) c FROM technical_signals WHERE instrument='crypto:BTC'")) === 1);
 assert.deepEqual(await maybeRunSignalAlerts(new Date("2026-11-18T20:00:00Z")), { ran: false, reason: "zaten_calisti" });
 ok(`kapalı / saat dışı / aynı gün ikinci kez çalışmaz (${s1.checked} varlık kaydedildi)`);
 // Değişimi taklit et: BTC'nin kayıtlı sinyalini farklı bir değere çevir
-const btcPrev = (db.prepare("SELECT label FROM technical_signals WHERE instrument='crypto:BTC'").get() as { label: string }).label;
+const btcPrev = (await db.get("SELECT label FROM technical_signals WHERE instrument='crypto:BTC'") as { label: string }).label;
 const fakePrev = btcPrev === "Güçlü Sat" ? "Güçlü Al" : "Güçlü Sat";
-db.prepare("UPDATE technical_signals SET label = ? WHERE instrument='crypto:BTC'").run(fakePrev);
+await db.run("UPDATE technical_signals SET label = ? WHERE instrument='crypto:BTC'", [fakePrev]);
 const s2 = await maybeRunSignalAlerts(new Date("2026-11-19T17:00:00Z"));
 assert.ok(s2.ran);
 const btcChange = s2.changes.find((c) => c.instrument === "crypto:BTC");
 assert.ok(btcChange && btcChange.from === fakePrev && btcChange.to === btcPrev, JSON.stringify(s2));
-assert.equal(count("SELECT COUNT(*) c FROM notifications WHERE kind='signal_change'"), sigBefore + s2.changes.length);
-const sigNote = db.prepare("SELECT title, body FROM notifications WHERE kind='signal_change' ORDER BY id DESC LIMIT 1").get() as { title: string; body: string };
+assert.equal(await count("SELECT COUNT(*) c FROM notifications WHERE kind='signal_change'"), sigBefore + s2.changes.length);
+const sigNote = await db.get("SELECT title, body FROM notifications WHERE kind='signal_change' ORDER BY id DESC LIMIT 1") as { title: string; body: string };
 ok(`sinyal değişimi → bildirim: "${sigNote.title}: ${sigNote.body.split(".")[0]}"`);
 
 // ---- 6c) Alarmlar ----------------------------------------------------------------------------
 console.log("Alarmlar");
-db.prepare("DELETE FROM alarms").run();
-const alarmNotes = () => count("SELECT COUNT(*) c FROM notifications WHERE kind='alarm'");
-const n0 = alarmNotes();
+await db.run("DELETE FROM alarms");
+const alarmNotes = async () => (await count("SELECT COUNT(*) c FROM notifications WHERE kind='alarm'"));
+const n0 = await alarmNotes();
 const every = await actions.createAlarm({ kind: "price", assetType: "crypto", symbol: "BTC", direction: "up", threshold: 1, repeat: "every", cooldownMin: 60 });
-assert.equal(actions.listAlarms().find((a) => a.id === every.id)?.fireCount, 1, "koşul zaten sağlanıyor → kurulunca bir kez çalar");
-assert.equal(alarmNotes(), n0 + 1);
+assert.equal((await actions.listAlarms()).find((a) => a.id === every.id)?.fireCount, 1, "koşul zaten sağlanıyor → kurulunca bir kez çalar");
+assert.equal(await alarmNotes(), n0 + 1);
 await checkAlarms();
 await checkAlarms();
-assert.equal(alarmNotes(), n0 + 1, "koşul sürdükçe tekrar çalmaz");
+assert.equal(await alarmNotes(), n0 + 1, "koşul sürdükçe tekrar çalmaz");
 // Koşul bozulup yeniden oluşmuş gibi: yeniden kur, ama son çalma 10 dk önce → bekleme süresi (60 dk) engeller
-const setState = (id: number, st: unknown) => db.prepare("UPDATE alarms SET state = ? WHERE id = ?").run(JSON.stringify(st), id);
-setState(every.id, { "crypto:BTC": { armed: true, lastFiredAt: Date.now() - 10 * 60_000 } });
+const setState = async (id: number, st: unknown) => (await db.run("UPDATE alarms SET state = ? WHERE id = ?", [JSON.stringify(st), id]));
+await setState(every.id, { "crypto:BTC": { armed: true, lastFiredAt: Date.now() - 10 * 60_000 } });
 await checkAlarms();
-assert.equal(alarmNotes(), n0 + 1, "bekleme süresi dolmadan çalmaz");
-setState(every.id, { "crypto:BTC": { armed: true, lastFiredAt: Date.now() - 61 * 60_000 } });
+assert.equal(await alarmNotes(), n0 + 1, "bekleme süresi dolmadan çalmaz");
+await setState(every.id, { "crypto:BTC": { armed: true, lastFiredAt: Date.now() - 61 * 60_000 } });
 await checkAlarms();
-assert.equal(alarmNotes(), n0 + 2, "bekleme süresi dolunca çalar");
+assert.equal(await alarmNotes(), n0 + 2, "bekleme süresi dolunca çalar");
 ok("her seferinde alarmı: bir kez çaldı, koşul sürerken ve bekleme süresinde sustu, süre dolunca yeniden çaldı");
 
 const once = await actions.createAlarm({ kind: "price", assetType: "crypto", symbol: "BTC", direction: "up", threshold: 1, repeat: "once" });
-assert.equal(actions.listAlarms().find((a) => a.id === once.id)?.active, false, "tek sefer alarm çalınca kapanır");
-actions.addToWatchlist({ assetType: "crypto", symbol: "ETH" });
+assert.equal((await actions.listAlarms()).find((a) => a.id === once.id)?.active, false, "tek sefer alarm çalınca kapanır");
+await actions.addToWatchlist({ assetType: "crypto", symbol: "ETH" });
 const wl = await actions.createAlarm({ kind: "day_change", scope: "watchlist", direction: "both", threshold: 0.0001, repeat: "every", cooldownMin: 30 });
-const ev = actions.listAlarmEvents(10).filter((e) => e.alarmId === wl.id);
+const ev = (await actions.listAlarmEvents(10)).filter((e) => e.alarmId === wl.id);
 assert.ok(ev.some((e) => e.instrument === "crypto:ETH"), "izleme listesi alarmı ETH için çalmalı: " + JSON.stringify(ev));
 await assert.rejects(() => actions.createAlarm({ kind: "price", scope: "watchlist", threshold: 5, direction: "up" }), /İzleme listesi alarmı/);
 await assert.rejects(() => actions.createAlarm({ kind: "cost_change", assetType: "bist", symbol: "THYAO", threshold: 10 }), /pozisyonu yok/);
@@ -332,7 +332,7 @@ script = [
 const ca = await chat("BTC bir günde %5 oynarsa haber ver");
 const alarmCard = ca.events.find((e) => e.type === "card")?.card;
 assert.ok(alarmCard?.title.startsWith("Alarm kuruldu"), JSON.stringify(ca.events));
-assert.ok(actions.listAlarms().some((a) => a.source === "yapay_zeka" && a.kind === "day_change"));
+assert.ok((await actions.listAlarms()).some((a) => a.source === "yapay_zeka" && a.kind === "day_change"));
 ok(`sohbet create_alarm → ${alarmCard!.lines[0]}`);
 
 // ---- 6d) Rakam son kontrolü (sohbet) -----------------------------------------------------------
@@ -354,7 +354,7 @@ script = [
 ];
 const cv2 = await chat("BTC kaç para?", cv.conversationId);
 assert.ok(!cv2.events.some((e) => e.type === "card" && e.card?.tone === "warn"), JSON.stringify(cv2.events));
-const shown = getDisplayMessages(cv.conversationId!);
+const shown = await getDisplayMessages(cv.conversationId!);
 assert.ok(shown.some((m) => m.cards.some((c) => c.tone === "warn")), "uyarı kartı geçmişte de görünmeli");
 assert.match(String(calls[calls.length - 1].system), /RAKAM KURALI/);
 ok(`uydurma rakam → "doğrulanamayan rakam" (${warn!.lines.join(", ")}); araç rakamı işaretlenmedi`);
@@ -371,7 +371,7 @@ script = [
     stop_reason: "tool_use",
   },
 ];
-const nr = getReport((await startNewsScan({ trigger: "manuel", wait: true, client: fake as AiClient })).id)!;
+const nr = (await getReport((await startNewsScan({ trigger: "manuel", wait: true, client: fake as AiClient })).id))!;
 const sys = String(calls[calls.length - 1].system);
 assert.match(sys, /ÜCRETSİZ kaynakları/);
 assert.equal(nr.items[0].confidence, "düşük");
@@ -384,20 +384,20 @@ console.log("Günlük özet");
 setAiClientOverride(null);
 const savedKey = process.env.ANTHROPIC_API_KEY;
 delete process.env.ANTHROPIC_API_KEY;
-db.prepare("DELETE FROM settings WHERE key = 'anthropic_api_key'").run();
+await db.run("DELETE FROM settings WHERE key = 'anthropic_api_key'");
 const det = await generateDailySummary();
 assert.equal(det.ai, false);
 assert.match(det.text, /yatırım tavsiyesi değildir/);
 ok(`anahtarsız kurallı özet: "${det.text.split("\n")[0]}"`);
-db.prepare("DELETE FROM scheduled_runs WHERE slot LIKE 'ozet %'").run();
+await db.run("DELETE FROM scheduled_runs WHERE slot LIKE 'ozet %'");
 script = [{ content: [text("- Portföyünüz bugün sakin.\n- Yatırım tavsiyesi değildir.")], stop_reason: "end_turn" }];
 assert.deepEqual(await maybeRunDailySummary(at(WED, "15:00"), fake as AiClient), { ran: false, reason: "zamani_degil" }); // 18:00 İstanbul
 assert.deepEqual(await maybeRunDailySummary(at(sat, "16:00"), fake as AiClient), { ran: false, reason: "hafta_sonu" });
-const sumNotes = count("SELECT COUNT(*) c FROM notifications WHERE kind='daily_summary'");
+const sumNotes = await count("SELECT COUNT(*) c FROM notifications WHERE kind='daily_summary'");
 const sr = await maybeRunDailySummary(at(WED, "15:50"), fake as AiClient); // 18:50 İstanbul
 assert.deepEqual(sr, { ran: true, ai: true });
 assert.deepEqual(await maybeRunDailySummary(at(WED, "16:30"), fake as AiClient), { ran: false, reason: "zaten_calisti" });
-assert.equal(count("SELECT COUNT(*) c FROM notifications WHERE kind='daily_summary'"), sumNotes + 1);
+assert.equal(await count("SELECT COUNT(*) c FROM notifications WHERE kind='daily_summary'"), sumNotes + 1);
 const sumCall = calls[calls.length - 1];
 assert.ok(!sumCall.tools, "günlük özet web araması / araç kullanmamalı");
 assert.match(JSON.stringify(sumCall.messages), /portfoyler/);
@@ -417,7 +417,7 @@ console.log("Anahtar yok");
 setAiClientOverride(null);
 const saved = process.env.ANTHROPIC_API_KEY;
 delete process.env.ANTHROPIC_API_KEY;
-db.prepare("DELETE FROM settings WHERE key = 'anthropic_api_key'").run();
+await db.run("DELETE FROM settings WHERE key = 'anthropic_api_key'");
 const evs: { type: string; message?: string }[] = [];
 await runChatTurn({ message: "merhaba", emit: (e) => evs.push(e) });
 assert.match(evs.find((e) => e.type === "error")?.message ?? "", /Ayarlar/);
@@ -429,13 +429,13 @@ assert.match(aiErrorMessage(new Error("x")), /Beklenmeyen/);
 
 // ---- 8) Web Push -------------------------------------------------------------------------
 console.log("Web Push");
-const k1 = getVapidKeys();
-const k2 = getVapidKeys();
+const k1 = await getVapidKeys();
+const k2 = await getVapidKeys();
 assert.equal(k1.publicKey, k2.publicKey, "VAPID anahtarları bir kez üretilip saklanmalı");
 assert.equal(Buffer.from(k1.publicKey, "base64url").length, 65);
-const sub = saveSubscription({ endpoint: "https://push.example.com/abc", keys: { p256dh: "x", auth: "y" } }, "test");
-assert.ok(listSubscriptions().some((s) => s.id === sub.id));
-assert.ok(removeSubscription({ id: sub.id }));
+const sub = await saveSubscription({ endpoint: "https://push.example.com/abc", keys: { p256dh: "x", auth: "y" } }, "test");
+assert.ok((await listSubscriptions()).some((s) => s.id === sub.id));
+assert.ok(await removeSubscription({ id: sub.id }));
 ok("VAPID üretildi, abonelik kaydedildi/silindi");
 
 console.log(`\n${passed} test geçti.`);
