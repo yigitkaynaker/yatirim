@@ -32,6 +32,13 @@ export interface ChartMarkerIn {
   text: string;
 }
 
+/** Grafikte yatay çizgi (örn. hedef / stop fiyatı) */
+export interface ChartPriceLine {
+  price: number;
+  color: string;
+  title: string;
+}
+
 const IST_OFFSET_S = 3 * 3600;
 const RSI_PANE_HEIGHT = 120;
 
@@ -62,7 +69,10 @@ export function PriceChart({
   baseline = null,
   baselineLabel = "Maliyetin",
   markers = [],
+  priceLines = [],
 }: {
+  /** Ek yatay çizgiler (hedef / stop); ölçek bunları da kapsar */
+  priceLines?: ChartPriceLine[];
   /**
    * Verilirse (ilk çizimde) grafik bu fiyatın üstünde yeşil, altında kırmızı boyanır ve
    * fiyatta kesikli bir çizgi (baselineLabel) çizilir. Örn. pozisyonun ortalama maliyeti.
@@ -91,8 +101,9 @@ export function PriceChart({
   const rsiRef = useRef<ISeriesApi<"Line"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const costLineRef = useRef<IPriceLine | null>(null);
-  const propsRef = useRef({ points, currency, intraday, tone, overlays, rsi, height, baseline, baselineLabel, markers });
-  propsRef.current = { points, currency, intraday, tone, overlays, rsi, height, baseline, baselineLabel, markers };
+  const extraLinesRef = useRef<IPriceLine[]>([]);
+  const propsRef = useRef({ points, currency, intraday, tone, overlays, rsi, height, baseline, baselineLabel, markers, priceLines });
+  propsRef.current = { points, currency, intraday, tone, overlays, rsi, height, baseline, baselineLabel, markers, priceLines };
 
   // Grafiği bir kez oluştur.
   useEffect(() => {
@@ -156,8 +167,8 @@ export function PriceChart({
               autoscaleInfoProvider: (original: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
                 const r = original();
                 const b = propsRef.current.baseline;
-                if (!r || b == null) return r;
-                return { ...r, priceRange: { minValue: Math.min(r.priceRange.minValue, b), maxValue: Math.max(r.priceRange.maxValue, b) } };
+                if (!r || b == null) return withLines(r);
+                return withLines({ ...r, priceRange: { minValue: Math.min(r.priceRange.minValue, b), maxValue: Math.max(r.priceRange.maxValue, b) } });
               },
               topLineColor: COLORS.up.line,
               topFillColor1: COLORS.up.top,
@@ -166,7 +177,12 @@ export function PriceChart({
               bottomFillColor1: COLORS.down.bottom,
               bottomFillColor2: COLORS.down.top,
             })
-          : chart.addSeries(AreaSeries, { lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+          : chart.addSeries(AreaSeries, {
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              autoscaleInfoProvider: (original: () => { priceRange: { minValue: number; maxValue: number } } | null) => withLines(original()),
+            });
       markersRef.current = lib.createSeriesMarkers(series, []);
       chartRef.current = chart;
       seriesRef.current = series;
@@ -179,12 +195,26 @@ export function PriceChart({
       seriesRef.current = null;
       markersRef.current = null;
       costLineRef.current = null;
+      extraLinesRef.current = [];
       overlaySeries.clear();
       rsiRef.current = null;
     };
     // Grafik yalnızca bir kez oluşturulur; apply güncel değerleri propsRef'ten okur.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** Ölçek hedef / stop çizgilerini de kapsasın (çizgi grafiğin dışında kalmasın) */
+  function withLines<T extends { priceRange: { minValue: number; maxValue: number } } | null>(r: T): T {
+    const lines = propsRef.current.priceLines.filter((l) => Number.isFinite(l.price));
+    if (!r || lines.length === 0) return r;
+    let lo = r.priceRange.minValue;
+    let hi = r.priceRange.maxValue;
+    for (const l of lines) {
+      lo = Math.min(lo, l.price);
+      hi = Math.max(hi, l.price);
+    }
+    return { ...r, priceRange: { minValue: lo, maxValue: hi } };
+  }
 
   function apply() {
     const series = seriesRef.current;
@@ -229,6 +259,21 @@ export function PriceChart({
         title: label,
       });
     }
+    for (const l of extraLinesRef.current) series.removePriceLine(l);
+    extraLinesRef.current = propsRef.current.priceLines
+      .filter((l) => Number.isFinite(l.price) && l.price > 0)
+      .map((l) =>
+        series.createPriceLine({
+          price: l.price,
+          color: l.color,
+          lineWidth: 1,
+          lineStyle: lib.LineStyle.LargeDashed,
+          axisLabelVisible: true,
+          axisLabelColor: l.color,
+          axisLabelTextColor: "#0b1220",
+          title: l.title,
+        }),
+      );
     // İşaretler grafikteki bir noktaya oturmalı: işlem zamanına en yakın önceki nokta (yoksa ilk nokta).
     const out: SeriesMarker<Time>[] = [];
     if (pts.length > 0) {
@@ -327,7 +372,7 @@ export function PriceChart({
   }
 
   // Veri değişince güncelle.
-  useEffect(apply, [points, currency, intraday, tone, overlays, rsi, baseline, baselineLabel, markers]);
+  useEffect(apply, [points, currency, intraday, tone, overlays, rsi, baseline, baselineLabel, markers, priceLines]);
 
   const total = height + (rsi && rsi.length > 0 ? RSI_PANE_HEIGHT : 0);
   return <div ref={boxRef} style={{ height: total }} className="w-full touch-pan-y" aria-label={`Fiyat grafiği (${currency})`} role="img" />;

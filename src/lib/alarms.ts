@@ -7,6 +7,8 @@ import { getPortfolio, ValidationError } from "./portfolio";
 import { listWatchlist } from "./market";
 import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
+import { accountNames, resolveAccount } from "./accounts";
+import { noteReminder } from "./notes";
 import {
   describeRule,
   evaluateAlarm,
@@ -47,6 +49,9 @@ export interface Alarm {
   instrument: string | null;
   name: string;
   mode: Mode | null;
+  /** Hesap: maliyet alarmında hangi hesabın pozisyonu (null: tüm hesaplar); diğerlerinde etiket */
+  accountId: number | null;
+  accountName: string | null;
   direction: AlarmDirection;
   threshold: number | null;
   repeat: AlarmRepeat;
@@ -77,6 +82,7 @@ interface AlarmRow {
   asset_type: AssetType | null;
   symbol: string | null;
   mode: Mode | null;
+  account_id: number | null;
   direction: AlarmDirection;
   threshold: number | null;
   repeat: AlarmRepeat;
@@ -96,8 +102,9 @@ function nameOf(r: { scope: AlarmScope; asset_type: AssetType | null; symbol: st
   return r.scope === "watchlist" || !r.asset_type || !r.symbol ? "İzleme listemdeki herhangi bir varlık" : displaySymbol(r.asset_type, r.symbol);
 }
 
-function fromRow(r: AlarmRow): Alarm {
+function fromRow(r: AlarmRow, names: Map<number, string> = accountNames()): Alarm {
   const name = nameOf(r);
+  const accountName = r.account_id != null ? (names.get(r.account_id) ?? null) : null;
   return {
     id: r.id,
     kind: r.kind,
@@ -107,6 +114,8 @@ function fromRow(r: AlarmRow): Alarm {
     instrument: r.asset_type && r.symbol ? instrumentId(r.asset_type, r.symbol) : null,
     name,
     mode: r.mode,
+    accountId: r.account_id,
+    accountName,
     direction: r.direction,
     threshold: r.threshold,
     repeat: r.repeat,
@@ -117,7 +126,9 @@ function fromRow(r: AlarmRow): Alarm {
     fireCount: r.fire_count,
     lastFiredAt: r.last_fired_at,
     createdAt: r.created_at,
-    description: describeRule(ruleOf(r), { name, mode: r.mode }),
+    description:
+      describeRule(ruleOf(r), { name, mode: r.mode }) +
+      (r.kind === "cost_change" && r.mode !== "virtual" ? (accountName ? ` (${accountName})` : " (tüm hesaplar)") : ""),
   };
 }
 
@@ -126,7 +137,8 @@ function rows(where = "", ...args: (string | number)[]): AlarmRow[] {
 }
 
 export function listAlarms(opts: { instrument?: string; activeOnly?: boolean } = {}): Alarm[] {
-  let list = rows(opts.activeOnly ? "WHERE active = 1" : "").map(fromRow);
+  const names = accountNames();
+  let list = rows(opts.activeOnly ? "WHERE active = 1" : "").map((r) => fromRow(r, names));
   if (opts.instrument) list = list.filter((a) => a.instrument === opts.instrument);
   return list;
 }
@@ -190,12 +202,18 @@ export async function createAlarm(body: Record<string, unknown>, source = "manue
   }
 
   let mode: Mode | null = null;
+  // Hesap: maliyet alarmında verilmezse tüm hesaplar (null); diğer türlerde verilmezse varsayılan hesap.
+  const accountGiven = (body.accountId != null && body.accountId !== "") || (typeof body.account === "string" && body.account.trim() !== "");
+  let accountId: number | null = null;
   if (kind === "cost_change") {
     mode = isMode(body.mode) ? body.mode : "real";
-    const p = await getPortfolio(mode);
+    if (mode === "real" && accountGiven) accountId = resolveAccount(body).id;
+    const p = await getPortfolio(mode, { account: accountId });
     if (!p.holdings.some((h) => h.assetType === assetType && h.symbol === symbol)) {
       throw new ValidationError(`${mode === "real" ? "Gerçek" : "Sanal"} portföyde ${displaySymbol(assetType!, symbol!)} pozisyonu yok; maliyet alarmı kurulamaz.`);
     }
+  } else {
+    accountId = resolveAccount(accountGiven ? body : {}, { allowArchived: true }).id;
   }
 
   if (scope === "asset" && kind === "price") {
@@ -210,10 +228,10 @@ export async function createAlarm(body: Record<string, unknown>, source = "manue
 
   const res = getDb()
     .prepare(
-      `INSERT INTO alarms (kind, scope, asset_type, symbol, mode, direction, threshold, repeat, cooldown_min, note, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO alarms (kind, scope, asset_type, symbol, mode, direction, threshold, repeat, cooldown_min, note, source, account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(kind, scope, assetType, symbol, mode, direction, threshold, repeat, Math.round(cooldownRaw), note, source);
+    .run(kind, scope, assetType, symbol, mode, direction, threshold, repeat, Math.round(cooldownRaw), note, source, accountId);
   return getAlarm(Number(res.lastInsertRowid))!;
 }
 
@@ -251,8 +269,14 @@ function fireMessage(r: AlarmRow, t: Target, obs: Observation, q: Quote | undefi
   const price = q?.price != null ? ` Fiyat: ${fmt(q.price, 4)} ${q.currency}.` : "";
   const v = obs.value ?? 0;
   switch (r.kind) {
-    case "price":
-      return { title: `Alarm: ${name} ${r.direction === "down" ? "eşiğin altına indi" : "eşiğin üstüne çıktı"}`, body: `${name} ${fmt(v, 4)} ${q?.currency ?? ""} (eşik ${fmt(r.threshold ?? 0, 4)}).` };
+    case "price": {
+      // Eşik bir pozisyon notunun stop / hedef fiyatıysa notunuz hatırlatılır.
+      const reminder = t.type && t.symbol ? noteReminder(t.type, t.symbol, r.direction, r.threshold) : null;
+      return {
+        title: `Alarm: ${name} ${r.direction === "down" ? "eşiğin altına indi" : "eşiğin üstüne çıktı"}`,
+        body: `${name} ${fmt(v, 4)} ${q?.currency ?? ""} (eşik ${fmt(r.threshold ?? 0, 4)}).${reminder ? ` ${reminder}` : ""}`,
+      };
+    }
     case "day_change":
       return { title: `Alarm: ${name} bugün %${fmt(v)}`, body: `${name} bir önceki kapanışa göre %${fmt(v)} ${v >= 0 ? "yükseldi" : "düştü"} (eşik %${fmt(r.threshold ?? 0)}).${price}` };
     case "cost_change":
@@ -299,16 +323,23 @@ async function runCheck(active: AlarmRow[], now: number, forceSlow: boolean) {
   const qList = quoteTargets.size ? await getQuotes([...quoteTargets.values()].map((t) => ({ type: t.type, symbol: t.symbol }))) : [];
   const quotes = new Map(qList.map((q) => [q.id, q]));
 
-  // Maliyete göre K/Z (TL): gerekiyorsa portföy
+  // Maliyete göre K/Z (TL): gerekiyorsa portföy (hesap seçiliyse o hesabın pozisyonu)
   const pnl = new Map<string, number>();
-  for (const mode of ["real", "virtual"] as const) {
-    if (!todo.some((a) => a.kind === "cost_change" && a.mode === mode)) continue;
+  const pnlKey = (mode: Mode, accountId: number | null, id: string) => `${mode}|${mode === "real" ? (accountId ?? "") : ""}|${id}`;
+  const scopes = new Map<string, { mode: Mode; accountId: number | null }>();
+  for (const a of todo) {
+    if (a.kind !== "cost_change") continue;
+    const mode = a.mode ?? "real";
+    const accountId = mode === "real" ? a.account_id : null;
+    scopes.set(`${mode}|${accountId ?? ""}`, { mode, accountId });
+  }
+  for (const sc of scopes.values()) {
     try {
-      const p = await getPortfolio(mode);
+      const p = await getPortfolio(sc.mode, { account: sc.accountId });
       for (const h of p.holdings) {
         if (h.stale || h.pnlTry == null || !h.costTry) continue;
         if (!quoteUsable(h)) continue;
-        pnl.set(`${mode}|${h.id}`, (h.pnlTry / h.costTry) * 100);
+        pnl.set(pnlKey(sc.mode, sc.accountId, h.id), (h.pnlTry / h.costTry) * 100);
       }
     } catch (err) {
       console.warn("[alarm] portföy okunamadı", (err as Error).message);
@@ -342,7 +373,7 @@ async function runCheck(active: AlarmRow[], now: number, forceSlow: boolean) {
       let obs: Observation = {};
       if (a.kind === "price") obs = { value: q && quoteUsable(q, now) ? q.price : null };
       else if (a.kind === "day_change") obs = { value: q && quoteUsable(q, now) && q.price != null && q.prevClose ? ((q.price - q.prevClose) / q.prevClose) * 100 : null };
-      else if (a.kind === "cost_change") obs = { value: pnl.get(`${a.mode ?? "real"}|${t.id}`) ?? null };
+      else if (a.kind === "cost_change") obs = { value: pnl.get(pnlKey(a.mode ?? "real", a.account_id, t.id)) ?? null };
       else if (a.kind === "volume_spike") obs = { value: tech.get(t.id)?.volumeRatio ?? null };
       else if (a.kind === "signal_change") obs = { label: tech.get(t.id)?.label ?? null };
 

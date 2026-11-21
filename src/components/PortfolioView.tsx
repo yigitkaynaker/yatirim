@@ -15,15 +15,22 @@ import { Card, Modal, ModeTabs, PriceMeta, PrimaryButton, StaleBadge } from "./u
 import { positionHref } from "./PositionDetailView";
 import { VirtualEntryForm } from "./VirtualEntryForm";
 import { DailySummaryCard, PortfolioAnalytics } from "./PortfolioInsights";
+import { ACCOUNT_EXPLAIN, AccountChips, refreshAccounts } from "./AccountControls";
+import { AnnualReturn, XIRR_EXPLAIN } from "./PositionExtras";
+import { SanalRealityCard } from "./SanalReality";
+import type { AccountTotal } from "@/lib/portfolio";
 
 export function PortfolioView() {
   const [mode, setMode] = useState<Mode>("real");
-  const { data, error, loading, lastSuccess, reload } = usePolling<PortfolioSummary>(`/api/portfolio?mode=${mode}`);
+  const [account, setAccount] = useState<number | null>(null);
+  const acc = mode === "real" ? account : null;
+  const { data, error, loading, lastSuccess, reload } = usePolling<PortfolioSummary>(`/api/portfolio?mode=${mode}${acc != null ? `&hesap=${acc}` : ""}`);
   const [adding, setAdding] = useState(false);
   const [converting, setConverting] = useState<Holding | null>(null);
 
-  // Mod değişince bir önceki modun verisini gösterme.
-  const summary = data && data.mode === mode ? data : null;
+  // Mod / hesap değişince bir önceki görünümün verisini gösterme.
+  const summary = data && data.mode === mode && (data.account ?? null) === acc ? data : null;
+  const lastAccounts = data?.mode === "real" ? data.accounts : null;
   const virtual = mode === "virtual";
 
   return (
@@ -49,11 +56,25 @@ export function PortfolioView() {
         </div>
       </div>
 
+      {mode === "real" && lastAccounts && (
+        <AccountChips
+          items={lastAccounts.map((a) => ({ id: a.accountId, name: a.name, muted: !a.includeInTotal }))}
+          value={account}
+          onChange={setAccount}
+        />
+      )}
+
       {error && <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-300">{error}</p>}
 
       <DailySummaryCard />
 
-      <Summary summary={summary} mode={mode} />
+      <Summary summary={summary} mode={mode} accountName={acc != null ? (lastAccounts?.find((a) => a.accountId === acc)?.name ?? null) : null} />
+
+      {mode === "real" && acc == null && lastAccounts && lastAccounts.length > 1 && (
+        <AccountTotals accounts={lastAccounts} onPick={setAccount} onChanged={() => void reload()} />
+      )}
+
+      {mode === "virtual" && <SanalRealityCard />}
 
       <DividendHint mode={mode} />
 
@@ -67,9 +88,9 @@ export function PortfolioView() {
 
       {summary && summary.allocation.length > 0 && <AllocationDonut summary={summary} />}
 
-      <PortfolioHistory mode={mode} />
+      {acc == null && <PortfolioHistory mode={mode} />}
 
-      <PortfolioAnalytics mode={mode} />
+      {acc == null && <PortfolioAnalytics mode={mode} />}
 
       <Holdings summary={summary} mode={mode} onConvert={setConverting} onAdd={() => setAdding(true)} />
 
@@ -87,6 +108,7 @@ export function PortfolioView() {
               mode="real"
               endpoint="/api/transactions"
               method="POST"
+              initial={acc != null ? { accountId: acc } : undefined}
               onSaved={() => {
                 setAdding(false);
                 void reload();
@@ -108,6 +130,7 @@ export function PortfolioView() {
             method="POST"
             lockAsset
             lockSide
+            header={<SanalRealityCard compact />}
             submitLabel="Gerçek portföye ekle"
             initial={{
               assetType: converting.assetType,
@@ -130,13 +153,66 @@ export function PortfolioView() {
   );
 }
 
-function Summary({ summary, mode }: { summary: PortfolioSummary | null; mode: Mode }) {
+/** Hesap başına toplamlar ve "toplama dahil" anahtarı */
+function AccountTotals({ accounts, onPick, onChanged }: { accounts: AccountTotal[]; onPick: (id: number) => void; onChanged: () => void }) {
+  const [busy, setBusy] = useState<number | null>(null);
+  async function toggle(a: AccountTotal) {
+    setBusy(a.accountId);
+    try {
+      await fetch(`/api/accounts/${a.accountId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeInTotal: !a.includeInTotal }),
+      });
+      await refreshAccounts();
+      onChanged();
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <Card className="p-4 md:p-6">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="font-semibold">Hesaplarım</h2>
+        <Link href="/ayarlar#hesaplar" className="text-xs text-accent">
+          Hesapları yönet ›
+        </Link>
+      </div>
+      <p className="mt-1 text-xs text-slate-500">{ACCOUNT_EXPLAIN}</p>
+      <ul className="num mt-3 divide-y divide-line/60">
+        {accounts.map((a) => (
+          <li key={a.accountId} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5">
+            <button onClick={() => onPick(a.accountId)} className={`min-w-0 flex-1 text-left ${a.includeInTotal ? "" : "opacity-60"}`}>
+              <span className="font-medium text-slate-200 hover:underline">{a.name}</span>
+              <span className="block text-xs text-slate-500">
+                {a.positions} pozisyon{a.feePct > 0 ? ` · komisyon %${a.feePct.toLocaleString("tr-TR")}` : ""}
+                {a.incomplete ? " · bazı fiyatlar eksik" : ""}
+              </span>
+            </button>
+            <div className="text-right">
+              <div className="font-medium">{formatMoney(a.valueTry)}</div>
+              <div className={`text-xs ${pnlClass(a.pnlTry)}`}>
+                {formatSigned(a.pnlTry)} ({formatPercent(a.pnlPct)})
+              </div>
+            </div>
+            <label className="flex w-full cursor-pointer items-center gap-2 text-xs text-slate-400 sm:w-auto" title="Kapalıysa bu hesap toplam değere ve grafiklere dahil edilmez.">
+              <input type="checkbox" checked={a.includeInTotal} disabled={busy === a.accountId} onChange={() => void toggle(a)} className="h-4 w-4 accent-emerald-500" />
+              Toplama dahil
+            </label>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+function Summary({ summary, mode, accountName }: { summary: PortfolioSummary | null; mode: Mode; accountName: string | null }) {
   const t = summary?.totals;
   const virtual = mode === "virtual";
   return (
     <Card className={`p-4 md:p-6 ${virtual ? "border-violet-500/30 bg-gradient-to-br from-violet-500/10 to-transparent" : ""}`}>
       <div className="flex items-center gap-2 text-sm text-slate-400">
-        {virtual ? "Sanal portföy değeri" : "Toplam değer"}
+        {virtual ? "Sanal portföy değeri" : accountName ? `${accountName} değeri` : "Toplam değer"}
         {t?.anyStale && <StaleBadge title="Bazı fiyatlar güncellenemedi; son bilinen fiyatlar kullanılıyor." />}
       </div>
       <div className="num mt-1 text-3xl font-semibold tracking-tight md:text-4xl">{t ? formatMoney(t.valueTry) : "—"}</div>
@@ -144,6 +220,12 @@ function Summary({ summary, mode }: { summary: PortfolioSummary | null; mode: Mo
         <span className={pnlClass(t?.pnlTry)} title="Toplam kâr/zarar: bugünkü değer − maliyet">
           {t ? `${formatSigned(t.pnlTry)} (${formatPercent(t.pnlPct)})` : ""}
         </span>
+        {t?.annual?.pct != null && (
+          <span title={XIRR_EXPLAIN}>
+            <span className="text-slate-500">Yıllık </span>
+            <AnnualReturn a={t.annual} />
+          </span>
+        )}
         {t && t.dayChangeTry != null && (
           <span title="Bugün: fiyatların bir önceki kapanışa göre değişimi (hafta sonu ve tatilde son seansın değişimi)">
             <span className="text-slate-500">Bugün </span>
@@ -179,6 +261,12 @@ function Summary({ summary, mode }: { summary: PortfolioSummary | null; mode: Mo
       {t?.incomplete && (
         <p className="mt-3 text-xs text-amber-300">Bazı varlıkların fiyatı alınamadığı için toplamlara dahil edilmedi.</p>
       )}
+      {t && t.feesTry > 0 && (
+        <p className="mt-3 text-xs text-slate-500">
+          Ödenen komisyon: <span className="num text-slate-300">{formatMoney(t.feesTry)}</span> (maliyete ve gerçekleşen K/Z’ye dahil).
+        </p>
+      )}
+      {t?.annual && t.annual.pct == null && t.annual.note && <p className="mt-1 text-xs text-slate-500">Yıllık getiri: {t.annual.note}</p>}
       <p className="mt-3 text-xs text-slate-500">
         Döviz cinsinden varlıklarda değer güncel kurla, maliyet ve gerçekleşen K/Z işlem günündeki kurla TL’ye çevrilir. “Bugün”, fiyatların bir önceki
         kapanışa göre değişimidir; BIST fiyatları yaklaşık 15 dakika gecikmeli, fon fiyatları günde bir kez açıklanır.
@@ -192,10 +280,11 @@ function AssetName({ h }: { h: Holding }) {
     <div className="flex items-center gap-2">
       <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: ASSET_TYPE_INFO[h.assetType].color }} />
       <div className="min-w-0">
-        <Link href={positionHref(h.mode, h.id)} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5 font-medium hover:underline">
+        <Link href={positionHref(h.mode, h.id, h.accountId)} onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5 font-medium hover:underline">
           {displaySymbol(h.assetType, h.symbol)}
         </Link>
         <div className="max-w-56 truncate text-xs text-slate-500">{h.assetType === "fund" && h.name ? h.name : ASSET_TYPE_INFO[h.assetType].label}</div>
+        {h.accounts.length > 1 && <div className="max-w-56 truncate text-[11px] text-slate-500">{h.accounts.map((a) => a.name).join(" + ")}</div>}
         <PriceMeta q={h} />
       </div>
     </div>
@@ -275,7 +364,7 @@ function Holdings({
   }
 
   const cur = (h: Holding) => h.currency || "TRY";
-  const open = (h: Holding) => router.push(positionHref(h.mode, h.id));
+  const open = (h: Holding) => router.push(positionHref(h.mode, h.id, h.accountId));
 
   return (
     <>

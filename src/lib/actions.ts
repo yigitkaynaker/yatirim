@@ -9,6 +9,11 @@ import * as dividends from "./dividends";
 import * as kap from "./kap";
 import * as positionDetail from "./positionDetail";
 import * as alarms from "./alarms";
+import * as accounts from "./accounts";
+import * as notes from "./notes";
+import * as backup from "./backup";
+import * as io from "./importExport";
+import * as reports from "./reports";
 import { runOrderCheck } from "./orderWatcher";
 import { getQuotes, type InstrumentRef } from "./prices";
 
@@ -21,15 +26,19 @@ import { getQuotes, type InstrumentRef } from "./prices";
 // Sayısal alanlar sayı ya da Türkçe metin ("10.000", "12,5") olabilir.
 
 export { ValidationError } from "./portfolio";
-export type { Transaction, PortfolioSummary, Holding } from "./portfolio";
+export type { Transaction, PortfolioSummary, Holding, AccountTotal } from "./portfolio";
+export type { Account } from "./accounts";
 export type { Order, OrderStatus, OrderSource, OrderCondition, AppNotification } from "./orders";
 
 type Num = number | string;
 
 // ---- Okuma ----------------------------------------------------------------
 
-/** Gerçek ya da sanal portföy özeti (pozisyonlar, toplamlar TL, dağılım). İki mod asla karışmaz. */
-export function getPortfolioSummary(mode: Mode, opts: { force?: boolean } = {}) {
+/**
+ * Gerçek ya da sanal portföy özeti (pozisyonlar, toplamlar TL, dağılım, yıllık getiri). İki mod asla karışmaz.
+ * Gerçekte account verilirse yalnızca o hesap; verilmezse "toplama dahil" hesapların birleşimi.
+ */
+export function getPortfolioSummary(mode: Mode, opts: { force?: boolean; account?: number | null } = {}) {
   return portfolio.getPortfolio(mode, opts);
 }
 
@@ -63,6 +72,12 @@ export interface AddTransactionParams {
   /** YYYY-MM-DD */
   date: string;
   note?: string | null;
+  /** Gerçek işlemde hesap: kimlik ya da ad (verilmezse varsayılan hesap) */
+  accountId?: number | null;
+  account?: string | null;
+  /** Komisyon: tutar (işlem para biriminde) ya da yüzde; ikisi de yoksa hesabın varsayılan oranı */
+  fee?: Num | null;
+  feePct?: Num | null;
 }
 
 /** Elle işlem ekler (gerçek ya da sanal). */
@@ -108,6 +123,11 @@ export interface PromoteParams {
   currency: Currency;
   date: string;
   note?: string | null;
+  /** Gerçek işlemin yazılacağı hesap (verilmezse varsayılan hesap) */
+  accountId?: number | null;
+  account?: string | null;
+  fee?: Num | null;
+  feePct?: Num | null;
 }
 
 /** "Gerçekten aldım": sanal pozisyonu arşivler, gerçek portföye alış işlemi ekler. */
@@ -130,6 +150,9 @@ export interface PlaceOrderParams {
   amountCurrency?: Currency;
   quantity?: Num;
   note?: string | null;
+  /** Gerçek emirde hesap (verilmezse varsayılan hesap) */
+  accountId?: number | null;
+  account?: string | null;
 }
 
 /**
@@ -231,12 +254,22 @@ export function listDividends(opts: { mode?: Mode; status?: "confirmed" | "dismi
 }
 
 /** Temettüyü gelir olarak kaydeder (gerçekleşen K/Z'ye eklenir). { mode, assetType, symbol, exDate, amount? } */
-export function confirmDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string; amount?: Num | null; note?: string | null; overwrite?: boolean }) {
+export function confirmDividend(p: {
+  mode: Mode;
+  assetType: AssetType;
+  symbol: string;
+  exDate: string;
+  amount?: Num | null;
+  note?: string | null;
+  overwrite?: boolean;
+  /** Gerçekte hesap (verilmezse varsayılan hesap) */
+  accountId?: number | null;
+}) {
   return dividends.confirmDividend(p as unknown as Record<string, unknown>);
 }
 
 /** Temettü önerisini gizler. */
-export function dismissDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string }) {
+export function dismissDividend(p: { mode: Mode; assetType: AssetType; symbol: string; exDate: string; accountId?: number | null }) {
   return dividends.dismissDividend(p as unknown as Record<string, unknown>);
 }
 
@@ -261,9 +294,9 @@ export function listKapDisclosures(opts: { ticker?: string; limit?: number; sinc
 
 // ---- Pozisyon detayı ----------------------------------------------------------------
 
-/** Tek pozisyonun ayrıntısı: özet, işlemler, emirler, temettü, KAP, haber, değer geçmişi. */
-export function getPositionDetail(mode: Mode, instrument: InstrumentRef) {
-  return positionDetail.getPositionDetail(mode, instrument.type, instrument.symbol);
+/** Tek pozisyonun ayrıntısı: özet, işlemler, emirler, temettü, KAP, haber, değer geçmişi, not, "şimdi satarsam". */
+export function getPositionDetail(mode: Mode, instrument: InstrumentRef, opts: { account?: number | null } = {}) {
+  return positionDetail.getPositionDetail(mode, instrument.type, instrument.symbol, opts);
 }
 
 // ---- Alarmlar (işlem yapmaz, yalnızca bildirim) ----------------------------------------
@@ -294,6 +327,9 @@ export interface CreateAlarmParams {
   repeat?: alarms.AlarmRepeat;
   cooldownMin?: Num;
   note?: string | null;
+  /** Hesap: maliyet alarmında hangi hesabın pozisyonu (verilmezse tüm hesaplar) */
+  accountId?: number | null;
+  account?: string | null;
 }
 
 /** Alarm kurar (süresi dolmaz). Koşul sağlanırsa bildirim + push gönderilir; işlem yapılmaz. */
@@ -312,4 +348,143 @@ export function deleteAlarm(id: number) {
 /** Alarmı açar / kapatır. */
 export function setAlarmActive(id: number, active: boolean) {
   return alarms.setAlarmActive(id, active);
+}
+
+// ---- Hesaplar ------------------------------------------------------------------------------
+
+/** Hesaplar (arşivliler isteğe bağlı) */
+export function listAccounts(opts: { includeArchived?: boolean } = {}) {
+  return accounts.listAccounts(opts);
+}
+
+/** Yeni hesap: { name, feePct?, includeInTotal? } */
+export function createAccount(p: { name: string; feePct?: Num | null; includeInTotal?: boolean }) {
+  return accounts.createAccount(p as unknown as Record<string, unknown>);
+}
+
+/** Hesabı yeniden adlandırır / komisyon oranını, toplama dahil olmasını, arşiv durumunu değiştirir. Bulunamazsa null. */
+export function updateAccount(id: number, p: { name?: string; feePct?: Num | null; includeInTotal?: boolean; archived?: boolean }) {
+  return accounts.updateAccount(id, p as unknown as Record<string, unknown>);
+}
+
+// ---- Pozisyon notu ---------------------------------------------------------------------------
+
+export type { PositionNote } from "./notes";
+
+export function getPositionNote(mode: Mode, instrument: InstrumentRef) {
+  return notes.getNote(mode, instrument.type, instrument.symbol);
+}
+
+/** Notu kaydeder; tüm alanlar boşsa siler (null). Fiyatlar varlığın fiyat biriminde. */
+export function savePositionNote(p: {
+  mode: Mode;
+  assetType: AssetType;
+  symbol: string;
+  why?: string | null;
+  exitPlan?: string | null;
+  targetPrice?: Num | null;
+  stopPrice?: Num | null;
+}) {
+  return notes.saveNote(p as unknown as Record<string, unknown>);
+}
+
+/**
+ * Notun hedef ve/veya stop fiyatı için fiyat alarmı kurar (tek sefer). Aynı eşikte etkin alarm
+ * varsa yenisi kurulmaz. Stop alarmı çalınca bildirimde satış planınız hatırlatılır.
+ */
+export async function createNoteAlarms(p: { mode: Mode; assetType: AssetType; symbol: string; which?: "target" | "stop" | "both" }) {
+  const n = notes.getNote(p.mode, p.assetType, p.symbol);
+  if (!n || (n.targetPrice == null && n.stopPrice == null)) throw new portfolio.ValidationError("Önce notta hedef ya da stop fiyatı girin.");
+  const which = p.which ?? "both";
+  const existing = alarms.listAlarms({ instrument: `${p.assetType}:${p.symbol}`, activeOnly: true }).filter((a) => a.kind === "price");
+  const has = (dir: "up" | "down", t: number) => existing.some((a) => a.direction === dir && a.threshold != null && Math.abs(a.threshold - t) <= Math.abs(t) * 1e-6);
+  const created: alarms.Alarm[] = [];
+  const skipped: string[] = [];
+  const make = async (dir: "up" | "down", t: number, label: string) => {
+    if (has(dir, t)) {
+      skipped.push(label);
+      return;
+    }
+    created.push(
+      await createAlarm(
+        { kind: "price", assetType: p.assetType, symbol: p.symbol, direction: dir, threshold: t, repeat: "once", note: `${label} (pozisyon notu)` },
+        "pozisyon_notu",
+      ),
+    );
+  };
+  if ((which === "target" || which === "both") && n.targetPrice != null) await make("up", n.targetPrice, "Hedef fiyat");
+  if ((which === "stop" || which === "both") && n.stopPrice != null) await make("down", n.stopPrice, "Stop fiyatı");
+  return { created, skipped };
+}
+
+// ---- Yedekleme -------------------------------------------------------------------------------
+
+export type { BackupFile, BackupCheck } from "./backup";
+
+export function listBackups() {
+  return backup.listBackups();
+}
+
+/** Şimdi yedekle (çalışırken güvenli). */
+export function createBackup() {
+  return backup.createBackup("elle");
+}
+
+/** Yüklenen yedeği doğrular ve geri yükleme için hazırlar (henüz bir şey değişmez). */
+export function stageRestore(bytes: Uint8Array) {
+  return backup.stageUpload(bytes);
+}
+
+/** Hazırlanan yedeği geri yükler (önce mevcut veri yedeklenir). */
+export function restoreBackup(token: string) {
+  const file = backup.stagedPath(token);
+  if (!file) throw new portfolio.ValidationError("Yüklenen dosya bulunamadı ya da süresi doldu; yeniden yükleyin.");
+  return backup.restoreFromFile(file);
+}
+
+// ---- Dışa / içe aktarma (CSV) -----------------------------------------------------------------
+
+export type { ImportPreview, ImportMapping, ImportOptions } from "./importExport";
+export type ExportKind = "islemler" | "pozisyonlar" | "temettuler" | "kazanc";
+
+/** Excel (Türkçe) uyumlu CSV: BOM, ";" ayırıcı, ondalık virgül, gg.aa.yyyy */
+export async function exportCsv(kind: ExportKind, opts: { account?: number | null; year?: string | null } = {}): Promise<string> {
+  switch (kind) {
+    case "islemler":
+      return io.exportTransactionsCsv(opts);
+    case "pozisyonlar":
+      return io.exportHoldingsCsv(opts);
+    case "temettuler":
+      return io.exportDividendsCsv(opts);
+    case "kazanc":
+      return io.exportRealizedCsv(opts);
+  }
+}
+
+export function importTemplateCsv() {
+  return io.importTemplateCsv();
+}
+
+/** İşlem içe aktarma önizlemesi: satır satır doğrulama, mükerrer işareti. Hiçbir şey kaydedilmez. */
+export function previewTransactionImport(text: string, opts: io.ImportOptions = {}) {
+  return io.previewImport(text, opts);
+}
+
+/** İşlemleri tek seferde (atomik) kaydeder; hatalı satır varsa hiçbiri kaydedilmez, mükerrerler atlanır. */
+export function importTransactions(text: string, opts: io.ImportOptions = {}) {
+  return io.commitImport(text, opts);
+}
+
+// ---- Raporlar --------------------------------------------------------------------------------
+
+export type { YearlyReport, SanalRealityCheck } from "./reports";
+
+/** Yıllık gerçekleşen kazanç raporu (resmî vergi beyanı değildir). */
+export function getYearlyReport(opts: { account?: number | null } = {}) {
+  return reports.getYearlyReport(opts);
+}
+
+/** Sanal portföyün gerçeklik kontrolü: kazanan/kaybeden, en iyi/kötü, en büyük düşüş, tahmini komisyon. */
+export function getSanalRealityCheck() {
+  return reports.getSanalRealityCheck();
 }

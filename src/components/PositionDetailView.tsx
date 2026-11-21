@@ -14,7 +14,10 @@ import { detailHref } from "./MarketView";
 import { OrderForm } from "./OrdersView";
 import { AlarmForm } from "./AlarmsView";
 import { HeadlinesPanel, SincePurchase, WhyMovingButton } from "./AssetInsights";
-import { PriceChart, type ChartMarkerIn } from "./PriceChart";
+import { PriceChart, type ChartMarkerIn, type ChartPriceLine } from "./PriceChart";
+import { AccountChips } from "./AccountControls";
+import { AccountBreakdown, AnnualReturn, noteReminderText, PositionNoteCard, SellEstimateCard, XIRR_EXPLAIN } from "./PositionExtras";
+import { SanalRealityCard } from "./SanalReality";
 import { SignalBadge } from "./TechnicalPanel";
 import { TransactionForm, toInput, today } from "./TransactionForm";
 import { Card, Explain, Modal, PriceMeta, Segmented } from "./ui";
@@ -27,9 +30,9 @@ const RANGES: { value: ChartRange; label: string }[] = [
   { value: "5Y", label: "5Y" },
 ];
 
-/** URL'de mod: gercek | sanal */
-export function positionHref(mode: Mode, instrument: string) {
-  return `/portfoy/pozisyon?mod=${mode === "real" ? "gercek" : "sanal"}&id=${encodeURIComponent(instrument)}`;
+/** URL'de mod: gercek | sanal; hesap verilirse o hesabın pozisyonu */
+export function positionHref(mode: Mode, instrument: string, account?: number | null) {
+  return `/portfoy/pozisyon?mod=${mode === "real" ? "gercek" : "sanal"}&id=${encodeURIComponent(instrument)}${mode === "real" && account != null ? `&hesap=${account}` : ""}`;
 }
 
 type Action = "convert" | "sellVirtual" | "buy" | "sell" | "order" | "alarm" | null;
@@ -52,10 +55,28 @@ export function PositionDetailView() {
   const virtual = mode === "virtual";
   const ref = parseInstrumentId(params.get("id") ?? "");
   const id = ref ? `${ref.type}:${ref.symbol}` : "";
+  const hesapRaw = Number(params.get("hesap"));
+  const account = !virtual && Number.isInteger(hesapRaw) && hesapRaw > 0 ? hesapRaw : null;
 
-  const { data, error, reload } = usePolling<PositionDetail>(`/api/position?mode=${mode}&id=${encodeURIComponent(id || "fx:USD")}`, 60_000);
-  const d = data && data.instrument === id && data.mode === mode ? data : null;
+  const { data, error, reload } = usePolling<PositionDetail>(
+    `/api/position?mode=${mode}&id=${encodeURIComponent(id || "fx:USD")}${account != null ? `&hesap=${account}` : ""}`,
+    60_000,
+  );
+  const d = data && data.instrument === id && data.mode === mode && data.account === account ? data : null;
   const h = d?.holding ?? null;
+  const accName = (aid: number | null) => (aid != null ? (d?.accounts.find((a) => a.id === aid)?.name ?? null) : null);
+  // İşlem formunda önerilecek hesap: seçili hesap ya da pozisyonun tek hesabı
+  const formAccount = account ?? (h && h.accounts.length === 1 ? h.accounts[0].accountId : null);
+  const note = d?.note ?? null;
+  const targetPrice = note?.targetPrice ?? null;
+  const stopPrice = note?.stopPrice ?? null;
+  const priceLines = useMemo<ChartPriceLine[]>(
+    () => [
+      ...(targetPrice != null ? [{ price: targetPrice, color: "#38bdf8", title: "Hedef" }] : []),
+      ...(stopPrice != null ? [{ price: stopPrice, color: "#fb7185", title: "Stop" }] : []),
+    ],
+    [targetPrice, stopPrice],
+  );
 
   const [rangeSel, setRangeSel] = useState<ChartRange | null>(null);
   const range: ChartRange = rangeSel ?? (h ? autoRange(h.days) : "3A");
@@ -151,6 +172,14 @@ export function PositionDetailView() {
         </Link>
       </div>
 
+      {d && !virtual && (d.heldIn.length > 1 || account != null) && (
+        <AccountChips
+          items={d.accounts.filter((a) => d.heldIn.includes(a.id) || a.id === account).map((a) => ({ id: a.id, name: a.name }))}
+          value={account}
+          onChange={(aid) => router.replace(positionHref(mode, id, aid))}
+        />
+      )}
+
       {error && !d && <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-300">{error}</p>}
       {!d && !error && <Card className="p-6 text-center text-sm text-slate-500">Yükleniyor…</Card>}
 
@@ -229,7 +258,17 @@ export function PositionDetailView() {
                 <span className="text-emerald-300">{formatMoney(h.dividendsTry)}</span>
               </Item>
             )}
+            {h.feesTry > 0 && <Item label="Ödenen komisyon">{formatMoney(h.feesTry)}</Item>}
+            <Item label="Yıllık getiri (XIRR)">
+              <AnnualReturn a={h.annual} />
+            </Item>
+            {!virtual && (account != null || h.accounts.length === 1) && (
+              <Item label="Hesap">{accName(account ?? h.accounts[0]?.accountId ?? null) ?? "—"}</Item>
+            )}
           </dl>
+          <p className="mt-3 text-xs text-slate-500">
+            K/Z % yalnızca toplam kazancı gösterir. {XIRR_EXPLAIN}
+          </p>
           {h.fxEffectTry != null && (
             <p className="mt-3 text-xs text-slate-500">
               Fiyat etkisi: varlığın kendi para birimindeki değişim (bugünkü kurla). Kur etkisi: alış günündeki kurdan bugüne kur değişiminin katkısı.
@@ -289,6 +328,7 @@ export function PositionDetailView() {
             baseline={h?.avgCost ?? null}
             baselineLabel={virtual ? "Girişin" : "Maliyetin"}
             markers={markers}
+            priceLines={priceLines}
             height={260}
           />
           {(!current || current.error || points.length === 0) && (
@@ -305,8 +345,41 @@ export function PositionDetailView() {
           <li>
             <span className="text-emerald-300">▲</span> alış, <span className="text-rose-300">▼</span> satış noktaları (işlem gününe yerleştirilir).
           </li>
+          {priceLines.length > 0 && (
+            <li>
+              {note?.targetPrice != null && (
+                <>
+                  <span className="text-sky-300">— —</span> Hedef{" "}
+                </>
+              )}
+              {note?.stopPrice != null && (
+                <>
+                  <span className="text-rose-300">— —</span> Stop{" "}
+                </>
+              )}
+              fiyatların: pozisyon notundan.
+            </li>
+          )}
         </ul>
       </Card>
+
+      {d && h && <AccountBreakdown h={h} unit={unit} onPick={(aid) => router.replace(positionHref(mode, id, aid))} />}
+
+      {d && h && d.sell && <SellEstimateCard s={d.sell} virtual={virtual} />}
+
+      {d && (
+        <PositionNoteCard
+          key={`${note?.updatedAt ?? "yok"}`}
+          mode={mode}
+          assetType={ref.type}
+          symbol={ref.symbol}
+          currency={cur}
+          note={note}
+          price={h?.price ?? null}
+          alarms={d.priceAlarms}
+          onChanged={(msg) => done(msg)}
+        />
+      )}
 
       {d && d.valueHistory.length > 1 && h && (
         <Card className="p-4 md:p-6">
@@ -342,6 +415,12 @@ export function PositionDetailView() {
                       {formatQuantity(t.quantity)} × {formatMoney(t.price, t.currency, 4)}
                     </span>
                   </div>
+                  {(t.fee > 0 || (!virtual && account == null && d.heldIn.length > 1)) && (
+                    <p className="text-xs text-slate-500">
+                      {!virtual && account == null && d.heldIn.length > 1 && accName(t.accountId)}
+                      {t.fee > 0 && `${!virtual && account == null && d.heldIn.length > 1 ? " · " : ""}komisyon ${formatMoney(t.fee, t.currency)}`}
+                    </p>
+                  )}
                   {t.note && <p className="text-xs text-slate-500">{t.note}</p>}
                 </li>
               ))}
@@ -409,7 +488,7 @@ export function PositionDetailView() {
               <p className="px-4 pt-1 text-xs text-slate-400 md:px-6">Bu hisse elindeyken kâr payı ödenmiş. Onaylarsan gerçekleşen K/Z’ye eklenir.</p>
               <ul className="divide-y divide-line/60">
                 {d.dividendSuggestions.map((s) => (
-                  <DividendSuggestionRow key={s.exDate} s={s} onDone={() => void reload()} />
+                  <DividendSuggestionRow key={`${s.accountId ?? 0}-${s.exDate}`} s={s} onDone={() => void reload()} />
                 ))}
               </ul>
             </>
@@ -479,6 +558,7 @@ export function PositionDetailView() {
             method="POST"
             lockAsset
             lockSide
+            header={<SanalRealityCard compact />}
             submitLabel="Gerçek portföye ekle"
             initial={{
               assetType: h.assetType,
@@ -511,12 +591,14 @@ export function PositionDetailView() {
             method="POST"
             lockAsset
             lockSide
+            reminder={action !== "buy" ? noteReminderText(note) : undefined}
             submitLabel={action === "buy" ? "Alışı kaydet" : "Satışı kaydet"}
             initial={{
+              accountId: formAccount,
               assetType: ref.type,
               symbol: ref.symbol,
               side: action === "buy" ? "buy" : "sell",
-              quantity: action === "buy" ? "" : toInput(h?.quantity),
+              quantity: action === "buy" ? "" : toInput(account == null && h && h.accounts.length > 1 ? null : h?.quantity),
               // Altında alışta kuyumcu satış (ask), satışta alış (bid) fiyatı önerilir.
               price: action === "buy" && h?.ask != null ? toInput(h.ask, 6) : h?.price != null ? toInput(h.price, 6) : "",
               currency: isCurrency(cur) ? cur : "TRY",
@@ -528,7 +610,7 @@ export function PositionDetailView() {
       )}
       {action === "order" && (
         <Modal title="Yeni emir" onClose={() => setAction(null)}>
-          <OrderForm initialAssetType={ref.type} initialSymbol={ref.symbol} initialMode={mode} onSaved={() => done("Emir kaydedildi.")} />
+          <OrderForm initialAssetType={ref.type} initialSymbol={ref.symbol} initialMode={mode} initialAccountId={formAccount} onSaved={() => done("Emir kaydedildi.")} />
         </Modal>
       )}
       {action === "alarm" && (

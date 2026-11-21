@@ -3,6 +3,7 @@ import { getDb } from "./db";
 import { ASSET_TYPE_INFO, ASSET_TYPES, displaySymbol, GOLD_SYMBOL, isAssetType, type AssetType, type Mode } from "./assets";
 import { activeTransactions, getPortfolio, todayIstanbul, ValidationError } from "./portfolio";
 import { listSnapshots } from "./snapshots";
+import { listAccounts } from "./accounts";
 import { getDailyCandles } from "./technical";
 import { politeFetch } from "./http";
 import { getSetting, setSetting } from "./settings";
@@ -44,12 +45,18 @@ const BENCHMARKS: { key: string; label: string; color: string; type: AssetType; 
   { key: "gold", label: "Gram altın", color: "#facc15", type: "gold", symbol: GOLD_SYMBOL },
 ];
 
-/** Gün başına net nakit akışı (TL): alış +, satış − (işlem tarihi kuruyla). */
+/**
+ * Gün başına net nakit akışı (TL): alış +, satış − (işlem tarihi kuruyla, komisyon dahil).
+ * Gerçek portföyde yalnızca "toplama dahil" hesaplar (anlık görüntüler de onları içerir).
+ */
 function cashFlows(mode: Mode) {
-  return activeTransactions(mode).map((t) => ({
-    date: t.date,
-    amount: (t.side === "buy" ? 1 : -1) * t.quantity * t.price * (t.currency === "TRY" ? 1 : (t.fxTry ?? 1)),
-  }));
+  const included = mode === "real" ? new Set(listAccounts({ includeArchived: true }).filter((a) => a.includeInTotal).map((a) => a.id)) : null;
+  return activeTransactions(mode)
+    .filter((t) => !included || (t.accountId != null && included.has(t.accountId)))
+    .map((t) => ({
+      date: t.date,
+      amount: (t.side === "buy" ? t.quantity * t.price + t.fee : -(t.quantity * t.price - t.fee)) * (t.currency === "TRY" ? 1 : (t.fxTry ?? 1)),
+    }));
 }
 
 /**

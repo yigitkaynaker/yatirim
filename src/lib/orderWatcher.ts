@@ -46,6 +46,7 @@ export function startOrderWatcher() {
     void runKapPoll();
     void runAlarms();
     void runDailySummary();
+    void runDailyBackup();
   }, ORDER_CHECK_MS);
   timer.unref?.();
   g.__yatirimOrderWatcher = { timer, running: false };
@@ -81,6 +82,20 @@ async function runAlarms() {
     if (r.fired > 0) console.log(`[alarm] ${r.fired} alarm çaldı`);
   } catch (err) {
     console.error("[alarm] kontrol hatası", err);
+  }
+}
+
+/** Günlük veritabanı yedeği (günde bir, son 14 tutulur; backup.ts). Gün içinde bir kez dizin okunur. */
+const gb = globalThis as unknown as { __yatirimBackupDay?: string };
+async function runDailyBackup() {
+  const day = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Istanbul" });
+  if (gb.__yatirimBackupDay === day) return;
+  try {
+    const { maybeDailyBackup } = await import("./backup");
+    maybeDailyBackup();
+    gb.__yatirimBackupDay = day;
+  } catch (err) {
+    console.error("[yedek] zamanlayıcı hatası", err);
   }
 }
 

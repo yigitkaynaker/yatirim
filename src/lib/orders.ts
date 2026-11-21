@@ -15,6 +15,7 @@ import { formatMoney, formatQuantity, parseDecimal } from "./format";
 import { getQuotes, quoteUsable } from "./prices";
 import { parseSizing, priceAtMarket, recordTransaction, todayIstanbul, ValidationError } from "./portfolio";
 import { sendPushToAll } from "./push";
+import { accountNames, getAccount, resolveAccount } from "./accounts";
 
 // Koşullu al/sat emirleri. YALNIZCA uygulama içinde gerçekleşir: koşul
 // sağlanınca ilgili portföye (gerçek/sanal) işlem kaydı düşülür. Aracı kurum ya
@@ -27,6 +28,9 @@ export type OrderSource = "manuel" | "yapay_zeka";
 export interface Order {
   id: number;
   mode: Mode;
+  /** Gerçek emirde hesap (sanalda null) */
+  accountId: number | null;
+  accountName: string | null;
   assetType: AssetType;
   symbol: string;
   side: Side;
@@ -50,6 +54,7 @@ export interface Order {
 interface OrderRow {
   id: number;
   mode: Mode;
+  account_id: number | null;
   asset_type: AssetType;
   symbol: string;
   side: Side;
@@ -70,10 +75,12 @@ interface OrderRow {
   error: string | null;
 }
 
-function fromRow(r: OrderRow): Order {
+function fromRow(r: OrderRow, names: Map<number, string> = accountNames()): Order {
   return {
     id: r.id,
     mode: r.mode,
+    accountId: r.account_id,
+    accountName: r.account_id != null ? (names.get(r.account_id) ?? null) : null,
     assetType: r.asset_type,
     symbol: r.symbol,
     side: r.side,
@@ -102,7 +109,8 @@ export function listOrders(status?: OrderStatus): Order[] {
       ? db.prepare("SELECT * FROM orders WHERE status = ? ORDER BY id DESC").all(status)
       : db.prepare("SELECT * FROM orders ORDER BY id DESC").all()
   ) as unknown as OrderRow[];
-  return rows.map(fromRow);
+  const names = accountNames();
+  return rows.map((r) => fromRow(r, names));
 }
 
 export function getOrder(id: number): Order | null {
@@ -129,6 +137,7 @@ export async function createOrder(body: unknown, source: OrderSource = "manuel")
   if (!Number.isFinite(triggerPrice) || triggerPrice <= 0) throw new ValidationError("Tetik fiyatı geçersiz.");
   const sizing = parseSizing(b);
   const noteRaw = typeof b.note === "string" ? b.note.trim() : "";
+  const accountId = b.mode === "real" ? resolveAccount(b).id : null;
 
   // Sembolün fiyatı alınabiliyor mu? Tetik para birimini de buradan öğreniriz.
   const [q] = await getQuotes([{ type: assetType, symbol }]);
@@ -137,8 +146,8 @@ export async function createOrder(body: unknown, source: OrderSource = "manuel")
   const res = getDb()
     .prepare(
       `INSERT INTO orders (mode, asset_type, symbol, side, condition, trigger_price, trigger_currency,
-         quantity, amount, amount_currency, source, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         quantity, amount, amount_currency, source, note, account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       b.mode,
@@ -153,6 +162,7 @@ export async function createOrder(body: unknown, source: OrderSource = "manuel")
       sizing.amountCurrency,
       source,
       noteRaw ? noteRaw.slice(0, 500) : null,
+      accountId,
     );
   return getOrder(Number(res.lastInsertRowid))!;
 }
@@ -259,9 +269,14 @@ async function executeOrder(o: Order): Promise<void> {
     }
     let txId: number;
     try {
+      // Gerçek emirde hesabın varsayılan komisyon oranı uygulanır.
+      const acc = o.mode === "real" ? (o.accountId != null ? getAccount(o.accountId) : null) : null;
+      const fee = acc ? Math.round(((pricing.quantity * pricing.price * acc.feePct) / 100) * 1e6) / 1e6 : 0;
       const tx = recordTransaction(
         {
           mode: o.mode,
+          accountId: o.mode === "real" ? (acc?.id ?? resolveAccount({}, { allowArchived: true }).id) : null,
+          fee,
           assetType: o.assetType,
           symbol: o.symbol,
           side: o.side,

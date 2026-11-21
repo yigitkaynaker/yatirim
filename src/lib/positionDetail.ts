@@ -7,6 +7,9 @@ import { listKap, type KapDisclosure } from "./kap";
 import { getLatestReport, type NewsItem } from "./news";
 import { getDailyCandles } from "./technical";
 import { closeOnOrBefore } from "./positions";
+import { defaultAccount, getAccount, listAccounts } from "./accounts";
+import { getNote, type PositionNote } from "./notes";
+import { listAlarms, type Alarm } from "./alarms";
 
 // POZİSYON DETAYI
 // Portföydeki tek bir yatırımın (gerçek ya da sanal) ayrıntısı: özet, işlemler,
@@ -19,8 +22,31 @@ export interface ValuePoint {
   value: number;
 }
 
+/** "Şimdi satarsam": tahmini net tutar (komisyon düşülmüş) ve vergi notu */
+export interface SellEstimate {
+  /** Güncel değer (altında kuyumcu alış fiyatıyla), TL */
+  grossTry: number;
+  feePct: number;
+  feeTry: number;
+  netTry: number;
+  /** Net − maliyet: satarsanız gerçekleşecek tahmini K/Z (TL) */
+  pnlTry: number | null;
+  /** Varlık türüne göre stopaj / vergi bilgisi (bilgilendirme) */
+  taxNote: string;
+}
+
 export interface PositionDetail {
   mode: Mode;
+  /** Seçili hesap (null: birleşik görünüm / sanal) */
+  account: number | null;
+  /** Tüm hesaplar (ad eşlemesi ve seçim için) */
+  accounts: { id: number; name: string; feePct: number; archived: boolean }[];
+  /** Bu varlığın işlemi olan hesaplar (hesap filtresi için) */
+  heldIn: number[];
+  note: PositionNote | null;
+  sell: SellEstimate | null;
+  /** Bu varlığın etkin fiyat alarmları (hedef / stop alarmı kurulu mu) */
+  priceAlarms: Pick<Alarm, "id" | "direction" | "threshold" | "description">[];
   instrument: string;
   assetType: AssetType;
   symbol: string;
@@ -65,11 +91,54 @@ async function valueHistory(type: AssetType, symbol: string, txs: Transaction[],
   return out;
 }
 
-export async function getPositionDetail(mode: Mode, type: AssetType, symbol: string): Promise<PositionDetail> {
+/** Satış kazancı vergisi hakkında kısa bilgi (bilgilendirme, kesin değildir) */
+export function taxNoteFor(type: AssetType): string {
+  switch (type) {
+    case "bist":
+      return "Borsa İstanbul'da işlem gören hisselerin alım-satım kazancında bireysel yatırımcıya genellikle %0 stopaj uygulanır (temettü stopajı ayrıdır). Oranlar değişebilir.";
+    case "fund":
+      return "Fonlarda stopaj fon türüne ve alış tarihine göre değişir (hisse yoğun fonlarda genellikle %0, diğerlerinde %17,5'e kadar). Kesinti satışta otomatik yapılır.";
+    case "foreign":
+      return "Yurt dışı hisse kazancında stopaj yoktur; yıllık gelir vergisi beyannamesiyle beyan gerekebilir (enflasyon endekslemesi ve istisna kuralları vardır).";
+    case "crypto":
+      return "Kripto kazançları için şu an özel bir stopaj yoktur; mevzuat değişiyor olabilir.";
+    case "gold":
+      return "Fiziki altın satış kazancına stopaj uygulanmaz. Değer zaten kuyumcu alış fiyatıyla (makas düşülmüş) hesaplanır.";
+    case "fx":
+      return "Bireylerin döviz alım-satım kazancına stopaj uygulanmaz.";
+  }
+}
+
+export async function getPositionDetail(mode: Mode, type: AssetType, symbol: string, opts: { account?: number | null } = {}): Promise<PositionDetail> {
   const instrument = instrumentId(type, symbol);
-  const txs = activeTransactions(mode).filter((t) => t.assetType === type && t.symbol === symbol);
-  const portfolio = await getPortfolio(mode);
+  const account = mode === "real" && opts.account != null ? opts.account : null;
+  const txs = activeTransactions(mode).filter((t) => t.assetType === type && t.symbol === symbol && (account == null || t.accountId === account));
+  const portfolio = await getPortfolio(mode, { account });
   const holding = portfolio.holdings.find((h) => h.id === instrument) ?? null;
+  const accounts = mode === "real" ? listAccounts({ includeArchived: true }).map((a) => ({ id: a.id, name: a.name, feePct: a.feePct, archived: a.archived })) : [];
+
+  // Komisyon oranı: seçili hesap; tek hesapta tutuluyorsa o; yoksa varsayılan hesap. Sanalda varsayılan hesap (tahmin).
+  const feeAcc =
+    (account != null ? getAccount(account) : null) ??
+    (holding && holding.accounts.length === 1 ? getAccount(holding.accounts[0].accountId) : null) ??
+    defaultAccount();
+  let sell: SellEstimate | null = null;
+  if (holding?.valueTry != null) {
+    const parts = holding.accounts.length > 1 ? holding.accounts : null;
+    // Birden çok hesapta tutuluyorsa her hesabın kendi oranıyla.
+    const feeTry = parts
+      ? parts.reduce((s, p) => s + ((p.valueTry ?? 0) * (accounts.find((a) => a.id === p.accountId)?.feePct ?? 0)) / 100, 0)
+      : (holding.valueTry * feeAcc.feePct) / 100;
+    const netTry = holding.valueTry - feeTry;
+    sell = {
+      grossTry: holding.valueTry,
+      feePct: parts ? (holding.valueTry > 0 ? (feeTry / holding.valueTry) * 100 : 0) : feeAcc.feePct,
+      feeTry,
+      netTry,
+      pnlTry: holding.costTry != null ? netTry - holding.costTry : null,
+      taxNote: taxNoteFor(type),
+    };
+  }
 
   const report = getLatestReport(instrument);
   const item = report?.items.find((i) => i.instrument === instrument) ?? null;
@@ -88,15 +157,26 @@ export async function getPositionDetail(mode: Mode, type: AssetType, symbol: str
 
   return {
     mode,
+    account,
+    accounts,
+    heldIn:
+      mode === "real"
+        ? [...new Set(activeTransactions(mode).filter((t) => t.assetType === type && t.symbol === symbol && t.accountId != null).map((t) => t.accountId!))]
+        : [],
+    note: getNote(mode, type, symbol),
+    sell,
+    priceAlarms: listAlarms({ instrument, activeOnly: true })
+      .filter((a) => a.kind === "price")
+      .map((a) => ({ id: a.id, direction: a.direction, threshold: a.threshold, description: a.description })),
     instrument,
     assetType: type,
     symbol,
     name: holding?.name ?? displaySymbol(type, symbol),
     holding,
     transactions: [...txs].sort((a, b) => (a.date === b.date ? b.id - a.id : a.date < b.date ? 1 : -1)),
-    orders: listOrders("pending").filter((o) => o.mode === mode && o.assetType === type && o.symbol === symbol),
-    dividends: listDividendRecords({ mode, status: "confirmed" }).filter((d) => d.assetType === type && d.symbol === symbol),
-    dividendSuggestions: suggestions.filter((s) => s.mode === mode && s.assetType === type && s.symbol === symbol),
+    orders: listOrders("pending").filter((o) => o.mode === mode && o.assetType === type && o.symbol === symbol && (account == null || o.accountId === account)),
+    dividends: listDividendRecords({ mode, status: "confirmed" }).filter((d) => d.assetType === type && d.symbol === symbol && (account == null || d.accountId === account)),
+    dividendSuggestions: suggestions.filter((s) => s.mode === mode && s.assetType === type && s.symbol === symbol && (account == null || s.accountId === account)),
     kap: type === "bist" ? listKap({ ticker: symbol, limit: 5 }) : [],
     news: item && report ? { item, reportId: report.id, date: report.finishedAt ?? report.createdAt } : null,
     valueHistory: history.v,

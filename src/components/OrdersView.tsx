@@ -20,6 +20,7 @@ import type { Quote } from "@/lib/prices";
 import { usePolling } from "@/lib/usePolling";
 import { Card, Field, inputCls, Modal, PrimaryButton, Segmented } from "./ui";
 import { SymbolField, symbolOnTypeChange } from "./SymbolField";
+import { AccountSelect } from "./AccountControls";
 
 const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   pending: { label: "Bekliyor", cls: "bg-sky-500/15 text-sky-300" },
@@ -112,7 +113,7 @@ function OrderRow({ o, onCancel }: { o: Order; onCancel?: () => void }) {
           {displaySymbol(o.assetType, o.symbol)}
           <span className={`rounded-md px-1.5 py-0.5 text-[11px] ${st.cls}`}>{st.label}</span>
           <span className={`rounded-md px-1.5 py-0.5 text-[11px] ${o.mode === "virtual" ? "bg-violet-500/15 text-violet-200" : "bg-surface-2 text-slate-300"}`}>
-            {o.mode === "virtual" ? "Sanal" : "Gerçek"}
+            {o.mode === "virtual" ? "Sanal" : o.accountName ? `Gerçek · ${o.accountName}` : "Gerçek"}
           </span>
           {o.source === "yapay_zeka" && <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[11px] text-amber-200">Yapay zeka</span>}
         </div>
@@ -140,6 +141,7 @@ export function OrderForm({
   initialAssetType = "bist",
   initialSymbol = "",
   initialMode = "virtual",
+  initialAccountId = null,
 }: {
   onSaved: () => void;
   /** Piyasa detayından açılınca varlık önceden seçili gelir */
@@ -147,8 +149,11 @@ export function OrderForm({
   initialSymbol?: string;
   /** Pozisyon detayından açılınca o pozisyonun portföyü seçili gelir */
   initialMode?: Mode;
+  /** Pozisyon detayında seçili hesap */
+  initialAccountId?: number | null;
 }) {
   const [mode, setMode] = useState<Mode>(initialMode);
+  const [accountId, setAccountId] = useState<number | null>(initialAccountId);
   const [assetType, setAssetType] = useState<AssetType>(initialAssetType);
   const [symbol, setSymbol] = useState(initialSymbol);
   const [side, setSide] = useState<Side>("buy");
@@ -190,7 +195,20 @@ export function OrderForm({
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, assetType, symbol: sym, side, condition, triggerPrice, entryBy, amount, amountCurrency, quantity, note }),
+        body: JSON.stringify({
+          mode,
+          ...(mode === "real" && accountId != null ? { accountId } : {}),
+          assetType,
+          symbol: sym,
+          side,
+          condition,
+          triggerPrice,
+          entryBy,
+          amount,
+          amountCurrency,
+          quantity,
+          note,
+        }),
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) return setError(data.error ?? "Kaydedilemedi.");
@@ -214,6 +232,7 @@ export function OrderForm({
           ]}
         />
       </Field>
+      {mode === "real" && <AccountSelect value={accountId} onChange={(id) => setAccountId(id)} hint="Emir gerçekleşince işlem bu hesaba yazılır (hesabın komisyon oranıyla)." />}
       <div className="grid grid-cols-2 gap-3">
         <Field label="Varlık türü">
           <select

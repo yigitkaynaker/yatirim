@@ -64,7 +64,7 @@ export function DividendsView() {
               <Card>
                 <ul className="divide-y divide-line/60">
                   {data.suggestions.map((s) => (
-                    <DividendSuggestionRow key={`${s.mode}-${s.assetType}-${s.symbol}-${s.exDate}`} s={s} onDone={() => void reload()} />
+                    <DividendSuggestionRow key={`${s.mode}-${s.accountId ?? 0}-${s.assetType}-${s.symbol}-${s.exDate}`} s={s} onDone={() => void reload()} />
                   ))}
                 </ul>
               </Card>

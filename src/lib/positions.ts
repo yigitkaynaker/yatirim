@@ -18,9 +18,27 @@ export interface PositionTx {
   date: string;
   /** İşlem para biriminin işlem tarihindeki TRY kuru (TRY için 1). Bilinmiyorsa null. */
   fxTry: number | null;
+  /** Komisyon / ücret, işlem para biriminde (alışta maliyete eklenir, satışta gelirden düşülür) */
+  fee?: number;
+  /** Gerçek işlemin hesabı (sanalda null). Pozisyonlar hesap başına ayrı tutulur. */
+  accountId?: number | null;
+}
+
+/** Bir satışın gerçekleşen sonucu (yıllık rapor için), TL işlem günü kuruyla */
+export interface SaleEvent {
+  date: string;
+  quantity: number;
+  /** Satış geliri (komisyon düşülmüş) */
+  proceedsTry: number;
+  /** Satılan kısmın maliyeti (alış komisyonları dahil) */
+  costTry: number;
+  realizedTry: number;
+  /** Bu satışın komisyonu */
+  feeTry: number;
 }
 
 export interface Position {
+  accountId: number | null;
   assetType: AssetType;
   symbol: string;
   quantity: number;
@@ -36,6 +54,15 @@ export interface Position {
   fxEstimated: boolean;
   /** Mevcut pozisyonun açıldığı tarih (tamamen satılıp yeniden alınırsa sıfırlanır) */
   firstDate: string;
+  /** Ödenen tüm komisyonlar (alış + satış), işlem günü kuruyla TL */
+  feesTry: number;
+  /** Satışlar (tarih sırasıyla) */
+  sales: SaleEvent[];
+}
+
+/** Pozisyon anahtarı: hesap + enstrüman */
+export function positionKey(accountId: number | null | undefined, assetType: AssetType, symbol: string): string {
+  return `${accountId ?? ""}|${instrumentId(assetType, symbol)}`;
 }
 
 type Seq = { date: string; id: number };
@@ -44,17 +71,19 @@ export function bySequence(a: Seq, b: Seq) {
 }
 
 /**
- * Ağırlıklı ortalama maliyet yöntemiyle pozisyonları çıkarır.
+ * Ağırlıklı ortalama maliyet yöntemiyle pozisyonları çıkarır (hesap başına ayrı).
+ * Komisyon alışta maliyete eklenir, satışta satış gelirinden düşülür.
  * `currentRate`: kuru bilinmeyen işlemler için yedek (bugünkü kur); o da yoksa
  * TL maliyet NaN olur ve çağıran "hesaplanamadı" sayar.
  */
 export function buildPositions(txs: PositionTx[], currentRate: (cur: string) => number | null): Position[] {
   const map = new Map<string, Position>();
   for (const t of [...txs].sort(bySequence)) {
-    const key = instrumentId(t.assetType, t.symbol);
+    const key = positionKey(t.accountId, t.assetType, t.symbol);
     let p = map.get(key);
     if (!p) {
       p = {
+        accountId: t.accountId ?? null,
         assetType: t.assetType,
         symbol: t.symbol,
         quantity: 0,
@@ -64,6 +93,8 @@ export function buildPositions(txs: PositionTx[], currentRate: (cur: string) => 
         realizedTry: 0,
         fxEstimated: false,
         firstDate: t.date,
+        feesTry: 0,
+        sales: [],
       };
       map.set(key, p);
     }
@@ -72,13 +103,16 @@ export function buildPositions(txs: PositionTx[], currentRate: (cur: string) => 
       fx = currentRate(t.currency) ?? NaN;
       p.fxEstimated = true;
     }
+    const fee = t.fee && t.fee > 0 ? t.fee : 0;
     const gross = t.quantity * t.price;
+    p.feesTry += fee * fx;
     if (t.side === "buy") {
       if (p.quantity <= 1e-12) p.firstDate = t.date;
       p.quantity += t.quantity;
-      p.costBy.set(t.currency, (p.costBy.get(t.currency) ?? 0) + gross);
-      p.costTry += gross * fx;
+      p.costBy.set(t.currency, (p.costBy.get(t.currency) ?? 0) + gross + fee);
+      p.costTry += (gross + fee) * fx;
     } else {
+      const net = gross - fee;
       const ratio = p.quantity > 0 ? Math.min(t.quantity / p.quantity, 1) : 0;
       // Satılan kısmın maliyeti her para biriminden orantılı düşülür.
       for (const [cur, c] of p.costBy) {
@@ -86,10 +120,11 @@ export function buildPositions(txs: PositionTx[], currentRate: (cur: string) => 
         p.costBy.set(cur, c - removed);
         p.realizedBy.set(cur, (p.realizedBy.get(cur) ?? 0) - removed);
       }
-      p.realizedBy.set(t.currency, (p.realizedBy.get(t.currency) ?? 0) + gross);
+      p.realizedBy.set(t.currency, (p.realizedBy.get(t.currency) ?? 0) + net);
       const removedTry = p.costTry * ratio;
       p.costTry -= removedTry;
-      p.realizedTry += gross * fx - removedTry;
+      p.realizedTry += net * fx - removedTry;
+      p.sales.push({ date: t.date, quantity: t.quantity, proceedsTry: net * fx, costTry: removedTry, realizedTry: net * fx - removedTry, feeTry: fee * fx });
       p.quantity = Math.max(0, p.quantity - t.quantity);
     }
   }

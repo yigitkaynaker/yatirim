@@ -171,3 +171,22 @@ export function rebalance(actual: Record<string, number>, target: Record<string,
     })
     .sort((x, y) => Math.abs(y.driftPct) - Math.abs(x.driftPct));
 }
+
+// ---- En büyük düşüş ------------------------------------------------------------------------
+
+/**
+ * En büyük düşüş (max drawdown), yüzde (negatif değil; 12 = zirveden %12 düşüş).
+ * Bir değer / endeks serisinde, önceki en yüksek noktadan sonraki en derin düşüş.
+ */
+export function maxDrawdown(series: number[]): number | null {
+  let peak = -Infinity;
+  let worst = 0;
+  let any = false;
+  for (const v of series) {
+    if (!Number.isFinite(v) || v <= 0) continue;
+    any = true;
+    if (v > peak) peak = v;
+    else worst = Math.max(worst, (peak - v) / peak);
+  }
+  return any ? worst * 100 : null;
+}

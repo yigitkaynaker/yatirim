@@ -14,7 +14,8 @@
     "test:indicators": "node --import ./scripts/ts-hooks.mjs scripts/test-indicators.ts",
     "test:fx": "node --import ./scripts/ts-hooks.mjs scripts/test-fx.ts",
     "test:sources": "node --import ./scripts/ts-hooks.mjs scripts/test-sources.ts",
-    "test:batchb": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-batchb.ts"
+    "test:batchb": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-batchb.ts",
+    "test:batchc": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-batchc.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.11.0",

@@ -337,7 +337,100 @@ const MIGRATIONS: string[] = [
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  `
+  -- Geliştirme paketi C: birden çok hesap (aracı kurum / banka / kasa), komisyon, pozisyon notu.
+  -- Hesaplar: gerçek işlemler, emirler, temettüler ve alarmlar bir hesaba aittir.
+  -- include_in_total: toplam portföy değerine dahil mi; fee_pct: varsayılan komisyon oranı (%).
+  CREATE TABLE accounts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT    NOT NULL,
+    include_in_total  INTEGER NOT NULL DEFAULT 1,
+    archived          INTEGER NOT NULL DEFAULT 0,
+    fee_pct           REAL    NOT NULL DEFAULT 0 CHECK (fee_pct >= 0 AND fee_pct <= 10),
+    sort_order        INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX idx_accounts_name ON accounts (name COLLATE NOCASE);
+  -- Mevcut tüm gerçek kayıtlar varsayılan hesaba taşınır.
+  INSERT INTO accounts (id, name) VALUES (1, 'Ana hesap');
+
+  -- Sanal işlemlerde account_id NULL kalır (sanal portföy tek hesaptır).
+  -- fee: işlemin komisyonu / ücreti, işlem para biriminde (maliyete ve gerçekleşen K/Z'ye girer).
+  ALTER TABLE transactions ADD COLUMN account_id INTEGER REFERENCES accounts(id);
+  ALTER TABLE transactions ADD COLUMN fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0);
+  UPDATE transactions SET account_id = 1 WHERE mode = 'real';
+  CREATE INDEX idx_transactions_account ON transactions (account_id);
+
+  ALTER TABLE orders ADD COLUMN account_id INTEGER REFERENCES accounts(id);
+  UPDATE orders SET account_id = 1 WHERE mode = 'real';
+
+  -- Alarm hesabı: maliyet alarmında hangi hesabın pozisyonu (NULL: tüm hesaplar), diğerlerinde etiket.
+  ALTER TABLE alarms ADD COLUMN account_id INTEGER REFERENCES accounts(id);
+  UPDATE alarms SET account_id = 1 WHERE mode IS NULL OR mode = 'real';
+
+  -- Temettü: tekillik artık hesap bazında. SQLite kısıt değiştiremediği için tablo yeniden kurulur.
+  -- account_id: gerçekte hesap, sanalda 0.
+  CREATE TABLE dividends_c (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode             TEXT    NOT NULL CHECK (mode IN ('real','virtual')),
+    account_id       INTEGER NOT NULL DEFAULT 0,
+    asset_type       TEXT    NOT NULL,
+    symbol           TEXT    NOT NULL,
+    ex_date          TEXT    NOT NULL,
+    per_share        REAL    NOT NULL CHECK (per_share >= 0),
+    quantity         REAL    NOT NULL CHECK (quantity >= 0),
+    amount           REAL    NOT NULL CHECK (amount >= 0),
+    currency         TEXT    NOT NULL,
+    fx_try           REAL,
+    status           TEXT    NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed','dismissed')),
+    source           TEXT    NOT NULL DEFAULT 'otomatik',
+    note             TEXT,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    gross_amount     REAL,
+    withholding_pct  REAL,
+    UNIQUE (mode, account_id, asset_type, symbol, ex_date)
+  );
+  INSERT INTO dividends_c (id, mode, account_id, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try,
+      status, source, note, created_at, gross_amount, withholding_pct)
+    SELECT id, mode, CASE WHEN mode = 'real' THEN 1 ELSE 0 END, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try,
+      status, source, note, created_at, gross_amount, withholding_pct FROM dividends;
+  DROP TABLE dividends;
+  ALTER TABLE dividends_c RENAME TO dividends;
+
+  -- Pozisyon notu: neden aldım, ne olursa satarım, hedef ve stop fiyatı (varlığın fiyat biriminde).
+  CREATE TABLE position_notes (
+    mode          TEXT NOT NULL CHECK (mode IN ('real','virtual')),
+    asset_type    TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    why           TEXT,
+    exit_plan     TEXT,
+    target_price  REAL CHECK (target_price IS NULL OR target_price > 0),
+    stop_price    REAL CHECK (stop_price IS NULL OR stop_price > 0),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (mode, asset_type, symbol)
+  );
+  `,
 ];
+
+/** Şema sürümü (testler ve geri yükleme doğrulaması için) */
+export const SCHEMA_VERSION = MIGRATIONS.length;
+/** Testler için: belirli bir sürüme kadar olan geçişler */
+export const MIGRATION_SQL: readonly string[] = MIGRATIONS;
+
+export function dataDir(): string {
+  return DATA_DIR;
+}
+export function dbPath(): string {
+  return DB_PATH;
+}
+export function backupDir(): string {
+  return path.join(DATA_DIR, "yedekler");
+}
+
+/** SQLite dize sabiti (VACUUM INTO gibi parametre alamayan komutlar için) */
+export function sqlString(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
 
 function open(): DatabaseSync {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -347,9 +440,28 @@ function open(): DatabaseSync {
   return db;
 }
 
+/**
+ * Şema geçişinden önce mevcut veritabanının tutarlı bir kopyasını alır
+ * (VACUUM INTO: çalışırken de güvenli). Boş / yeni veritabanında yapılmaz.
+ */
+function backupBeforeMigrate(db: DatabaseSync, from: number) {
+  if (from === 0) return;
+  const dir = backupDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+  const file = path.join(dir, `yatirim-gecis-oncesi-v${from}-${stamp}.db`);
+  if (fs.existsSync(file)) return;
+  db.exec(`VACUUM INTO ${sqlString(file)}`);
+  console.log(`[veritabanı] geçiş öncesi yedek: ${file}`);
+}
+
 function migrate(db: DatabaseSync) {
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
   let version = row.user_version;
+  if (version > MIGRATIONS.length) {
+    throw new Error(`Veritabanı bu uygulama sürümünden yeni (şema ${version} > ${MIGRATIONS.length}). Uygulamayı güncelleyin.`);
+  }
+  if (version < MIGRATIONS.length) backupBeforeMigrate(db, version);
   while (version < MIGRATIONS.length) {
     db.exec("BEGIN");
     try {
@@ -370,4 +482,16 @@ const g = globalThis as unknown as { __yatirimDb?: DatabaseSync };
 export function getDb(): DatabaseSync {
   if (!g.__yatirimDb) g.__yatirimDb = open();
   return g.__yatirimDb;
+}
+
+/** Bağlantıyı kapatır (geri yüklemede dosya değiştirilmeden önce). Sonraki getDb() yeniden açar. */
+export function closeDb() {
+  const db = g.__yatirimDb;
+  g.__yatirimDb = undefined;
+  if (db) {
+    try {
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {}
+    db.close();
+  }
 }

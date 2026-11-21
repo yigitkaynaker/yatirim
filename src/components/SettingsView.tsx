@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchJson, goToLogin, UnauthorizedError } from "@/lib/usePolling";
 import { BudgetLine } from "./AiNotice";
+import { AccountsSection, BackupSection } from "./DataSettings";
 import { Card, Field, inputCls, PrimaryButton, Segmented } from "./ui";
 
 interface SettingsData {
@@ -64,6 +65,8 @@ export function SettingsView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <h1 className="text-xl font-semibold tracking-tight">Ayarlar</h1>
+      <AccountsSection />
+      <BackupSection />
       {loadError && <Note msg={{ ok: false, text: loadError }} />}
       {!data ? (
         !loadError && <p className="text-sm text-slate-500">Yükleniyor…</p>

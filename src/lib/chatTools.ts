@@ -32,12 +32,18 @@ const assetTypeProp = { type: "string", enum: [...ASSET_TYPES], description: "bi
 const modeProp = { type: "string", enum: ["real", "virtual"], description: "real: gerçek portföy, virtual: sanal portföy" };
 const currencyProp = { type: "string", enum: ["TRY", "USD", "EUR"] };
 const numProp = (description: string) => ({ type: "number", description });
+const accountProp = {
+  type: "string",
+  description:
+    "Hesap adı (örn. Midas, İş Yatırım, Banka). Yalnızca gerçek portföyde geçerli; verilmezse varsayılan hesap (portföy özetinde: toplama dahil tüm hesaplar). Hesap adlarını get_portfolio_summary 'hesaplar' alanında görürsün; kullanıcı hangi hesap olduğunu söylemediyse ve birden çok hesap varsa sor.",
+};
 
 export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "get_portfolio_summary",
-    description: "Gerçek ya da sanal portföyün özetini getirir: pozisyonlar (adet, ortalama maliyet, güncel fiyat, değer, K/Z) ve TL toplamlar.",
-    input_schema: { type: "object", properties: { mode: modeProp }, required: ["mode"] },
+    description:
+      "Gerçek ya da sanal portföyün özetini getirir: pozisyonlar (adet, ortalama maliyet, güncel fiyat, değer, K/Z, yıllık getiri) ve TL toplamlar. Gerçekte hesap listesi ve hesap başına toplamlar da döner; account verilirse yalnızca o hesap.",
+    input_schema: { type: "object", properties: { mode: modeProp, account: accountProp }, required: ["mode"] },
   },
   {
     name: "get_quote",
@@ -89,6 +95,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         currency: currencyProp,
         date: { type: "string", description: "YYYY-MM-DD" },
         note: { type: "string" },
+        account: accountProp,
+        fee: numProp("Komisyon tutarı (işlem para biriminde); verilmezse hesabın varsayılan oranı"),
       },
       required: ["asset_type", "symbol"],
     },
@@ -108,6 +116,9 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         currency: currencyProp,
         date: { type: "string", description: "YYYY-MM-DD; verilmezse bugün" },
         note: { type: "string" },
+        account: accountProp,
+        fee: numProp("Komisyon / ücret tutarı (işlem para biriminde). Verilmezse hesabın varsayılan komisyon oranı uygulanır."),
+        fee_pct: numProp("Komisyon yüzdesi (örn. 0,2); fee yerine"),
       },
       required: ["mode", "asset_type", "symbol", "side", "quantity", "price", "currency"],
     },
@@ -129,6 +140,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         amount_currency: currencyProp,
         quantity: numProp("Adet"),
         note: { type: "string" },
+        account: accountProp,
       },
       required: ["mode", "asset_type", "symbol", "side", "condition", "trigger_price"],
     },
@@ -189,6 +201,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         repeat: { type: "string", enum: ["once", "every"] },
         cooldown_min: numProp("Her seferinde alarmda iki bildirim arası en az dakika (varsayılan 60)"),
         note: { type: "string" },
+        account: { ...accountProp, description: "cost_change alarmında hangi hesabın pozisyonu (verilmezse tüm hesaplar). Diğer türlerde etiket." },
       },
       required: ["kind"],
     },
@@ -260,6 +273,17 @@ const dataTime = (ms: number | null | undefined) =>
   ms ? `${new Date(ms).toLocaleString("tr-TR", { timeZone: "Europe/Istanbul", dateStyle: "short", timeStyle: "short" })} (İstanbul)` : null;
 
 const opt = <T,>(v: unknown): T | undefined => (v === null || v === undefined || v === "" ? undefined : (v as T));
+/** account adı → hesap kimliği (gerçek portföy); bilinmeyen ad doğrulama hatası verir */
+function accountIdOf(i: Input): number | null {
+  const name = typeof i.account === "string" ? i.account.trim() : "";
+  if (!name) return null;
+  const all = actions.listAccounts({ includeArchived: true });
+  const key = name.toLocaleLowerCase("tr-TR");
+  const acc = all.find((a) => a.name.toLocaleLowerCase("tr-TR") === key) ?? all.find((a) => a.name.toLocaleLowerCase("tr-TR").includes(key));
+  if (!acc) throw new actions.ValidationError(`"${name}" adında hesap yok. Hesaplar: ${all.filter((a) => !a.archived).map((a) => a.name).join(", ")}.`);
+  return acc.id;
+}
+const accountLabel = (id: number | null | undefined) => (id != null ? (actions.listAccounts({ includeArchived: true }).find((a) => a.id === id)?.name ?? null) : null);
 const note = (i: Input) => (typeof i.note === "string" && i.note.trim() ? `${i.note.trim()} · ${AI_NOTE}` : AI_NOTE);
 
 function sizingLine(o: { amount: number | null; amountCurrency: string | null; quantity: number | null }) {
@@ -299,17 +323,32 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
   switch (name) {
     case "get_portfolio_summary": {
       const mode: Mode = i.mode === "virtual" ? "virtual" : "real";
-      const p = await actions.getPortfolioSummary(mode);
+      const account = mode === "real" ? accountIdOf(i) : null;
+      const p = await actions.getPortfolioSummary(mode, { account });
       return {
         result: {
           portfoy: modeName(mode),
+          hesap: account != null ? accountLabel(account) : mode === "real" ? "toplama dahil tüm hesaplar" : null,
           veri_zamani: dataTime(p.updatedAt),
+          ...(mode === "real"
+            ? {
+                hesaplar: p.accounts.map((a) => ({
+                  hesap: a.name,
+                  toplama_dahil: a.includeInTotal,
+                  deger_tl: r(a.valueTry, 2),
+                  kz_tl: r(a.pnlTry, 2),
+                  varsayilan_komisyon_yuzde: a.feePct,
+                })),
+              }
+            : {}),
           toplam: {
             deger_tl: r(p.totals.valueTry, 2),
             maliyet_tl: r(p.totals.costTry, 2),
             kz_tl: r(p.totals.pnlTry, 2),
             kz_yuzde: r(p.totals.pnlPct, 2),
             gerceklesen_kz_tl: r(p.totals.realizedPnlTry, 2),
+            odenen_komisyon_tl: r(p.totals.feesTry, 2),
+            yillik_getiri_yuzde_xirr: r(p.totals.annual?.pct, 2),
             eksik_fiyat_var: p.totals.incomplete,
           },
           pozisyonlar: p.holdings.map((h) => ({
@@ -323,6 +362,8 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
             kz_tl: r(h.pnlTry, 2),
             ...(h.fxEffectTry != null ? { kz_tl_fiyat_etkisi: r(h.priceEffectTry, 2), kz_tl_kur_etkisi: r(h.fxEffectTry, 2) } : {}),
             kz_yuzde: r(h.pnlPct, 2),
+            yillik_getiri_yuzde_xirr: r(h.annual?.pct, 2),
+            ...(h.accounts.length ? { hesaplar: h.accounts.map((a) => `${a.name}: ${formatQuantity(a.quantity)}`) } : {}),
             gun: h.days,
             fiyat_zamani: dataTime(h.sourceTime ?? h.fetchedAt),
             fiyat_eski: h.stale,
@@ -408,6 +449,8 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
         currency,
         date: typeof i.date === "string" && i.date ? i.date : todayIstanbul(),
         note: note(i),
+        accountId: accountIdOf(i),
+        fee: opt<number>(i.fee) ?? null,
       });
       const name = displaySymbol(tx.assetType, tx.symbol);
       return {
@@ -418,6 +461,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           lines: [
             `${formatQuantity(tx.quantity)} adet × ${formatMoney(tx.price, tx.currency, 4)}${priceNote}`,
             `Toplam: ${formatMoney(tx.quantity * tx.price, tx.currency)} · Tarih: ${tx.date}`,
+            `Hesap: ${accountLabel(tx.accountId) ?? "—"}${tx.fee > 0 ? ` · Komisyon: ${formatMoney(tx.fee, tx.currency)}` : ""}`,
             "Sanal kayıt arşivlendi. Gerçek fiyat farklıysa İşlemler sayfasından düzeltebilirsiniz.",
           ],
           href: "/islemler",
@@ -438,16 +482,19 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
         currency: i.currency,
         date: typeof i.date === "string" && i.date ? i.date : todayIstanbul(),
         note: note(i),
+        accountId: mode === "real" ? accountIdOf(i) : null,
+        fee: opt<number>(i.fee) ?? null,
+        feePct: opt<number>(i.fee_pct) ?? null,
       });
       const name = displaySymbol(tx.assetType, tx.symbol);
       return {
-        result: { tamam: true, islem_id: tx.id },
+        result: { tamam: true, islem_id: tx.id, hesap: accountLabel(tx.accountId), komisyon: r(tx.fee, 4) },
         card: {
           tone: "ok",
           title: `İşlem eklendi: ${name} ${tx.side === "buy" ? "alış" : "satış"}`,
           lines: [
             `${formatQuantity(tx.quantity)} adet × ${formatMoney(tx.price, tx.currency, 4)} = ${formatMoney(tx.quantity * tx.price, tx.currency)}`,
-            `${modeName(tx.mode)} portföy · ${tx.date}`,
+            `${modeName(tx.mode)} portföy${tx.accountId != null ? ` · ${accountLabel(tx.accountId)}` : ""} · ${tx.date}${tx.fee > 0 ? ` · komisyon ${formatMoney(tx.fee, tx.currency)}` : ""}`,
           ],
           href: "/islemler",
         },
@@ -468,6 +515,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           triggerPrice: i.trigger_price as number,
           ...(quantity != null ? { quantity } : { amount, amountCurrency: isCurrency(i.amount_currency) ? i.amount_currency : "TRY" }),
           note: note(i),
+          accountId: i.mode === "virtual" ? null : accountIdOf(i),
         },
         "yapay_zeka",
       );
@@ -480,7 +528,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           title: `Emir verildi #${o.id}: ${name} ${o.side === "buy" ? "alış" : "satış"}`,
           lines: [
             `Koşul: fiyat ${o.condition === "lte" ? "≤" : "≥"} ${formatMoney(o.triggerPrice, o.triggerCurrency, 4)}`,
-            `Miktar: ${sizingLine(o)} · ${modeName(o.mode)} portföy`,
+            `Miktar: ${sizingLine(o)} · ${modeName(o.mode)} portföy${o.accountName ? ` · ${o.accountName}` : ""}`,
             `Durum: ${statusText}`,
           ],
           href: "/emirler",
@@ -672,6 +720,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           repeat: i.repeat === "every" ? "every" : "once",
           cooldownMin: opt<number>(i.cooldown_min),
           note: typeof i.note === "string" ? i.note : null,
+          accountId: accountIdOf(i),
         },
         "yapay_zeka",
       );

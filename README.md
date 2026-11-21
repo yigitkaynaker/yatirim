@@ -27,7 +27,7 @@ npm start                 # http://0.0.0.0:3000
 
 Geliştirme modu için `npm run dev` kullanın. İki komut da `0.0.0.0:3000` adresini dinler, yani ağdaki diğer cihazlar da bağlanabilir.
 
-Veriler `data/yatirim.db` dosyasında tutulur. Yedeklemek için sunucuyu durdurup bu dosyayı kopyalayın.
+Veriler `data/yatirim.db` dosyasında tutulur. Uygulama her gün `data/yedekler/` klasörüne otomatik yedek alır (son 14); Ayarlar › *Yedekleme* bölümünden elle yedek alabilir, indirebilir ve geri yükleyebilirsiniz. Şema güncellemesinden önce de otomatik yedek alınır.
 
 Diğer komutlar: `npm run lint`, `npm run typecheck`, `npm run test:indicators` (gösterge motorunun birim testleri), `npm run test:sources` (temettü hak edişi, TEFAS sıfır fiyat, altın kaynağı ve "bugün" değişimi testleri), `npm run test:fx` (işlem tarihi kuruyla TL K/Z ve kur etkisi testleri), `npm run icons` (ikonları yeniden üretir), `npm run test:ai` (yapay zeka katmanının sahte istemciyle testi; `YATIRIM_DATA_DIR` ile ayrı bir veri klasörü gösterin, gerçek API çağrısı yapmaz).
 
@@ -144,6 +144,17 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 - **Düzeltmeler:** altın elde tutulurken kuyumcu *alış* fiyatıyla değerlenir (alışta varsayılan *satış* fiyatı); temettü önerileri stopaj sonrası net (Ayarlar'dan oran) ve bölünmeye göre düzeltilir, kayıtlı temettü yeniden onaylanınca üzerine yazılmaz (409, *Düzenle* ile değiştirilir); eski fon fiyatıyla emir/alarm tetiklenmez; KAP boşluk kalmadan geriye doldurulur.
 - Testler: `npm run test:batchb` (alarm, RSS, rakam kontrolü, getiri/risk ve düzeltmelerin birim testleri).
 
+### Geliştirme paketi C: hesaplar, komisyon, yedek, CSV, rapor, yıllık getiri, not
+- **Birden çok hesap** (Midas, İş Yatırım, Banka, Altın kasası…): her gerçek işlem, emir, temettü ve alarm bir hesaba aittir; eski kayıtlar "Ana hesap"a taşındı. Pozisyonlar ve ortalama maliyet hesap başına hesaplanır. Portföy'de hesap çipleri, *Hesaplarım* kartı (hesap başına toplam, *Toplama dahil* anahtarı); pozisyon sayfasında *Hesaplara göre* kırılımı ve hesap filtresi. Ayarlar › *Hesaplar*: ekle, yeniden adlandır, varsayılan komisyon %, arşivle (açık pozisyonlu hesap arşivlenemez). Sanal portföy tek hesaptır. Sohbet araçları isteğe bağlı `account` (hesap adı) alır.
+- **Komisyon:** işlemde tutar ya da % (boşsa hesabın oranı); alışta maliyete, satışta gelire yansır, gerçekleşen K/Z'ye girer. Emirler hesabın oranıyla gerçekleşir. Pozisyon sayfasında *Şimdi satarsam* kutusu (komisyon sonrası tahmini net tutar ve varlık türüne göre stopaj notu; tahmini, vergi/yatırım tavsiyesi değildir).
+- **Yedekleme:** `VACUUM INTO` ile çalışırken güvenli; günlük otomatik (son 14), *Şimdi yedekle*, indirme, *Yedekten geri yükle* (dosya doğrulanır, iki kez onay, önce mevcut veri yedeklenir).
+- **CSV (Excel-TR):** Rapor & veri sayfasından işlemler, pozisyonlar, temettüler ve gerçekleşen kazanç dışa aktarılır (UTF-8 BOM, `;`, ondalık virgül, gg.aa.yyyy). İşlem içe aktarma: şablon, sütun eşleme (başka kurum dosyaları), satır satır hata gösteren önizleme, mükerrer kontrolü (tarih, sembol, yön, adet, fiyat, hesap) ve tek veritabanı işleminde (ya hep ya hiç) kayıt.
+- **Yıllık gerçekleşen kazanç raporu:** yıl → varlık; işlem günü kurlarıyla TL gerçekleşen K/Z, temettü brüt / stopaj / net, komisyon. Resmî vergi beyanı değildir.
+- **Yıllık getiri (XIRR):** paranın ne zaman girdiğini hesaba katan yıllık getiri; pozisyon, hesap ve portföy için (en az 30 günlük geçmiş). `src/lib/xirr.ts`.
+- **Pozisyon notu:** "Neden aldım?", "Ne olursa satarım?", hedef ve stop fiyatı. Grafikte kesikli çizgiler; satış formunda hatırlatma; *Hedef/stop için alarm kur* (fiyat alarmı); stop alarmı çalınca bildirimde satış planı hatırlatılır.
+- **Sanal gerçeklik kontrolü:** Sanal sekmesinde ve "Gerçekten aldım" penceresinde işlem sayısı, kazanan/kaybeden, en iyi/kötü, en büyük düşüş ve tahmini komisyon.
+- Testler: `npm run test:batchc` (XIRR bilinen değerler, komisyonlu maliyet, CSV gidiş-dönüş ve mükerrer, C öncesi veritabanı geçişi, yedek/geri yükleme).
+
 ## Kod yapısı (sonraki aşamalar için)
 
 | Yol | İçerik |
@@ -159,6 +170,9 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 | `src/lib/sourceParse.ts`, `src/lib/http.ts` | TEFAS / altın yanıt ayrıştırma (saf, testli); kibar dış istek ve geri çekilme |
 | `src/lib/positionDetail.ts` | Pozisyon detay sayfasının verisi |
 | `src/lib/snapshots.ts` | Günlük portföy değeri kayıtları (`getPortfolioHistory`) |
+| `src/lib/accounts.ts`, `src/lib/notes.ts` | Hesaplar; pozisyon notu (hedef / stop, alarm hatırlatması) |
+| `src/lib/backup.ts`, `src/lib/csv.ts`, `src/lib/importExport.ts` | Yedek / geri yükleme; Excel-TR CSV (saf, testli); dışa / içe aktarma |
+| `src/lib/reports.ts`, `src/lib/xirr.ts` | Yıllık gerçekleşen kazanç, sanal gerçeklik kontrolü; XIRR (saf, testli) |
 | `src/lib/db.ts` | SQLite bağlantısı ve sürümlü şema geçişleri. Yeni tablo eklemek için `MIGRATIONS` dizisine yeni bir adım ekleyin. |
 | `src/lib/auth.ts`, `src/proxy.ts` | İmzalı oturum çerezi ve sayfa/API koruması |
 | `src/lib/settings.ts`, `src/lib/aiClient.ts` | Ayarlar, API anahtarı, Claude istemcisi, kullanım/maliyet kaydı ve bütçe, Türkçe hata mesajları |

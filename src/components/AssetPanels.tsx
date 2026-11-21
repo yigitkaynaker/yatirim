@@ -29,7 +29,7 @@ export function DividendSuggestionRow({ s, onDone }: { s: DividendSuggestion; on
       const res = await fetch("/api/dividends", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, mode: s.mode, assetType: s.assetType, symbol: s.symbol, exDate: s.exDate }),
+        body: JSON.stringify({ action, mode: s.mode, accountId: s.accountId, assetType: s.assetType, symbol: s.symbol, exDate: s.exDate }),
       });
       if (res.status === 401) return goToLogin();
       const d = (await res.json().catch(() => ({}))) as { error?: string };
@@ -47,6 +47,7 @@ export function DividendSuggestionRow({ s, onDone }: { s: DividendSuggestion; on
       <div className="min-w-0 flex-1">
         <div className="font-medium">
           {s.name} <span className={`ml-1 rounded px-1.5 py-0.5 text-[11px] ${s.mode === "real" ? "bg-emerald-500/15 text-emerald-300" : "bg-violet-500/20 text-violet-200"}`}>{modeLabel(s.mode)}</span>
+          {s.accountName && <span className="ml-1 text-xs font-normal text-slate-500">{s.accountName}</span>}
         </div>
         <div className="num text-xs text-slate-500">
           {formatDate(s.exDate)} · {formatQuantity(s.quantity)} adet × {formatNumber(s.perShare, 6)} {s.currency}

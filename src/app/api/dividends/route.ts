@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 }
 
 /**
- * POST /api/dividends { action: "confirm" | "dismiss", mode, assetType, symbol, exDate, amount?, overwrite? }
+ * POST /api/dividends { action: "confirm" | "dismiss", mode, accountId?, assetType, symbol, exDate, amount?, overwrite? }
  * Zaten kaydedilmiş temettüyü yeniden onaylamak 409 döner (girilen tutar korunur); düzenleme PATCH /api/dividends/:id.
  */
 export async function POST(req: NextRequest) {
@@ -29,6 +29,7 @@ export async function POST(req: NextRequest) {
       assetType: b.assetType as AssetType,
       symbol: String(b.symbol ?? ""),
       exDate: String(b.exDate ?? ""),
+      accountId: typeof b.accountId === "number" ? b.accountId : null,
     };
     if (b.action === "confirm") {
       return actions.confirmDividend({

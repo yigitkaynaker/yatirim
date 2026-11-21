@@ -8,6 +8,7 @@ import { TransactionForm, toInput } from "./TransactionForm";
 import { Card, Modal, ModeTabs, PrimaryButton } from "./ui";
 import { VirtualEntryForm } from "./VirtualEntryForm";
 import { fetchJson, goToLogin, UnauthorizedError } from "@/lib/usePolling";
+import { AccountChips, useAccounts } from "./AccountControls";
 
 export function TransactionsView() {
   const [mode, setMode] = useState<Mode>("real");
@@ -15,6 +16,9 @@ export function TransactionsView() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [adding, setAdding] = useState(false);
+  const [account, setAccount] = useState<number | null>(null);
+  const { accounts } = useAccounts();
+  const accName = (id: number | null) => (id != null ? (accounts?.find((a) => a.id === id)?.name ?? null) : null);
 
   const [version, setVersion] = useState(0);
   const load = useCallback(() => setVersion((v) => v + 1), []);
@@ -48,7 +52,7 @@ export function TransactionsView() {
   }
 
   const virtual = mode === "virtual";
-  const visible = items?.filter((t) => t.mode === mode) ?? null;
+  const visible = items?.filter((t) => t.mode === mode && (mode === "virtual" || account == null || t.accountId === account)) ?? null;
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -63,6 +67,10 @@ export function TransactionsView() {
       </div>
 
       <ModeTabs mode={mode} onChange={(m) => { setItems(null); setMode(m); }} />
+
+      {!virtual && accounts && (
+        <AccountChips items={accounts.filter((a) => !a.archived || items?.some((t) => t.accountId === a.id)).map((a) => ({ id: a.id, name: a.name }))} value={account} onChange={setAccount} />
+      )}
 
       {error && <p className="rounded-xl bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{error}</p>}
 
@@ -95,6 +103,8 @@ export function TransactionsView() {
                 <div className="num text-sm text-slate-400">
                   {formatDate(t.date)} · {formatQuantity(t.quantity)} × {formatMoney(t.price, t.currency, 4)}
                   {t.amount != null && t.amountCurrency && <> · tutar {formatMoney(t.amount, t.amountCurrency)}</>}
+                  {t.fee > 0 && <> · komisyon {formatMoney(t.fee, t.currency)}</>}
+                  {t.mode === "real" && accName(t.accountId) && <> · {accName(t.accountId)}</>}
                 </div>
                 {t.note && <div className="mt-0.5 text-sm text-slate-500">{t.note}</div>}
               </div>
@@ -137,6 +147,9 @@ export function TransactionsView() {
               currency: editing.currency,
               date: editing.date,
               note: editing.note ?? "",
+              accountId: editing.accountId,
+              fee: editing.fee > 0 ? toInput(editing.fee, 6) : "0",
+              feeMode: "amount",
             }}
             onSaved={() => {
               setEditing(null);
