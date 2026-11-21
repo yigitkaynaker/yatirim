@@ -204,6 +204,7 @@ function size(n: number) {
 
 export function BackupSection() {
   const [list, setList] = useState<BackupFile[] | null>(null);
+  const [cloud, setCloud] = useState(false);
   const [msg, setMsg] = useState<Msg>(null);
   const [busy, setBusy] = useState(false);
   const [staged, setStaged] = useState<{ token: string; check: BackupCheck; name: string } | null>(null);
@@ -211,8 +212,9 @@ export function BackupSection() {
 
   const load = useCallback(async () => {
     try {
-      const d = await fetchJson<{ backups: BackupFile[] }>("/api/backups");
+      const d = await fetchJson<{ backups: BackupFile[]; cloud?: boolean }>("/api/backups");
       setList(d.backups);
+      setCloud(!!d.cloud);
     } catch (err) {
       if (err instanceof UnauthorizedError) return goToLogin();
       setMsg({ ok: false, text: "Yedek listesi alınamadı." });
@@ -280,6 +282,8 @@ export function BackupSection() {
     }
   }
 
+  if (cloud) return <CloudBackupSection />;
+
   return (
     <Card className="space-y-4 p-4 md:p-6">
       <div id="yedek" className="scroll-mt-20">
@@ -344,6 +348,189 @@ export function BackupSection() {
           </div>
         )}
       </div>
+    </Card>
+  );
+}
+
+// ---- Bulut modu: JSON yedek -----------------------------------------------------------------
+
+type DumpPreview = { name: string; data: unknown; counts: Record<string, number>; exportedAt: string | null };
+
+/** Bulut modunda dosya yedeği yoktur: tüm veriler tek JSON dosyası olarak indirilir / geri yüklenir. */
+export function CloudBackupSection() {
+  const [msg, setMsg] = useState<Msg>(null);
+  const [busy, setBusy] = useState(false);
+  const [staged, setStaged] = useState<DumpPreview | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function pick(file: File) {
+    setMsg(null);
+    setStaged(null);
+    try {
+      if (file.size > 4 * 1024 * 1024) throw new Error("Dosya 4 MB'tan büyük; bulutta tek seferde yüklenemez. BULUT.md'deki \"tasi:neon\" adımını kullanın.");
+      const data = JSON.parse(await file.text()) as { format?: string; exportedAt?: string; tables?: Record<string, unknown[]> };
+      if (data.format !== "yatirim-veri" || !data.tables) throw new Error("Bu dosya bir yatırım uygulaması veri dosyası değil.");
+      const counts = Object.fromEntries(Object.entries(data.tables).map(([t, rows]) => [t, Array.isArray(rows) ? rows.length : 0]));
+      setStaged({ name: file.name, data, counts, exportedAt: data.exportedAt ?? null });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof SyntaxError ? "Dosya okunamadı (geçerli bir JSON değil)." : (err as Error).message });
+    } finally {
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function restore() {
+    if (!staged) return;
+    if (!confirm(`"${staged.name}" geri yüklensin mi? Şu anki verilerinizin YERİNE geçecek.`)) return;
+    if (!confirm("Emin misiniz? Önce mevcut verileriniz bilgisayarınıza indirilecek, sonra geri yükleme yapılacak.")) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      // Güvenlik için önce mevcut verilerin bir kopyasını indir.
+      const a = document.createElement("a");
+      a.href = "/api/data/export";
+      a.download = "";
+      a.click();
+      const d = (await send("/api/data/import", "POST", { confirm: "GERI YUKLE", data: staged.data })) as { transactions: number };
+      setStaged(null);
+      await refreshAccounts();
+      setMsg({ ok: true, text: `Geri yükleme tamamlandı (${d.transactions} işlem). Sayfalar eski görünürse sayfayı yenileyin.` });
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="space-y-4 p-4 md:p-6">
+      <div id="yedek" className="scroll-mt-20">
+        <h2 className="font-semibold">Yedekleme (bulut)</h2>
+        <p className="mt-1 text-sm text-slate-400">
+          Verileriniz bulut veritabanında (Neon) duruyor. Ara sıra &quot;Tüm verilerimi indir&quot; ile bir kopyasını bilgisayarınıza alın. Dosya ayarlarınızı (API anahtarı dahil)
+          da içerir; güvenli bir yerde saklayın.
+        </p>
+      </div>
+      <a href="/api/data/export" download className="inline-block rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950">
+        Tüm verilerimi indir (JSON)
+      </a>
+      <Note msg={msg} />
+      <div className="rounded-xl border border-amber-500/30 p-3">
+        <h3 className="text-sm font-medium">JSON&apos;dan geri yükle</h3>
+        <p className="mt-1 text-xs text-slate-400">
+          Daha önce indirdiğiniz .json dosyasını seçin. Onaylarsanız önce mevcut verileriniz indirilir, sonra seçtiğiniz dosya mevcut verilerin yerine yazılır.
+        </p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".json,application/json"
+          disabled={busy}
+          onChange={(e) => e.target.files?.[0] && void pick(e.target.files[0])}
+          className="mt-2 block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-surface-2 file:px-3 file:py-2 file:text-slate-200"
+        />
+        {staged && (
+          <div className="mt-3 space-y-2 text-sm">
+            <ul className="num text-xs text-slate-400">
+              <li>Dosya tarihi: {staged.exportedAt ? new Date(staged.exportedAt).toLocaleString("tr-TR", { timeZone: "Europe/Istanbul" }) : "—"}</li>
+              <li>İşlem sayısı: {staged.counts.transactions ?? 0}</li>
+              <li>Hesap sayısı: {staged.counts.accounts ?? 0}</li>
+              <li>Emir sayısı: {staged.counts.orders ?? 0}</li>
+            </ul>
+            <div className="flex gap-2">
+              <button onClick={() => void restore()} disabled={busy} className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                {busy ? "Yükleniyor…" : "Geri yükle"}
+              </button>
+              <button onClick={() => setStaged(null)} className="rounded-xl border border-line px-4 py-2 text-sm text-slate-300">
+                Vazgeç
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      <Explain>
+        Neon ayrıca veritabanını kısa bir süre geriye (ücretsiz planda son birkaç saat) döndürebilir: Neon panelinde projeniz → &quot;Restore&quot;. Bu süre kısa olduğu için
+        düzenli JSON yedeği yine de önerilir.
+      </Explain>
+    </Card>
+  );
+}
+
+// ---- Nöbet durumu ----------------------------------------------------------------------------
+
+interface NobetStatusDto {
+  mode: "bulut" | "yerel";
+  lastTickAt: number | null;
+  lastSource: string | null;
+  expectedMaxGapMs: number;
+  late: boolean;
+  tasks: { name: string; label: string; lastRunAt: number | null; lastOkAt: number | null; lastError: string | null }[];
+}
+
+function ago(ms: number) {
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return "az önce";
+  if (min < 60) return `${min} dk önce`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h} sa önce` : `${Math.floor(h / 24)} gün önce`;
+}
+
+/** "Son nöbet: x dk önce": emir / alarm kontrolünün en son ne zaman çalıştığı */
+export function NobetSection() {
+  const [s, setS] = useState<NobetStatusDto | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const d = await fetchJson<NobetStatusDto>("/api/cron/status");
+        if (alive) {
+          setS(d);
+          setNow(Date.now());
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) goToLogin();
+      }
+    };
+    void load();
+    const t = setInterval(() => void load(), 60_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  if (!s) return null;
+  return (
+    <Card className="space-y-2 p-4 md:p-6">
+      <h2 className="font-semibold">Nöbet (otomatik kontroller)</h2>
+      <p className={`text-sm ${s.late ? "text-amber-300" : "text-emerald-300"}`}>
+        Son nöbet: {s.lastTickAt ? ago(now - s.lastTickAt) : "hiç çalışmadı"}
+        {s.lastSource ? ` · ${s.lastSource}` : ""}
+      </p>
+      {s.late && (
+        <p role="alert" className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+          {s.mode === "bulut"
+            ? `Son nöbet beklenenden eski (en fazla ${Math.round(s.expectedMaxGapMs / 60_000)} dk olmalı). Emirler ve alarmlar şu an kontrol edilmiyor olabilir: cron-job.org görevinin açık olduğunu ve CRON_SECRET başlığının doğru olduğunu kontrol edin (BULUT.md).`
+            : "Yerel izleyici çalışmıyor görünüyor. Uygulamayı yeniden başlatın."}
+        </p>
+      )}
+      <p className="text-xs text-slate-500">
+        {s.mode === "bulut"
+          ? "Bulut modu: dış zamanlayıcı hafta içi 09:30–18:30 her dakika, diğer zamanlarda 30 dakikada bir bekleyen emirleri, alarmları ve zamanlanmış işleri çalıştırır."
+          : "Yerel mod: uygulama açıkken her 30 saniyede bir bekleyen emirler ve alarmlar kontrol edilir."}
+      </p>
+      {s.tasks.length > 0 && (
+        <ul className="num divide-y divide-line/60 rounded-xl border border-line text-xs">
+          {s.tasks.map((t) => (
+            <li key={t.name} className="flex flex-wrap justify-between gap-x-3 px-3 py-1.5">
+              <span className="text-slate-300">{t.label}</span>
+              <span className={t.lastError ? "text-rose-300" : "text-slate-500"}>
+                {t.lastRunAt ? ago(now - t.lastRunAt) : "henüz yok"}
+                {t.lastError ? ` · hata: ${t.lastError.slice(0, 80)}` : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </Card>
   );
 }

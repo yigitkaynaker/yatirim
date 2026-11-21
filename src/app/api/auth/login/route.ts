@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { checkPassword, createSessionToken, isSecureRequest, SESSION_COOKIE, SESSION_MAX_AGE_S } from "@/lib/auth";
+import { checkPassword, createSessionToken, secureCookie, SESSION_COOKIE, SESSION_MAX_AGE_S } from "@/lib/auth";
 
 // Basit kaba kuvvet koruması: art arda hatalı denemelerde gecikme. Sayaç istemci
 // adresi (IP) başınadır; böylece bir başkasının hatalı denemeleri kullanıcının
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
   res.cookies.set(SESSION_COOKIE, await createSessionToken(), {
     httpOnly: true,
     sameSite: "lax",
-    secure: isSecureRequest(req),
+    secure: secureCookie(req),
     path: "/",
     maxAge: SESSION_MAX_AGE_S,
   });

@@ -1,12 +1,14 @@
 import "server-only";
 import { checkPendingOrders } from "./orders";
 import { maybeRecordSnapshots } from "./snapshots";
+import { markLocalTick } from "./cron/runner";
 
 // Sunucu çalıştığı sürece bekleyen emirleri ~30 sn'de bir kontrol eder,
 // günlük portföy değeri anlık görüntüsünü (gerçek / sanal) kaydeder ve
 // zamanı gelen otomatik haber taramasını ve günlük teknik sinyal kontrolünü başlatır.
 // instrumentation.ts'den bir kez başlatılır; dev modda çift başlatmaya karşı
-// globalThis üzerinde korunur.
+// globalThis üzerinde korunur. YALNIZCA yerel mod: bulut modunda (DATABASE_URL) aynı görevleri
+// dış zamanlayıcının çağırdığı /api/cron/tick çalıştırır (cron/runner.ts).
 
 export const ORDER_CHECK_MS = 30_000;
 
@@ -40,6 +42,7 @@ export async function runOrderCheck() {
 export function startOrderWatcher() {
   if (g.__yatirimOrderWatcher) return;
   const timer = setInterval(() => {
+    markLocalTick();
     void runOrderCheck();
     void runScheduledNews();
     void runSignalAlerts();
@@ -50,7 +53,10 @@ export function startOrderWatcher() {
   }, ORDER_CHECK_MS);
   timer.unref?.();
   g.__yatirimOrderWatcher = { timer, running: false };
-  setTimeout(() => void runOrderCheck(), 5_000).unref?.();
+  setTimeout(() => {
+    markLocalTick();
+    void runOrderCheck();
+  }, 5_000).unref?.();
   console.log("[emirler] izleyici başlatıldı");
 }
 
@@ -92,7 +98,7 @@ async function runDailyBackup() {
   if (gb.__yatirimBackupDay === day) return;
   try {
     const { maybeDailyBackup } = await import("./backup");
-    maybeDailyBackup();
+    await maybeDailyBackup();
     gb.__yatirimBackupDay = day;
   } catch (err) {
     console.error("[yedek] zamanlayıcı hatası", err);

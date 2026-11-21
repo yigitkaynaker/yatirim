@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
 
 // Giriş sayfası, giriş API'si ve PWA dosyaları dışındaki her şey oturum ister.
-const PUBLIC_PATHS = new Set(["/login", "/api/auth/login", "/manifest.webmanifest", "/sw.js", "/offline.html"]);
+// Nöbet uçları (/api/cron/tick, /api/cron/slow) çerez yerine kendi Bearer CRON_SECRET denetimini yapar.
+const PUBLIC_PATHS = new Set(["/login", "/api/auth/login", "/manifest.webmanifest", "/sw.js", "/offline.html", "/api/cron/tick", "/api/cron/slow"]);
 
 export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;

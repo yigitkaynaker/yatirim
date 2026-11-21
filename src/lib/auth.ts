@@ -84,6 +84,14 @@ export async function checkPassword(input: string): Promise<boolean> {
   return diff === 0;
 }
 
+/**
+ * Oturum çerezi "Secure" olsun mu: HTTPS isteklerinde ve her zaman Vercel'de (üretim).
+ * COOKIE_SECURE=1 ile zorlanabilir. Yerelde düz HTTP (Tailscale IP) ile giriş çalışmaya devam eder.
+ */
+export function secureCookie(req: Request): boolean {
+  return process.env.VERCEL === "1" || process.env.COOKIE_SECURE === "1" || isSecureRequest(req);
+}
+
 /** İstek HTTPS üzerinden mi geldi (Tailscale serve gibi bir ters vekil dahil)? */
 export function isSecureRequest(req: Request): boolean {
   const proto = req.headers.get("x-forwarded-proto");
