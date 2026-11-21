@@ -155,6 +155,24 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 - **Sanal gerçeklik kontrolü:** Sanal sekmesinde ve "Gerçekten aldım" penceresinde işlem sayısı, kazanan/kaybeden, en iyi/kötü, en büyük düşüş ve tahmini komisyon.
 - Testler: `npm run test:batchc` (XIRR bilinen değerler, komisyonlu maliyet, CSV gidiş-dönüş ve mükerrer, C öncesi veritabanı geçişi, yedek/geri yükleme).
 
+## Bulut modu (isteğe bağlı: Vercel + Neon)
+
+Uygulama iki modda çalışır:
+
+- **Yerel mod** (varsayılan): SQLite (`data/yatirim.db`) ve süreç içi izleyici (30 sn'de bir emir / alarm kontrolü). Hiçbir şey değişmedi.
+- **Bulut modu**: `DATABASE_URL` tanımlıysa Neon Postgres kullanılır ve süreç içi izleyici başlamaz; görevleri dış zamanlayıcı (cron-job.org her dakika, GitHub Actions 5 dk'da bir yedek) `/api/cron/tick` ile çalıştırır. Kurulum adımları: **[BULUT.md](BULUT.md)**.
+
+Yerel `.env` dosyasına `DATABASE_URL` yazmayın (yazarsanız bilgisayardaki uygulama da buluta bağlanır).
+
+Komutlar:
+
+- `npm run db:migrate` — Postgres şemasını kurar / günceller (`DATABASE_URL_UNPOOLED`, `.env.bulut`'tan okunur)
+- `npm run tasi:neon -- --kaynak data/yatirim.db [--deneme]` — yerel veriyi Neon'a taşır, tablo başına satır sayılarını doğrular
+- `npm run test:pg` — tüm testleri gömülü Postgres (PGlite) ile çalıştırır
+- `npm run pg:dev` — yerel deneme için PGlite sunucusu (port 5433)
+
+Kod: veritabanı katmanı `src/lib/db/` (eşzamansız `Db` arayüzü: `all/get/run/exec/tx`; SQLite ve Postgres bağdaştırıcıları). Şema iki yerde tutulur: `migrationsSqlite.ts` ve `migrationsPg.ts` — yeni tablo / sütun İKİSİNE de eklenmeli (`test:pg` karşılaştırır). SQL'de `datetime('now')` yerine `sqlNow()` parametresi, `INSERT OR IGNORE` yerine `ON CONFLICT DO NOTHING`, eklenen kimlik için `RETURNING id` kullanın. Nöbet: `src/lib/cron/`.
+
 ## Kod yapısı (sonraki aşamalar için)
 
 | Yol | İçerik |
@@ -173,7 +191,7 @@ Anahtar yokken tüm yapay zeka ekranları "Yapay zeka anahtarı eklenmedi — Ay
 | `src/lib/accounts.ts`, `src/lib/notes.ts` | Hesaplar; pozisyon notu (hedef / stop, alarm hatırlatması) |
 | `src/lib/backup.ts`, `src/lib/csv.ts`, `src/lib/importExport.ts` | Yedek / geri yükleme; Excel-TR CSV (saf, testli); dışa / içe aktarma |
 | `src/lib/reports.ts`, `src/lib/xirr.ts` | Yıllık gerçekleşen kazanç, sanal gerçeklik kontrolü; XIRR (saf, testli) |
-| `src/lib/db.ts` | SQLite bağlantısı ve sürümlü şema geçişleri. Yeni tablo eklemek için `MIGRATIONS` dizisine yeni bir adım ekleyin. |
+| `src/lib/db/` | Veritabanı: `getDb()` (yerelde SQLite, bulutta Postgres), sürümlü şema geçişleri (`migrationsSqlite.ts` + `migrationsPg.ts`; yeni adım ikisine de eklenir). |
 | `src/lib/auth.ts`, `src/proxy.ts` | İmzalı oturum çerezi ve sayfa/API koruması |
 | `src/lib/settings.ts`, `src/lib/aiClient.ts` | Ayarlar, API anahtarı, Claude istemcisi, kullanım/maliyet kaydı ve bütçe, Türkçe hata mesajları |
 | `src/lib/chat.ts`, `src/lib/chatTools.ts` | Sohbet döngüsü (akış, araç kullanımı, kayıt) ve eylem katmanını saran araçlar |

@@ -1,0 +1,35 @@
+# Yedek nöbet: cron-job.org'a ek olarak 5 dakikada bir /api/cron/tick'i çağırır.
+# GitHub zamanlanmış işleri birkaç dakika gecikebilir; asıl zamanlayıcı cron-job.org'dur.
+# Gerekenler (Settings → Secrets and variables → Actions):
+#   CRON_SECRET  (secret)   — Vercel'deki CRON_SECRET ile aynı
+#   APP_URL      (variable) — örn. https://yatirim-xxxx.vercel.app (sonunda / olmadan)
+name: Nöbet
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Pencereyi yok say (elle deneme)"
+        type: boolean
+        default: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Nöbet çağrısı
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: ${{ vars.APP_URL }}
+          FORCE: ${{ github.event.inputs.force == 'true' && '&force=1' || '' }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL (variable) ya da CRON_SECRET (secret) tanımlı değil." && exit 1
+          fi
+          code=$(curl -sS -o out.json -w "%{http_code}" --max-time 50 \
+            -H "Authorization: Bearer $CRON_SECRET" -H "User-Agent: github-actions-nobet" \
+            "$APP_URL/api/cron/tick?kaynak=github$FORCE")
+          cat out.json; echo
+          test "$code" = "200"
