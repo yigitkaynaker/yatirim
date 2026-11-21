@@ -23,9 +23,15 @@ export function trDate(iso: string | null | undefined): string {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;
 }
 
+/** Excel/Calc'ın formül olarak çalıştırabileceği baş karakterler (CSV formül enjeksiyonu). */
+const FORMULA_START = /^[=+\-@\t\r]/;
+
 function escapeCell(v: Cell): string {
   if (v == null) return "";
-  const s = typeof v === "number" ? trNumber(v) : String(v);
+  let s = typeof v === "number" ? trNumber(v) : String(v);
+  // Metin hücre (sembol, not, hesap adı…) "=", "+", "-", "@", sekme ya da CR ile başlıyorsa başına '
+  // konur: Excel onu formül olarak çalıştırmaz. Sayı hücreleri (örn. -12,5) olduğu gibi kalır.
+  if (typeof v === "string" && FORMULA_START.test(s)) s = `'${s}`;
   return /[";\r\n]/.test(s) || /^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -109,13 +115,24 @@ export function parseNumberLoose(raw: string | null | undefined): number {
   } else if (lastComma >= 0) {
     // Yalnız virgül: Türkçe ondalık (birden çoksa binlik).
     s = (s.match(/,/g)!.length > 1 ? s.replace(/,/g, "") : s.replace(",", "."));
-  } else if (lastDot >= 0 && (s.match(/\./g)!.length > 1 || /^\d{1,3}\.\d{3}$/.test(s.replace(/^-/, "")))) {
+  } else if (lastDot >= 0 && (s.match(/\./g)!.length > 1 || /^[1-9]\d{0,2}\.\d{3}$/.test(s.replace(/^-/, "")))) {
     // Birden çok nokta ya da "10.000" gibi tam 3 haneli grup: Türkçe binlik.
+    // "0.500" binlik olamaz (baştaki 0 grup başlatmaz): ondalık okunur.
     s = s.replace(/\./g, "");
   }
   if (!/^-?\d+(\.\d+)?$/.test(s)) return NaN;
   const n = Number(s);
   return neg ? -n : n;
+}
+
+/**
+ * İki türlü okunabilen sayı mı? "1.234" (Türkçe 1234 / İngilizce 1,234) ya da "1,234"
+ * (Türkçe 1,234 / İngilizce 1234). Okuma Türkçe yapılır; önizlemede kullanıcıya uyarı gösterilir.
+ */
+export function isAmbiguousNumber(raw: string | null | undefined): boolean {
+  if (raw == null) return false;
+  const s = String(raw).trim().replace(/[\s ]/g, "").replace(/^(TRY|TL|USD|EUR|₺|\$|€)/i, "").replace(/(TRY|TL|USD|EUR|₺|\$|€)$/i, "");
+  return /^-?\(?[1-9]\d{0,2}[.,]\d{3}\)?$/.test(s);
 }
 
 /** Tarih okur: gg.aa.yyyy, gg/aa/yyyy, gg-aa-yyyy, yyyy-aa-gg (saat kısmı atılır). Okunamazsa null. */

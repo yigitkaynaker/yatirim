@@ -2,7 +2,7 @@ import "server-only";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { backupDir, closeDb, dbPath, getDb, SCHEMA_VERSION, sqlString } from "./db";
+import { backupDir, closeDb, dbPath, getDb, MIGRATION_SQL, SCHEMA_VERSION, sqlString } from "./db";
 import { ValidationError } from "./portfolio";
 
 // YEDEKLEME VE GERİ YÜKLEME
@@ -117,6 +117,60 @@ export interface BackupCheck {
   lastTransactionDate: string | null;
 }
 
+const KEY_TABLES = ["transactions", "accounts", "orders", "settings"];
+
+function columnsOf(db: DatabaseSync, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${sqlString(table)})`).all() as { name: string }[]).map((r) => r.name);
+}
+
+let referenceColumns: Map<string, string[]> | null = null;
+
+/** Güncel şemadaki ana tabloların sütunları (boş bir bellek veritabanına tüm geçişler uygulanarak). */
+function expectedColumns(): Map<string, string[]> {
+  if (referenceColumns) return referenceColumns;
+  const mem = new DatabaseSync(":memory:");
+  try {
+    for (const sql of MIGRATION_SQL) mem.exec(sql);
+    referenceColumns = new Map(KEY_TABLES.map((t) => [t, columnsOf(mem, t)]));
+  } finally {
+    mem.close();
+  }
+  return referenceColumns;
+}
+
+/**
+ * Yedeğin geçici bir kopyasına eksik şema geçişlerini uygular ve ana tabloların (işlemler, hesaplar,
+ * emirler, ayarlar) beklenen sütunlara sahip olduğunu denetler. Geçiş çalışmazsa ya da sütun eksikse reddedilir.
+ */
+function checkMigratedSchema(file: string) {
+  const tmp = `${file}.dogrula-${process.pid}-${Date.now()}`;
+  fs.copyFileSync(file, tmp);
+  let db: DatabaseSync | null = null;
+  try {
+    db = new DatabaseSync(tmp);
+    let { user_version: version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    try {
+      for (; version < MIGRATION_SQL.length; version++) db.exec(MIGRATION_SQL[version]);
+    } catch {
+      throw new ValidationError("Yedek bu uygulama sürümüne yükseltilemedi (şema geçişi başarısız); geçerli bir yedek değil.");
+    }
+    const problems: string[] = [];
+    for (const [table, cols] of expectedColumns()) {
+      const have = new Set(columnsOf(db, table));
+      if (have.size === 0) problems.push(`${table} tablosu yok`);
+      else {
+        const lack = cols.filter((c) => !have.has(c));
+        if (lack.length) problems.push(`${table}: ${lack.join(", ")}`);
+      }
+    }
+    if (problems.length) throw new ValidationError(`Yedekte beklenen sütunlar eksik (${problems.join("; ")}).`);
+    db.prepare("SELECT COUNT(*) FROM transactions").get();
+  } finally {
+    db?.close();
+    for (const ext of ["", "-wal", "-shm", "-journal"]) fs.rmSync(tmp + ext, { force: true });
+  }
+}
+
 /** Yüklenen dosyanın geçerli bir yatırım veritabanı olduğunu doğrular. */
 export function validateBackupFile(file: string): BackupCheck {
   const head = Buffer.alloc(16);
@@ -139,6 +193,7 @@ export function validateBackupFile(file: string): BackupCheck {
     const needed = REQUIRED_TABLES.filter((t) => t !== "settings" || user_version >= 4).filter((t) => t !== "portfolio_snapshots" || user_version >= 3).filter((t) => t !== "orders" || user_version >= 2);
     const missing = needed.filter((t) => !tables.has(t));
     if (missing.length) throw new ValidationError(`Yedekte gerekli tablolar eksik: ${missing.join(", ")}.`);
+    checkMigratedSchema(file);
     const { c } = db.prepare("SELECT COUNT(*) AS c FROM transactions").get() as { c: number };
     const last = db.prepare("SELECT MAX(date) AS d FROM transactions").get() as { d: string | null };
     const accounts = tables.has("accounts") ? (db.prepare("SELECT COUNT(*) AS c FROM accounts").get() as { c: number }).c : null;

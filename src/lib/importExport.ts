@@ -7,7 +7,7 @@ import { accountNames, createAccount, listAccounts } from "./accounts";
 import { listDividendRecords } from "./dividends";
 import { getYearlyReport } from "./reports";
 import { ensureFxRates } from "./fxRates";
-import { normKey, parseCsv, parseDateLoose, parseNumberLoose, toCsv, trDate, type Cell } from "./csv";
+import { isAmbiguousNumber, normKey, parseCsv, parseDateLoose, parseNumberLoose, toCsv, trDate, type Cell } from "./csv";
 
 // CSV DIŞA / İÇE AKTARMA
 // Dışa: işlemler, pozisyonlar, temettüler, yıllık gerçekleşen kazanç (Excel Türkçe uyumlu CSV).
@@ -235,6 +235,10 @@ export interface ImportRow {
   currency: string | null;
   fee: number | null;
   errors: string[];
+  /** Kaydı engellemeyen uyarılar (örn. belirsiz sayı: kullanıcı kontrol etsin) */
+  warnings: string[];
+  /** Bilgi notları (örn. aynı satır dosyada birden çok kez var) */
+  info: string[];
   duplicate: boolean;
   hash: string | null;
 }
@@ -274,7 +278,8 @@ function buildRows(text: string, opts: ImportOptions): { headers: string[]; mapp
   if (missing.length) {
     throw new ValidationError(`Şu alanlar için sütun seçin: ${missing.map((f) => IMPORT_FIELD_LABEL[f]).join(", ")}.`);
   }
-  const cell = (cells: string[], f: ImportField) => (mapping[f] != null ? (cells[mapping[f]!] ?? "").trim() : "");
+  // Dışa aktarmada formül korumasıyla eklenen baştaki ' geri alınır ('=… → =…).
+  const cell = (cells: string[], f: ImportField) => (mapping[f] != null ? (cells[mapping[f]!] ?? "").trim().replace(/^'(?=[=+@-])/, "") : "");
   const accNames = new Map(listAccounts({ includeArchived: true }).map((a) => [a.name.toLocaleLowerCase("tr-TR"), a]));
   const defaultAcc = opts.defaultAccountId != null ? listAccounts({ includeArchived: true }).find((a) => a.id === opts.defaultAccountId) : undefined;
 
@@ -313,6 +318,12 @@ function buildRows(text: string, opts: ImportOptions): { headers: string[]; mapp
     }
     if (accRaw) account = accNames.get(accRaw.toLocaleLowerCase("tr-TR"))?.name ?? accRaw;
     const note = cell(cells, "note").slice(0, 500) || null;
+    const warnings: string[] = [];
+    for (const [f, raw] of [["quantity", qRaw], ["price", pRaw], ["fee", feeRaw], ["fxTry", fxRaw]] as const) {
+      if (isAmbiguousNumber(raw)) {
+        warnings.push(`Belirsiz sayı: ${IMPORT_FIELD_LABEL[f]} "${raw}" → ${parseNumberLoose(raw).toLocaleString("tr-TR", { maximumFractionDigits: 8 })} olarak okundu (Türkçe biçim). Doğru değilse dosyayı düzeltin.`);
+      }
+    }
 
     const row: ImportRow = {
       line: i + 2,
@@ -327,6 +338,8 @@ function buildRows(text: string, opts: ImportOptions): { headers: string[]; mapp
       currency,
       fee: Number.isFinite(fee) ? fee : null,
       errors,
+      warnings,
+      info: [],
       duplicate: false,
       hash: null,
     };
@@ -352,25 +365,40 @@ function run(text: string, opts: ImportOptions, mode: "preview" | "commit"): { p
   db.exec("BEGIN IMMEDIATE");
   try {
     if (opts.createAccounts) for (const name of unknownAccounts) createAccount({ name });
-    const existing = new Set(
-      activeTransactions("real").map((t) => txHash({ date: t.date, symbol: t.symbol, side: t.side, quantity: t.quantity, price: t.price, accountId: t.accountId })),
-    );
+    // Mükerrer kontrolü yalnızca veritabanında ZATEN olan kayıtlara karşı yapılır. Dosyada aynı satır
+    // birden çok kez varsa (örn. aynı gün aynı fiyattan iki ayrı alım) bunlar ayrı işlemdir: k. tekrar,
+    // veritabanında o satırdan en az k tane varsa mükerrer sayılır (aynı dosyayı iki kez yüklemek yine güvenli).
+    const existing = new Map<string, number>();
+    for (const t of activeTransactions("real")) {
+      const h = txHash({ date: t.date, symbol: t.symbol, side: t.side, quantity: t.quantity, price: t.price, accountId: t.accountId });
+      existing.set(h, (existing.get(h) ?? 0) + 1);
+    }
     const ordered = [...built].filter((b) => b.body).sort((a, b) => (a.row.date! < b.row.date! ? -1 : a.row.date! > b.row.date! ? 1 : a.row.line - b.row.line));
+    const inputs = new Map<Built, TransactionInput>();
+    const inFile = new Map<string, number>();
     for (const b of ordered) {
-      let input: TransactionInput;
       try {
-        input = parseTransactionInput(b.body, { allowArchived: true });
+        const input = parseTransactionInput(b.body, { allowArchived: true });
+        inputs.set(b, input);
+        b.row.hash = txHash({ ...input, accountId: input.accountId });
+        inFile.set(b.row.hash, (inFile.get(b.row.hash) ?? 0) + 1);
       } catch (err) {
         b.row.errors.push(err instanceof ValidationError ? err.message : "Geçersiz satır.");
-        continue;
       }
-      const h = txHash({ ...input, accountId: input.accountId });
-      b.row.hash = h;
-      if (existing.has(h)) {
+    }
+    const seen = new Map<string, number>();
+    for (const b of ordered) {
+      const input = inputs.get(b);
+      if (!input) continue;
+      const h = b.row.hash!;
+      const total = inFile.get(h) ?? 1;
+      if (total > 1) b.row.info.push(`Aynı satır dosyada ${total} kez var; her biri ayrı işlem olarak eklenir.`);
+      const occurrence = (seen.get(h) ?? 0) + 1;
+      seen.set(h, occurrence);
+      if (occurrence <= (existing.get(h) ?? 0)) {
         b.row.duplicate = true;
         continue;
       }
-      existing.add(h);
       try {
         recordTransaction(input, { fxTry: b.fxTry, deferFx: true });
         inserted++;

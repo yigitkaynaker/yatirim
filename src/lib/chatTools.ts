@@ -349,6 +349,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
             gerceklesen_kz_tl: r(p.totals.realizedPnlTry, 2),
             odenen_komisyon_tl: r(p.totals.feesTry, 2),
             yillik_getiri_yuzde_xirr: r(p.totals.annual?.pct, 2),
+            ...(p.totals.annual?.short ? { toplam_getiri_yuzde: r(p.totals.annual.totalPct, 2), yillik_getiri_notu: p.totals.annual.note } : {}),
             eksik_fiyat_var: p.totals.incomplete,
           },
           pozisyonlar: p.holdings.map((h) => ({
@@ -363,6 +364,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
             ...(h.fxEffectTry != null ? { kz_tl_fiyat_etkisi: r(h.priceEffectTry, 2), kz_tl_kur_etkisi: r(h.fxEffectTry, 2) } : {}),
             kz_yuzde: r(h.pnlPct, 2),
             yillik_getiri_yuzde_xirr: r(h.annual?.pct, 2),
+            ...(h.annual?.short ? { toplam_getiri_yuzde: r(h.annual.totalPct, 2), yillik_getiri_notu: h.annual.note } : {}),
             ...(h.accounts.length ? { hesaplar: h.accounts.map((a) => `${a.name}: ${formatQuantity(a.quantity)}`) } : {}),
             gun: h.days,
             fiyat_zamani: dataTime(h.sourceTime ?? h.fetchedAt),

@@ -49,7 +49,10 @@ export function xirr(input: Flow[]): number | null {
     if (!Number.isFinite(v) || !Number.isFinite(d) || d === 0) break;
     const next = r - v / d;
     if (!Number.isFinite(next) || next <= -0.999999) break;
-    if (Math.abs(next - r) < 1e-10) return Math.abs(npv(next, flows)) < 1e-4 * scale(flows) ? next : null;
+    if (Math.abs(next - r) < 1e-10) {
+      if (Math.abs(npv(next, flows)) < 1e-4 * scale(flows)) return next;
+      break; // adım küçüldü ama kök değil (düz bölge): ikiye bölmeye geç
+    }
     r = next;
   }
   let lo = -0.999999;
@@ -94,15 +97,46 @@ export interface XirrResult {
   /** Hesaplanamama ya da uyarı nedeni (kısa Türkçe) */
   note: string | null;
   days: number;
+  /** Toplam getiri yüzdesi (yıllığa çevrilmemiş): (geri dönen + bugünkü değer) / yatırılan − 1 */
+  totalPct: number | null;
+  /** 1 yıldan kısa geçmiş: yıllık değer yalnızca uyarıyla gösterilir, toplam getiri öne çıkar */
+  short: boolean;
 }
 
-/** Ekranda gösterilecek yıllık getiri: kısa sürede gösterilmez. */
+/** Bundan büyük (mutlak) yıllıklandırılmış değer kısa sürede anlamlı değildir; gösterilmez. */
+export const XIRR_MAX_SHORT_PCT = 1000;
+
+function totalReturnPct(flows: Flow[]): number | null {
+  let paid = 0;
+  let back = 0;
+  for (const f of flows) {
+    if (!Number.isFinite(f.amount)) continue;
+    if (f.amount < 0) paid -= f.amount;
+    else back += f.amount;
+  }
+  return paid > 0 ? (back / paid - 1) * 100 : null;
+}
+
+/**
+ * Ekranda gösterilecek yıllık getiri: 30 günden kısa sürede gösterilmez; 1 yıldan kısa sürede
+ * toplam getiri ile birlikte ve uyarıyla verilir, |değer| > %1000 ise "anlamlı değil" denir.
+ */
 export function annualReturn(flows: Flow[]): XirrResult {
   const days = flowSpanDays(flows);
-  if (days < XIRR_MIN_DAYS) return { pct: null, note: `Yıllık getiri için en az ${XIRR_MIN_DAYS} günlük geçmiş gerekir.`, days };
+  const totalPct = totalReturnPct(flows);
+  const short = days < 365;
+  if (days < XIRR_MIN_DAYS) return { pct: null, note: `Yıllık getiri için en az ${XIRR_MIN_DAYS} günlük geçmiş gerekir.`, days, totalPct, short };
   const r = xirr(flows);
-  if (r == null) return { pct: null, note: "Hesaplanamadı.", days };
-  return { pct: r * 100, note: days < 365 ? "1 yıldan kısa süre yıllığa çevrildi; dalgalı olabilir." : null, days };
+  if (r == null) return { pct: null, note: "Hesaplanamadı.", days, totalPct, short };
+  const pct = r * 100;
+  if (short && Math.abs(pct) > XIRR_MAX_SHORT_PCT) return { pct: null, note: "Yıllıklandırılmış getiri anlamlı değil (süre çok kısa).", days, totalPct, short };
+  return {
+    pct,
+    note: short ? `Yalnızca ${days} günlük geçmiş: yıllıklandırılmış değer, bu kısa sürenin bir yıl boyunca aynen süreceğini varsayar; yanıltıcı olabilir.` : null,
+    days,
+    totalPct,
+    short,
+  };
 }
 
 /** İşlem satırlarından TL nakit akışları (komisyon dahil). fx: işlem günü kuru, yoksa güncel kur. */

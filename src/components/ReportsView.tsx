@@ -403,6 +403,16 @@ function ImportSection() {
                       ) : (
                         <span className="text-emerald-300">Hazır</span>
                       )}
+                      {r.warnings?.map((w, i) => (
+                        <div key={`w${i}`} className="text-amber-300">
+                          {w}
+                        </div>
+                      ))}
+                      {r.info?.map((n, i) => (
+                        <div key={`i${i}`} className="text-slate-400">
+                          {n}
+                        </div>
+                      ))}
                     </td>
                   </tr>
                 ))}

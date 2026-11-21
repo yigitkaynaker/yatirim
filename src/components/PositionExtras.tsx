@@ -19,6 +19,25 @@ export const XIRR_EXPLAIN =
 
 export function AnnualReturn({ a, className = "" }: { a: XirrResult | null | undefined; className?: string }) {
   if (!a) return <span className={`text-slate-500 ${className}`}>—</span>;
+  // 1 yıldan kısa geçmiş: önce toplam getiri; yıllıklandırılmış değer yalnızca uyarıyla (aşırıysa hiç)
+  if (a.short && a.totalPct != null) {
+    return (
+      <span className={className} title={a.note ?? XIRR_EXPLAIN}>
+        <span className={pnlClass(a.totalPct)}>{formatPercent(a.totalPct)}</span>
+        <span className="text-xs text-slate-500"> toplam ({a.days} gün)</span>
+        <span className="text-xs text-slate-500">
+          {" · "}
+          {a.pct != null ? (
+            <>
+              yıllıklandırılmış <span className={pnlClass(a.pct)}>{formatPercent(a.pct)}</span> *
+            </>
+          ) : (
+            (a.note ?? "")
+          )}
+        </span>
+      </span>
+    );
+  }
   if (a.pct == null) return <span className={`text-xs text-slate-500 ${className}`} title={a.note ?? undefined}>{a.note ?? "—"}</span>;
   return (
     <span className={`${pnlClass(a.pct)} ${className}`} title={a.note ?? XIRR_EXPLAIN}>

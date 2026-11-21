@@ -220,9 +220,9 @@ function Summary({ summary, mode, accountName }: { summary: PortfolioSummary | n
         <span className={pnlClass(t?.pnlTry)} title="Toplam kâr/zarar: bugünkü değer − maliyet">
           {t ? `${formatSigned(t.pnlTry)} (${formatPercent(t.pnlPct)})` : ""}
         </span>
-        {t?.annual?.pct != null && (
+        {t?.annual && (t.annual.pct != null || (t.annual.short && t.annual.totalPct != null)) && (
           <span title={XIRR_EXPLAIN}>
-            <span className="text-slate-500">Yıllık </span>
+            <span className="text-slate-500">{t.annual.short ? "Getiri " : "Yıllık "}</span>
             <AnnualReturn a={t.annual} />
           </span>
         )}
@@ -266,7 +266,7 @@ function Summary({ summary, mode, accountName }: { summary: PortfolioSummary | n
           Ödenen komisyon: <span className="num text-slate-300">{formatMoney(t.feesTry)}</span> (maliyete ve gerçekleşen K/Z’ye dahil).
         </p>
       )}
-      {t?.annual && t.annual.pct == null && t.annual.note && <p className="mt-1 text-xs text-slate-500">Yıllık getiri: {t.annual.note}</p>}
+      {t?.annual && (t.annual.pct == null || t.annual.short) && t.annual.note && <p className="mt-1 text-xs text-slate-500">Yıllık getiri: {t.annual.note}</p>}
       <p className="mt-3 text-xs text-slate-500">
         Döviz cinsinden varlıklarda değer güncel kurla, maliyet ve gerçekleşen K/Z işlem günündeki kurla TL’ye çevrilir. “Bugün”, fiyatların bir önceki
         kapanışa göre değişimidir; BIST fiyatları yaklaşık 15 dakika gecikmeli, fon fiyatları günde bir kez açıklanır.

@@ -79,11 +79,15 @@ export function resolveAccount(raw: { accountId?: unknown; account?: unknown }, 
     if (!Number.isInteger(id) || id <= 0) throw new ValidationError("Hesap geçersiz.");
     acc = getAccount(id);
     if (!acc) throw new ValidationError("Hesap bulunamadı.");
-  } else if (typeof raw.account === "string" && raw.account.trim()) {
-    acc = findByName(raw.account);
+  } else if (raw.account != null && !(typeof raw.account === "string" && !raw.account.trim())) {
+    // account: hesap adı ya da numarası (id). Verilip bulunamazsa varsayılana düşülmez, hata verilir.
+    const text = typeof raw.account === "string" || typeof raw.account === "number" ? String(raw.account).trim() : "";
+    if (!text) throw new ValidationError("Hesap geçersiz (hesap adı ya da numarası bekleniyor).");
+    acc = findByName(text);
+    if (!acc && /^\d+$/.test(text)) acc = getAccount(Number(text));
     if (!acc) {
       const names = listAccounts().map((a) => a.name).join(", ");
-      throw new ValidationError(`"${raw.account.trim()}" adında hesap yok. Hesaplar: ${names}.`);
+      throw new ValidationError(`"${text}" adında ya da numarasında hesap yok. Hesaplar: ${names}.`);
     }
   } else {
     acc = defaultAccount();

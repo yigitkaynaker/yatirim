@@ -97,6 +97,40 @@ await test("30 günden kısa sürede yıllık getiri gösterilmez; işlem akış
   assert.deepEqual(f.map((x) => x.amount), [-1005, 2190]);
 });
 
+await test("Newton kök olmayan düz bölgeye yakınsarsa ikiye bölmeye geçilir", () => {
+  // Bu akışlarda Newton ~%-90'da durur ama NPV sıfır değildir; eskiden null dönüyordu.
+  const day = (n: number) => new Date(Date.UTC(2000, 0, 1) + n * 86_400_000).toISOString().slice(0, 10);
+  const flows = [
+    { date: day(0), amount: -741 },
+    { date: day(1604), amount: 1435 },
+    { date: day(4788), amount: -3209 },
+    { date: day(5549), amount: 27 },
+  ];
+  const r = xirr(flows);
+  assert.ok(r != null, "çözüm bulunmalı");
+  // Kök çok dik bir bölgede (%-80 ile %-90 arası): iki yanında NPV'nin işareti değişmeli
+  const t0 = Date.parse(`${flows[0].date}T00:00:00Z`);
+  const npv = (x: number) => flows.reduce((s, f) => s + f.amount / Math.pow(1 + x, (Date.parse(`${f.date}T00:00:00Z`) - t0) / 86_400_000 / 365), 0);
+  assert.ok(r > -0.9 && r < -0.8, `r=${r}`);
+  assert.ok(npv(r - 1e-6) > 0 && npv(r + 1e-6) < 0, `npv(r±)=${npv(r - 1e-6)}, ${npv(r + 1e-6)}`);
+});
+
+await test("1 yıldan kısa: toplam getiri + uyarılı yıllık; aşırı değer 'anlamlı değil'", () => {
+  const a = annualReturn([{ date: "2026-01-01", amount: -1000 }, { date: "2026-03-02", amount: 1100 }]);
+  assert.equal(a.short, true);
+  near(a.totalPct, 10, 1e-9);
+  assert.ok(a.pct != null && a.pct > 70 && a.pct < 90, `pct=${a.pct}`);
+  assert.match(a.note ?? "", /yıllıklandırılmış/);
+  const b = annualReturn([{ date: "2026-01-01", amount: -1000 }, { date: "2026-02-05", amount: 2000 }]);
+  assert.equal(b.pct, null);
+  near(b.totalPct, 100, 1e-9);
+  assert.match(b.note ?? "", /anlamlı değil \(süre çok kısa\)/);
+  const c = annualReturn([{ date: "2021-01-01", amount: -1000 }, { date: "2022-01-01", amount: 1100 }]);
+  assert.equal(c.short, false);
+  assert.equal(c.note, null);
+  near(c.pct, 10, 1e-6);
+});
+
 await test("en büyük düşüş", () => {
   near(maxDrawdown([100, 120, 90, 130, 104]), 25);
   assert.equal(maxDrawdown([]), null);
@@ -164,6 +198,30 @@ await test("Excel-TR biçimi: BOM, ';', ondalık virgül, gg.aa.yyyy; tırnak ve
   assert.equal(csv.detectDelimiter("a,b,c\n1,2,3"), ",");
 });
 
+await test("CSV formül enjeksiyonu: = + - @ sekme ile başlayan metne ' eklenir, sayılar sayı kalır", () => {
+  const text = csv.toCsv(["A", "B"], [["=HYPERLINK(\"x\")", -12.5], ["+1", "@SUM(A1)"], ["-cmd", "\tx"], ["THYAO", "Not"]]);
+  const rows = csv.parseCsv(text);
+  assert.deepEqual(rows.slice(1), [
+    ["'=HYPERLINK(\"x\")", "-12,5"],
+    ["'+1", "'@SUM(A1)"],
+    ["'-cmd", "'\tx"],
+    ["THYAO", "Not"],
+  ]);
+});
+
+await test("sayı okuma: 0.500 binlik sayılmaz; 1.234 Türkçe okunur ama belirsiz işaretlenir", () => {
+  assert.equal(csv.parseNumberLoose("0.500"), 0.5);
+  assert.equal(csv.parseNumberLoose("0,500"), 0.5);
+  assert.equal(csv.parseNumberLoose("-0.250"), -0.25);
+  assert.equal(csv.parseNumberLoose("1.234"), 1234);
+  assert.equal(csv.parseNumberLoose("1,234"), 1.234);
+  assert.equal(csv.isAmbiguousNumber("1.234"), true);
+  assert.equal(csv.isAmbiguousNumber("1,234"), true);
+  assert.equal(csv.isAmbiguousNumber("0.500"), false);
+  assert.equal(csv.isAmbiguousNumber("1.234,5"), false);
+  assert.equal(csv.isAmbiguousNumber("12,5"), false);
+});
+
 let exported = "";
 let before: ReturnType<typeof holdingsSnapshot> = {};
 await test("dışa aktar → boş veritabanına içe aktar → aynı pozisyonlar", () => {
@@ -179,7 +237,7 @@ await test("dışa aktar → boş veritabanına içe aktar → aynı pozisyonlar
   add({ accountId: midas.id, assetType: "foreign", symbol: "AAPL", side: "buy", quantity: "5", price: "198,4", currency: "USD", date: "2025-04-22", fee: "1" }, 37.95);
   add({ accountId: midas.id, assetType: "foreign", symbol: "AAPL", side: "sell", quantity: "2", price: "231,1", currency: "USD", date: "2026-01-15", fee: "1" }, 43.05);
   add({ accountId: banka.id, assetType: "gold", symbol: "GRAM", side: "buy", quantity: "20", price: "3410", date: "2025-05-09" });
-  add({ accountId: banka.id, assetType: "fund", symbol: "AFT", side: "buy", quantity: "1200", price: "0,238517", date: "2025-10-14" });
+  add({ accountId: banka.id, assetType: "fund", symbol: "AFT", side: "buy", quantity: "1200", price: "0,238517", date: "2025-10-14", note: "=2+3 @x" });
   before = holdingsSnapshot();
   exported = io.exportTransactionsCsv();
   assert.ok(exported.startsWith("﻿"), "BOM");
@@ -199,6 +257,8 @@ await test("dışa aktar → boş veritabanına içe aktar → aynı pozisyonlar
   assert.deepEqual(holdingsSnapshot(), before);
   const note = portfolio.activeTransactions("real").find((t) => t.note?.startsWith("İlk"))!.note;
   assert.equal(note, 'İlk; noktalı "virgül"');
+  assert.match(exported, /;'=2\+3 @x\r\n/, "formül koruması");
+  assert.equal(portfolio.activeTransactions("real").find((t) => t.symbol === "AFT")!.note, "=2+3 @x", "içe aktarmada ' geri alınır");
 });
 
 await test("aynı dosya ikinci kez: hepsi mükerrer, hiçbir şey eklenmez", () => {
@@ -239,6 +299,49 @@ await test("başka kurum dosyası: sütun eşleme ve varsayılan tür", () => {
   assert.equal(pv2.counts.valid, 1);
 });
 
+await test("dosyada aynı satır iki kez: ikisi de eklenir; yeniden yüklemede ikisi de mükerrer", () => {
+  const n = portfolio.activeTransactions("real").length;
+  const twice = [
+    "Tarih;Hesap;Tür;Sembol;Yön;Miktar;Fiyat;Para birimi",
+    "08.06.2026;Ana hesap;BIST hissesi;EREGL;Alış;10;45,2;TRY",
+    "08.06.2026;Ana hesap;BIST hissesi;EREGL;Alış;10;45,2;TRY",
+  ].join("\n");
+  const pv = io.previewImport(twice);
+  assert.equal(pv.counts.valid, 2);
+  assert.equal(pv.counts.duplicate, 0);
+  assert.ok(pv.rows.every((r) => r.info.some((x) => /dosyada 2 kez var/.test(x))), JSON.stringify(pv.rows.map((r) => r.info)));
+  assert.equal(io.commitImport(twice).inserted, 2);
+  assert.equal(portfolio.activeTransactions("real").length, n + 2);
+  const again = io.commitImport(twice);
+  assert.equal(again.inserted, 0);
+  assert.equal(again.skippedDuplicates, 2);
+  // Üç kez geçen satır: veritabanında 2 tane var → yalnızca biri yeni
+  const thrice = io.previewImport(twice + "\n08.06.2026;Ana hesap;BIST hissesi;EREGL;Alış;10;45,2;TRY");
+  assert.equal(thrice.counts.duplicate, 2);
+  assert.equal(thrice.counts.valid, 1);
+});
+
+await test("belirsiz sayı önizlemede uyarı olarak gösterilir (kaydı engellemez)", () => {
+  const pv = io.previewImport(["Tarih;Hesap;Tür;Sembol;Yön;Miktar;Fiyat;Para birimi", "09.06.2026;Ana hesap;BIST hissesi;SISE;Alış;1.250;0.500;TRY"].join("\n"));
+  assert.equal(pv.counts.invalid, 0);
+  assert.equal(pv.rows[0].quantity, 1250);
+  assert.equal(pv.rows[0].price, 0.5);
+  assert.equal(pv.rows[0].warnings.length, 1, JSON.stringify(pv.rows[0].warnings));
+  assert.match(pv.rows[0].warnings[0], /Belirsiz sayı: Miktar "1\.250"/);
+});
+
+await test("işlemde hesap: ad ya da numara; bulunamazsa varsayılana düşmez, hata verir", () => {
+  const main = accounts.defaultAccount();
+  const other = accounts.createAccount({ name: "Deneme Kurum" });
+  const base = { mode: "real", assetType: "bist", symbol: "THYAO", side: "buy", quantity: "1", price: "10", currency: "TRY", date: "2026-06-10" };
+  assert.equal(portfolio.parseTransactionInput({ ...base, account: other.id }).accountId, other.id);
+  assert.equal(portfolio.parseTransactionInput({ ...base, account: String(other.id) }).accountId, other.id);
+  assert.equal(portfolio.parseTransactionInput({ ...base, account: "deneme kurum" }).accountId, other.id);
+  assert.equal(portfolio.parseTransactionInput(base).accountId, main.id);
+  assert.throws(() => portfolio.parseTransactionInput({ ...base, account: 9999 }), /hesap yok/);
+  assert.throws(() => portfolio.parseTransactionInput({ ...base, account: "Olmayan" }), /hesap yok/);
+});
+
 // ---- Geçiş -------------------------------------------------------------------------------
 console.log("Şema geçişi");
 
@@ -277,6 +380,9 @@ await test("C öncesi veritabanı 'Ana hesap'a taşınır, toplamlar değişmez,
     backup.listBackups().some((b) => b.kind === "gecis-oncesi"),
     "geçiş öncesi yedek",
   );
+  // Eski şemalı yedek: geçici kopyada geçişler çalışır, sütun denetimi geçer
+  const old = backup.listBackups().find((b) => b.kind === "gecis-oncesi")!;
+  assert.equal(backup.validateBackupFile(path.join(db.backupDir(), old.name)).schemaVersion, 8);
 });
 
 await test("pozisyon notu: stop alarmında satış planı hatırlatılır", async () => {
@@ -321,6 +427,14 @@ await test("geçersiz dosya reddedilir; en fazla 14 yedek tutulur", () => {
   j.exec("CREATE TABLE x (a); INSERT INTO x VALUES (1);");
   j.close();
   assert.throws(() => backup.validateBackupFile(junk), /yatırım uygulaması yedeği değil|eksik/);
+  // Tablo adları doğru ama sütunlar eksik (güncel şema sürümü): reddedilir
+  const hollow = path.join(DIR, "oyuk.db");
+  const h = new DatabaseSync(hollow);
+  h.exec("CREATE TABLE transactions (id INTEGER PRIMARY KEY, date TEXT); CREATE TABLE settings (key TEXT); CREATE TABLE orders (id INTEGER); CREATE TABLE portfolio_snapshots (id INTEGER); CREATE TABLE accounts (id INTEGER);");
+  h.exec(`PRAGMA user_version = ${db.SCHEMA_VERSION}`);
+  h.close();
+  assert.throws(() => backup.validateBackupFile(hollow), /beklenen sütunlar eksik.*transactions/);
+  assert.deepEqual(fs.readdirSync(DIR).filter((n) => n.includes("dogrula")), [], "geçici kopya silinir");
   for (let i = 0; i < 16; i++) backup.createBackup("elle");
   assert.equal(backup.listBackups().length, backup.KEEP_BACKUPS);
 });

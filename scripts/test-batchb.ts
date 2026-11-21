@@ -129,6 +129,24 @@ test("araç sonucundaki değerler (yuvarlanmış) doğrulanır, uydurma rakam i�
   assert.deepEqual(unverifiedNumbers("BTC 61,838.26 USD", ['{"fiyat":61838.26}']), []);
 });
 
+test("endeks adları, ay adıyla günler ve yıllar rakam sayılmaz", () => {
+  const out = "BIST 100 ve BIST-30 yükseldi; S&P 500, Nasdaq 100 ve Nikkei 225 karışık. 12 Kasım'da, 3-14 Mart 2026 arasında, Kasım 21 itibarıyla ve 2025 yılında.";
+  assert.deepEqual(unverifiedNumbers(out, []), []);
+  // Ay adı yanında olsa da 31'den büyük sayı ve ay adı olmayan küçük sayı yakalanır
+  assert.deepEqual(unverifiedNumbers("Kasım 45 bin adet; 12 hisse", []), ["45 bin", "12"]);
+});
+
+test("bin / milyon / milyar çarpanları", () => {
+  assert.deepEqual(unverifiedNumbers("Değer 1,5 milyon TL", ['{"deger_tl":1500000}']), []);
+  assert.deepEqual(unverifiedNumbers("Değer 1,52 milyon TL", ['{"deger_tl":1523456}']), []);
+  assert.deepEqual(unverifiedNumbers("Ciro 2,3 milyar TL", ["Ciro 2,3 milyar TL oldu"]), []);
+  assert.deepEqual(unverifiedNumbers("Ciro 2,3 milyar TL", ['{"ciro":2300000000}']), []);
+  assert.deepEqual(unverifiedNumbers("Değer 15 bin TL", ['{"deger":15000}']), []);
+  assert.deepEqual(unverifiedNumbers("Değer 3 milyon TL", ['{"deger_tl":1500000}']), ["3 milyon"]);
+  // "binde 5" çarpan değildir (küçük sayı, atlanır)
+  assert.deepEqual(extractNumbers("binde 5 komisyon").length, 0);
+});
+
 // ---- TWR ve kıyaslama --------------------------------------------------------------------------
 console.log("Getiri ve kıyaslama");
 test("para eklemek getiri sayılmaz (zaman ağırlıklı getiri)", () => {
