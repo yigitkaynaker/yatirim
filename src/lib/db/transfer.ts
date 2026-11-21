@@ -53,6 +53,12 @@ export const ID_TABLES = new Set<string>([
   "alarm_events",
 ]);
 
+/**
+ * Gizli ayarlar (settings anahtarları): JSON dökümüne varsayılan olarak girmez. Bildirim anahtar
+ * çifti birlikte ele alınır (açık anahtar tek başına geri yüklenirse gizli anahtarla uyuşmaz).
+ */
+export const SECRET_SETTINGS: readonly string[] = ["anthropic_api_key", "vapid_private_key", "vapid_public_key"];
+
 export const DUMP_FORMAT = "yatirim-veri";
 
 export interface DataDump {
@@ -61,6 +67,8 @@ export interface DataDump {
   schemaVersion: number;
   exportedAt: string;
   source: "sqlite" | "pg";
+  /** Gizli ayarlar (API anahtarı, bildirim anahtarları) dahil mi; eski dökümlerde yok (dahildir) */
+  includesSecrets?: boolean;
   tables: Record<string, Row[]>;
 }
 
@@ -77,14 +85,31 @@ export async function tableColumns(db: Db, table: string): Promise<string[]> {
   return rows.map((r) => r.column_name);
 }
 
-export async function dumpAll(db: Db, opts: { includeCaches?: boolean; schemaVersion: number }): Promise<DataDump> {
+function isSecretRow(r: Row): boolean {
+  return SECRET_SETTINGS.includes(String(r.key));
+}
+
+/** Tüm tablolar. includeSecrets verilmezse gizli ayarlar (SECRET_SETTINGS) dökümden çıkarılır. */
+export async function dumpAll(
+  db: Db,
+  opts: { includeCaches?: boolean; includeSecrets?: boolean; schemaVersion: number },
+): Promise<DataDump> {
   const tables: Record<string, Row[]> = {};
   for (const t of DATA_TABLES) {
     if (!opts.includeCaches && CACHE_TABLES.has(t)) continue;
     const order = (await tableColumns(db, t)).includes("id") ? " ORDER BY id" : "";
-    tables[t] = await db.all<Row>(`SELECT * FROM ${t}${order}`);
+    let rows = await db.all<Row>(`SELECT * FROM ${t}${order}`);
+    if (t === "settings" && !opts.includeSecrets) rows = rows.filter((r) => !isSecretRow(r));
+    tables[t] = rows;
   }
-  return { format: DUMP_FORMAT, schemaVersion: opts.schemaVersion, exportedAt: new Date().toISOString(), source: db.dialect, tables };
+  return {
+    format: DUMP_FORMAT,
+    schemaVersion: opts.schemaVersion,
+    exportedAt: new Date().toISOString(),
+    source: db.dialect,
+    includesSecrets: !!opts.includeSecrets,
+    tables,
+  };
 }
 
 export interface LoadResult {
@@ -114,6 +139,7 @@ function toValue(v: unknown, type?: string): SqlValue {
  * Dökümü hedef veritabanına yazar. replace: önce tüm veri tablolarını boşaltır.
  * Hepsi tek işlemde; hata olursa hiçbir şey değişmez. Bilinmeyen tablo / sütunlar atlanır.
  * Yabancı anahtarlar işlem sonuna ertelenir (işlem ↔ emir döngüsel bağları için).
+ * Dökümde olmayan gizli ayarlar (gizli anahtarlar hariç indirilmiş dosya) hedefteki değerleriyle korunur.
  */
 export async function loadAll(db: Db, dump: DataDump, opts: { replace?: boolean; batch?: number } = {}): Promise<LoadResult> {
   const counts: Record<string, number> = {};
@@ -121,6 +147,12 @@ export async function loadAll(db: Db, dump: DataDump, opts: { replace?: boolean;
   await db.tx(async () => {
     if (db.dialect === "pg") await db.exec("SET CONSTRAINTS ALL DEFERRED");
     else await db.exec("PRAGMA defer_foreign_keys = ON");
+    // Dökümde olmayan gizli ayarlar silinmesin: önce mevcut değerleri al, yüklemeden sonra geri yaz.
+    const dumpKeys = new Set((dump.tables.settings ?? []).map((r) => String(r.key)));
+    const keep =
+      opts.replace && dump.tables.settings
+        ? (await db.all<Row>("SELECT * FROM settings")).filter((r) => isSecretRow(r) && !dumpKeys.has(String(r.key)))
+        : [];
     if (opts.replace) {
       for (const t of [...DATA_TABLES].reverse()) {
         if (dump.tables[t] === undefined && CACHE_TABLES.has(t)) continue; // dökümde yoksa önbelleğe dokunma
@@ -143,6 +175,10 @@ export async function loadAll(db: Db, dump: DataDump, opts: { replace?: boolean;
         await db.run(`INSERT INTO ${t} (${cols.join(", ")}) VALUES ${values}`, params);
         counts[t] += part.length;
       }
+    }
+    for (const r of keep) {
+      const cols = Object.keys(r);
+      await db.run(`INSERT INTO settings (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => toValue(r[c])));
     }
     if (db.dialect === "pg") await resetSequences(db);
   });

@@ -4,10 +4,12 @@ import { dumpAll, loadAll, parseDump, rowCounts, type DataDump } from "./db/tran
 import { ValidationError } from "./portfolio";
 
 // "Tüm verilerimi indir (JSON)" ve "JSON'dan geri yükle" (bulut modunda dosya yedeğinin yerine;
-// yerel modda da çalışır). Dosya API anahtarı ve bildirim anahtarları dahil tüm ayarları içerir.
+// yerel modda da çalışır). Gizli anahtarlar (Claude API anahtarı, bildirim anahtarları) varsayılan
+// olarak dosyaya GİRMEZ; includeSecrets ile açıkça istenirse girer. Geri yüklemede dosyada olmayan
+// gizli anahtarlar mevcut değerleriyle korunur.
 
-export async function exportAllData(opts: { includeCaches?: boolean } = {}): Promise<DataDump> {
-  return dumpAll(await getDb(), { includeCaches: opts.includeCaches, schemaVersion: SCHEMA_VERSION });
+export async function exportAllData(opts: { includeCaches?: boolean; includeSecrets?: boolean } = {}): Promise<DataDump> {
+  return dumpAll(await getDb(), { includeCaches: opts.includeCaches, includeSecrets: opts.includeSecrets, schemaVersion: SCHEMA_VERSION });
 }
 
 export interface ImportSummary {

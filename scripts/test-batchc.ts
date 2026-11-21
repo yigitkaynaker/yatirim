@@ -442,7 +442,7 @@ await test("JSON veri dökümü: indir → sıfırla → geri yükle → aynı p
   const { rowCounts } = await import("../src/lib/db/transfer");
   const snap = await holdingsSnapshot();
   const counts = await rowCounts(await db.getDb());
-  const dump = JSON.parse(JSON.stringify(await dx.exportAllData({ includeCaches: true }))) as unknown;
+  const dump = JSON.parse(JSON.stringify(await dx.exportAllData({ includeCaches: true, includeSecrets: true }))) as unknown;
   await freshDb();
   const r = await dx.importAllData(dump);
   assert.equal(r.transactions, counts.transactions);
@@ -452,6 +452,36 @@ await test("JSON veri dökümü: indir → sıfırla → geri yükle → aynı p
   const acc = await accounts.createAccount({ name: "Döküm sonrası" });
   assert.ok(acc.id > 1);
   await assert.rejects(async () => dx.importAllData({ format: "baska", tables: {} }), /veri dosyası değil/);
+});
+
+await test("JSON veri dökümü: gizli anahtarlar varsayılan olarak dahil değil; geri yüklemede mevcutlar korunur", async () => {
+  const dx = await import("../src/lib/dataExport");
+  const conn = await db.getDb();
+  const setKey = (k: string, v: string) =>
+    conn.run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [k, v]);
+  const val = async (k: string) => (await conn.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", [k]))?.value;
+  await setKey("anthropic_api_key", "sk-ant-eski");
+  await setKey("vapid_private_key", "gizli-eski");
+  await setKey("vapid_public_key", "acik-eski");
+  await setKey("kap_notify", "1");
+  const plain = (await dx.exportAllData()) as unknown as { includesSecrets: boolean; tables: { settings: { key: string; value: string }[] } };
+  assert.equal(plain.includesSecrets, false);
+  const keys = plain.tables.settings.map((r) => r.key);
+  for (const k of ["anthropic_api_key", "vapid_private_key", "vapid_public_key"]) assert.ok(!keys.includes(k), `${k} dökümde olmamalı`);
+  assert.ok(keys.includes("kap_notify"));
+  assert.ok(!JSON.stringify(plain).includes("sk-ant-eski"));
+  const full = (await dx.exportAllData({ includeSecrets: true })) as unknown as typeof plain;
+  assert.ok(full.tables.settings.some((r) => r.key === "anthropic_api_key" && r.value === "sk-ant-eski"));
+  // Mevcut anahtarlar değişir; gizlisiz döküm geri yüklenince bunlar KORUNUR
+  await setKey("anthropic_api_key", "sk-ant-yeni");
+  await setKey("kap_notify", "0");
+  await dx.importAllData(JSON.parse(JSON.stringify(plain)));
+  assert.equal(await val("anthropic_api_key"), "sk-ant-yeni");
+  assert.equal(await val("vapid_private_key"), "gizli-eski");
+  assert.equal(await val("kap_notify"), "1", "diğer ayarlar dosyadan gelir");
+  // Gizli anahtarlı döküm geri yüklenince dosyadaki değerler gelir
+  await dx.importAllData(JSON.parse(JSON.stringify(full)));
+  assert.equal(await val("anthropic_api_key"), "sk-ant-eski");
 });
 
 await db.closeDb();

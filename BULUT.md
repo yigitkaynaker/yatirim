@@ -62,7 +62,7 @@ Kontrol: not dosyasında üç satır var. Bu dosyayı kimseyle paylaşmayın.
 
    ```bash
    git remote add origin https://github.com/KULLANICI/yatirim.git
-   git push -u origin master
+   git push -u origin main
    ```
 
    İlk seferde tarayıcıda GitHub girişi istenir; onaylayın.
@@ -103,15 +103,34 @@ Kontrol: not dosyanızda `postgresql://...` ile başlayan iki adres var; biri `-
      | `DATABASE_URL_UNPOOLED` | Neon'un havuzsuz adresi |
      | `ANTHROPIC_API_KEY` | (isteğe bağlı) Claude anahtarınız; boş bırakıp sonra Ayarlar'dan da ekleyebilirsiniz |
 
+   **Önemli — veritabanı değişkenleri yalnızca Production:** `DATABASE_URL` ve `DATABASE_URL_UNPOOLED`
+   eklenirken "Environments" seçiminde **yalnızca Production** işaretli olsun (Preview ve Development
+   işaretini kaldırın). Import ekranında bu seçim yoksa, yayından sonra **Settings → Environment
+   Variables** bölümünde iki değişkeni **Edit** ile açıp yalnızca **Production** bırakın. Böylece
+   başka bir dal için açılan önizleme (Preview) yayınları gerçek verilerinize bağlanamaz.
+   Ek güvence: `vercel-build` şema geçişini (`db:migrate`) yalnızca `VERCEL_ENV=production` iken
+   çalıştırır; önizleme yayınında "geçiş atlandı" yazar ve üretim veritabanına dokunmaz.
+
 4. **Deploy**. Yayına alma sırasında veritabanı tabloları **otomatik** kurulur
    (`vercel-build` önce `db:migrate` çalıştırır).
 5. Bitince proje **Settings → General → Node.js Version**: **24.x** seçili olsun (değilse seçip
    **Deployments** sekmesinden son yayını **Redeploy** edin).
+6. **Settings → Functions → Fluid Compute** açık olsun (yeni projelerde varsayılan olarak açıktır).
+   Yavaş görevler (`/api/cron/slow`: haber analizi, günlük özet) 300 saniyeye kadar sürebilir;
+   Hobby planında bu süre ancak Fluid Compute açıkken kullanılabilir (kapalıyken sınır çok daha kısadır
+   ve bu görevler yarıda kesilir).
 
-> Neon'u Vercel'e bağlamanın bir diğer yolu: Vercel projesinde **Storage → Connect Database → Neon**
-> (Neon entegrasyonu). Bu yol `DATABASE_URL` ve `DATABASE_URL_UNPOOLED` değişkenlerini kendisi ekler;
-> bölge olarak yine **Frankfurt** seçin. Yukarıdaki elle ekleme de aynı sonucu verir; ikisinden
-> birini yapmanız yeterli.
+> **Neon entegrasyonu: ya o, ya elle ekleme — ikisi birden değil.** Önerilen yol yukarıdaki elle
+> eklemedir. Vercel projesinde **Storage → Connect Database → Neon** (Neon entegrasyonu) da aynı işi
+> görür ama kendi değişkenlerini ekler: `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `PGHOST`,
+> `PGHOST_UNPOOLED`, `PGUSER`, `PGDATABASE`, `PGPASSWORD`, `POSTGRES_URL`, `POSTGRES_URL_NON_POOLING`,
+> `POSTGRES_URL_NO_SSL`, `POSTGRES_PRISMA_URL`, `POSTGRES_USER`, `POSTGRES_HOST`, `POSTGRES_PASSWORD`,
+> `POSTGRES_DATABASE` (ve `NEON_PROJECT_ID`). Uygulama yalnızca `DATABASE_URL` ve `DATABASE_URL_UNPOOLED`'ı okur.
+> - Elle eklediyseniz entegrasyonu **kurmayın** (aynı adlı değişkenler çakışır ya da sessizce değişir).
+> - Entegrasyonu seçerseniz yukarıdaki tablodan `DATABASE_URL` ve `DATABASE_URL_UNPOOLED`'ı **eklemeyin**;
+>   bölge olarak **Frankfurt** seçin ve entegrasyon ayarlarında değişkenlerin yalnızca **Production**
+>   için eklendiğini kontrol edin ("Preview" için dal açma özelliği açıksa önizlemeler ayrı bir Neon
+>   dalına bağlanır; bu da kabul edilebilir, ama asla üretim veritabanına değil).
 
 Kontrol: Vercel "Congratulations" der ve bir adres verir (örn. `https://yatirim-abcd.vercel.app`).
 Adresi açın, giriş sayfası gelsin, şifrenizle girin. Bu adresi not dosyanıza `APP_URL` olarak yazın.
@@ -189,7 +208,8 @@ Kontrol: birkaç saniye sonra iş yeşil tik alır. GitHub zamanlanmış işleri
 1. Bulut adresinde giriş yapın → **Ayarlar**:
    - "Nöbet (otomatik kontroller)" kartında **Son nöbet: x dk önce** görünmeli. Mesai içinde 1–2
      dakikadan, mesai dışında 30 dakikadan eski olmamalı; eskiyse sarı uyarı çıkar.
-   - "Yedekleme (bulut)": **Tüm verilerimi indir (JSON)** ile bir kopya indirin ve saklayın.
+   - "Yedekleme (bulut)": **Tüm verilerimi indir (JSON)** ile bir kopya indirin ve saklayın
+     (aşağıdaki "Yedek" maddesindeki uyarıyı okuyun).
 2. Küçük bir sanal pozisyon açın, sonra koşulu hemen sağlanan bir sanal emir verin (örn. BTC,
    "fiyat ≥ 1"). Emir birkaç saniye içinde **Emirler**'de "gerçekleşti" olmalı.
 3. Telefonda bulut adresini açın → "Ana ekrana ekle" → uygulamadan **Ayarlar → Bildirimleri aç**.
@@ -210,7 +230,22 @@ Kontrol: birkaç saniye sonra iş yeşil tik alır. GitHub zamanlanmış işleri
   Vercel Hobby kişisel kullanım içindir.
 - **Yedek:** Bulutta dosya yedeği yoktur. Ayarlar'dan ara sıra **Tüm verilerimi indir (JSON)**.
   Neon ayrıca kısa bir süre geriye dönebilir (panel → **Restore**; ücretsiz planda süre kısadır).
-  JSON dosyası 4 MB'tan büyükse geri yükleme için `tasi:neon` benzeri komut satırı yolunu kullanın.
+- **JSON dosyası hassastır:** tüm işlemleriniz, hesaplarınız, notlarınız ve sohbetleriniz içindedir.
+  Kimseyle paylaşmayın, e-postayla göndermeyin, herkese açık bir klasöre koymayın. Gizli anahtarlar
+  (Claude API anahtarı, bildirim anahtarları) varsayılan olarak dosyaya **girmez**; "gizli anahtarları
+  da dahil et" kutusunu işaretlerseniz girer — o dosyayı bir şifre gibi saklayın. Anahtarsız bir dosyayı
+  geri yüklediğinizde mevcut anahtarlarınız korunur.
+- **Büyük JSON dosyasını geri yükleme (4 MB'tan büyük):** tarayıcıdan yükleme Vercel'in istek sınırı
+  yüzünden ~4 MB ile sınırlıdır. Daha büyük dosyalar bilgisayardan, komut satırıyla yüklenir
+  (`.env.bulut` dosyasında `DATABASE_URL_UNPOOLED` hazır olmalı, bkz. 5. adım):
+
+  ```bash
+  npm run geri-yukle:json -- --dosya yatirim-veri-2026-11-21.json --deneme
+  npm run geri-yukle:json -- --dosya yatirim-veri-2026-11-21.json --uzerine-yaz
+  ```
+
+  İlki yalnızca dener ve tablo tablo sayıları karşılaştırır (Neon değişmez); ikincisi Neon'daki
+  verilerin **yerine** dosyadakileri yazar (tek işlemde; hata olursa hiçbir şey değişmez).
 - **Fiyat kaynakları:** Yahoo bazen bulut sunucularına "çok istek" (429) hatası verir; o sırada son
   bilinen fiyat "gecikmeli" işaretiyle gösterilir ve emir/alarm bayat fiyatla **çalışmaz**. Binance
   engellerse otomatik olarak `data-api.binance.vision` kullanılır. TEFAS / KAP / altın kaynakları

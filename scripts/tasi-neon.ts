@@ -49,7 +49,7 @@ try {
   console.log(`Kaynak: ${source} (SQLite şema ${MIGRATIONS.length})`);
   await migratePg(pg, (m) => console.log(`[şema] ${m}`));
 
-  const dump = await dumpAll(srcDb, { includeCaches: true, schemaVersion: MIGRATIONS.length });
+  const dump = await dumpAll(srcDb, { includeCaches: true, includeSecrets: true, schemaVersion: MIGRATIONS.length });
   const expected = await rowCounts(srcDb);
   const existing = await rowCounts(pg, ["transactions", "orders", "alarms"]);
   const hasData = Object.values(existing).some((n) => n > 0);

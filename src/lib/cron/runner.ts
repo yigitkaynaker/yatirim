@@ -168,12 +168,18 @@ export async function claimTask(db: Db, t: TaskDef, now = Date.now()): Promise<b
   return r.changes === 1;
 }
 
-async function releaseTask(db: Db, t: TaskDef, ok: boolean, error: string | null, durationMs: number) {
-  await db.run(
+/**
+ * Kilidi bırakır. Yalnızca kilidin sahibi bırakabilir: claimedAt, alımda yazılan last_run_at'tir.
+ * Kilit süresi dolup görev başka bir çağrıca yeniden alındıysa geç biten eski çağrı yeni sahibin
+ * kilidini açmaz (false döner).
+ */
+export async function releaseTask(db: Db, t: TaskDef, claimedAt: number, ok: boolean, error: string | null, durationMs: number): Promise<boolean> {
+  const r = await db.run(
     `UPDATE task_leases SET locked_until = 0, last_ok_at = CASE WHEN ? = 1 THEN ? ELSE last_ok_at END, last_error = ?, last_duration_ms = ?
-     WHERE name = ?`,
-    [ok ? 1 : 0, Date.now(), error, durationMs, t.name],
+     WHERE name = ? AND last_run_at = ?`,
+    [ok ? 1 : 0, Date.now(), error, durationMs, t.name, claimedAt],
   );
+  return r.changes === 1;
 }
 
 function summarize(v: unknown): string {
@@ -188,16 +194,16 @@ function summarize(v: unknown): string {
 
 /** Görevi kilitle, çalıştır, kilidi bırak. Hata fırlatmaz. */
 async function runOne(db: Db, t: TaskDef): Promise<string> {
-  if (!(await claimTask(db, t))) return "kilitli/atlandı";
   const started = Date.now();
+  if (!(await claimTask(db, t, started))) return "kilitli/atlandı";
   try {
     const r = await t.run();
-    await releaseTask(db, t, true, null, Date.now() - started);
+    await releaseTask(db, t, started, true, null, Date.now() - started);
     return summarize(r);
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
     console.error(`[nöbet] ${t.name} hatası`, err);
-    await releaseTask(db, t, false, msg.slice(0, 500), Date.now() - started).catch(() => {});
+    await releaseTask(db, t, started, false, msg.slice(0, 500), Date.now() - started).catch(() => {});
     return `hata: ${msg.slice(0, 150)}`;
   }
 }

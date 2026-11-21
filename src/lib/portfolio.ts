@@ -256,10 +256,27 @@ async function insert(input: TransactionInput, extras: InsertExtras = {}): Promi
   return id;
 }
 
+/** Pozisyon kilidi anahtarı (pozisyonlar mod + varlık + hesap başınadır; sanalda hesap yok) */
+export function positionLockKey(mode: Mode, assetType: AssetType, symbol: string, accountId: number | null): string {
+  return `pozisyon:${mode}:${assetType}:${symbol}:${mode === "virtual" ? "" : (accountId ?? "")}`;
+}
+
+/**
+ * Pozisyon kilitleri (işlem sonuna kadar). Eldeki miktarı kontrol edip sonra yazan her işlem
+ * (kayıt, düzenleme, silme, sanaldan gerçeğe, emir, içe aktarma) önce bunu çağırır; Postgres'te
+ * READ COMMITTED altında eşzamanlı iki satış birlikte eldekini aşamaz. Kilitlenme olmasın diye
+ * anahtarlar sıralı alınır. SQLite'ta etkisizdir (işlemler zaten tek tek çalışır).
+ */
+export async function lockPositions(keys: string[]): Promise<void> {
+  const db = await getDb();
+  for (const k of [...new Set(keys)].sort()) await db.lockKey(k);
+}
+
 /** Eldekinden fazla satışı engelleyerek işlem kaydeder. */
 export async function recordTransaction(input: TransactionInput, extras: InsertExtras = {}): Promise<Transaction> {
-  // Kontrol + ekleme tek işlemde (eşzamanlı iki satış birlikte eldekini aşmasın).
+  // Kilit + kontrol + ekleme tek işlemde (eşzamanlı iki satış birlikte eldekini aşmasın).
   return (await getDb()).tx(async () => {
+    await lockPositions([positionLockKey(input.mode, input.assetType, input.symbol, input.accountId)]);
     assertNoOversell([
       ...(await sameAsset(input.mode, input.assetType, input.symbol, input.accountId)),
       { ...input, id: Number.MAX_SAFE_INTEGER },
@@ -274,31 +291,54 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
 
 /** Düzenleme. İşlemin modu değiştirilemez (sanal → gerçek için convertVirtualPosition). */
 export async function updateTransaction(id: number, input: TransactionInput): Promise<Transaction | null> {
-  const existing = await getTransaction(id);
-  if (!existing) return null;
-  const mode = existing.mode;
-  const accountId = mode === "real" ? input.accountId : null;
-  if (!existing.convertedAt) {
-    assertNoOversell([...await sameAsset(mode, input.assetType, input.symbol, accountId, id), { ...input, id }]);
-    if (existing.assetType !== input.assetType || existing.symbol !== input.symbol || existing.accountId !== accountId) {
-      assertNoOversell(await sameAsset(mode, existing.assetType, existing.symbol, existing.accountId, id));
+  const db = await getDb();
+  return db.tx(async () => {
+    const before = await getTransaction(id);
+    if (!before) return null;
+    const mode = before.mode;
+    const accountId = mode === "real" ? input.accountId : null;
+    await lockPositions([
+      positionLockKey(mode, before.assetType, before.symbol, before.accountId),
+      positionLockKey(mode, input.assetType, input.symbol, accountId),
+    ]);
+    // Kilit alındıktan sonra güncel hâli (bu arada değişmiş / silinmiş olabilir)
+    const existing = await getTransaction(id);
+    if (!existing) return null;
+    if (
+      existing.assetType !== before.assetType ||
+      existing.symbol !== before.symbol ||
+      existing.accountId !== before.accountId
+    ) {
+      throw new ConflictError("İşlem bu sırada başka bir yerden değiştirildi; sayfayı yenileyip tekrar deneyin.");
     }
-  }
-  // Tarih ya da para birimi değiştiyse işlem tarihi kuru yeniden alınır.
-  const fxTry =
-    input.currency === "TRY" ? 1 : existing.currency === input.currency && existing.date === input.date ? existing.fxTry : null;
-  await (await getDb()).run(`UPDATE transactions SET asset_type=?, symbol=?, side=?, quantity=?, price=?, currency=?, date=?, note=?,
-         fx_try=?, account_id=?, fee=?, updated_at=? WHERE id=?`, [input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, fxTry, accountId, input.fee, sqlNow(), id]);
-  if (fxTry == null) background(() => ensureFxRates({ force: true }));
-  return await getTransaction(id);
+    if (!existing.convertedAt) {
+      assertNoOversell([...await sameAsset(mode, input.assetType, input.symbol, accountId, id), { ...input, id }]);
+      if (existing.assetType !== input.assetType || existing.symbol !== input.symbol || existing.accountId !== accountId) {
+        assertNoOversell(await sameAsset(mode, existing.assetType, existing.symbol, existing.accountId, id));
+      }
+    }
+    // Tarih ya da para birimi değiştiyse işlem tarihi kuru yeniden alınır.
+    const fxTry =
+      input.currency === "TRY" ? 1 : existing.currency === input.currency && existing.date === input.date ? existing.fxTry : null;
+    await db.run(`UPDATE transactions SET asset_type=?, symbol=?, side=?, quantity=?, price=?, currency=?, date=?, note=?,
+           fx_try=?, account_id=?, fee=?, updated_at=? WHERE id=?`, [input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, fxTry, accountId, input.fee, sqlNow(), id]);
+    if (fxTry == null) background(() => ensureFxRates({ force: true }));
+    return await getTransaction(id);
+  });
 }
 
 export async function deleteTransaction(id: number): Promise<boolean> {
-  const existing = await getTransaction(id);
-  if (!existing) return false;
-  if (!existing.convertedAt) assertNoOversell(await sameAsset(existing.mode, existing.assetType, existing.symbol, existing.accountId, id));
-  await (await getDb()).run("DELETE FROM transactions WHERE id = ?", [id]);
-  return true;
+  const db = await getDb();
+  return db.tx(async () => {
+    const before = await getTransaction(id);
+    if (!before) return false;
+    await lockPositions([positionLockKey(before.mode, before.assetType, before.symbol, before.accountId)]);
+    const existing = await getTransaction(id);
+    if (!existing) return false;
+    if (!existing.convertedAt) assertNoOversell(await sameAsset(existing.mode, existing.assetType, existing.symbol, existing.accountId, id));
+    await db.run("DELETE FROM transactions WHERE id = ?", [id]);
+    return true;
+  });
 }
 
 // ---- Sanal giriş ve dönüştürme ---------------------------------------------
@@ -402,13 +442,16 @@ export async function createVirtualEntry(body: unknown): Promise<Transaction> {
  */
 export async function convertVirtualPosition(body: unknown): Promise<Transaction> {
   const input = await parseTransactionInput({ ...(body as object), mode: "real", side: "buy" });
-  const virtual = await sameAsset("virtual", input.assetType, input.symbol, null);
-  if (virtual.length === 0) throw new ValidationError("Bu varlık için sanal pozisyon bulunamadı.");
-  assertNoOversell([...await sameAsset("real", input.assetType, input.symbol, input.accountId), { ...input, id: Number.MAX_SAFE_INTEGER }]);
-
   const db = await getDb();
-  const firstBuy = [...virtual].sort(bySequence).find((t) => t.side === "buy") ?? virtual[0];
   return db.tx(async () => {
+    await lockPositions([
+      positionLockKey("virtual", input.assetType, input.symbol, null),
+      positionLockKey("real", input.assetType, input.symbol, input.accountId),
+    ]);
+    const virtual = await sameAsset("virtual", input.assetType, input.symbol, null);
+    if (virtual.length === 0) throw new ValidationError("Bu varlık için sanal pozisyon bulunamadı.");
+    assertNoOversell([...await sameAsset("real", input.assetType, input.symbol, input.accountId), { ...input, id: Number.MAX_SAFE_INTEGER }]);
+    const firstBuy = [...virtual].sort(bySequence).find((t) => t.side === "buy") ?? virtual[0];
     const newId = await insert(input, { sourceId: firstBuy.id });
     const now = sqlNow();
     for (const t of virtual) {

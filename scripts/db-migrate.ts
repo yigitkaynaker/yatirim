@@ -6,6 +6,13 @@ import { dbFromDriver } from "../src/lib/db/core";
 import { migratePg } from "../src/lib/db/migratePg";
 import { PG_SCHEMA_VERSION } from "../src/lib/db/migrationsPg";
 
+// Vercel'de yalnızca üretim (Production) yayınında: önizleme (Preview) yayınları üretim
+// veritabanının şemasını değiştirmesin (değişkenler yanlışlıkla Preview'a da eklendiyse bile).
+if (process.env.VERCEL && process.env.VERCEL_ENV !== "production") {
+  console.log(`[db:migrate] Vercel ortamı "${process.env.VERCEL_ENV ?? "?"}" (üretim değil); geçiş atlandı.`);
+  process.exit(0);
+}
+
 const url = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 if (!url) {
   if (process.env.VERCEL) {

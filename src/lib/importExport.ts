@@ -3,7 +3,16 @@ import { background } from "./background";
 import { createHash } from "node:crypto";
 import { getDb } from "./db";
 import { ASSET_TYPE_INFO, ASSET_TYPES, isAssetType, normalizeSymbol, type AssetType } from "./assets";
-import { activeTransactions, getPortfolio, parseTransactionInput, recordTransaction, ValidationError, type TransactionInput } from "./portfolio";
+import {
+  activeTransactions,
+  getPortfolio,
+  lockPositions,
+  parseTransactionInput,
+  positionLockKey,
+  recordTransaction,
+  ValidationError,
+  type TransactionInput,
+} from "./portfolio";
 import { accountNames, createAccount, listAccounts } from "./accounts";
 import { listDividendRecords } from "./dividends";
 import { getYearlyReport } from "./reports";
@@ -368,14 +377,6 @@ async function run(text: string, opts: ImportOptions, mode: "preview" | "commit"
   try {
     await db.tx(async () => {
     if (opts.createAccounts) for (const name of unknownAccounts) await createAccount({ name });
-    // Mükerrer kontrolü yalnızca veritabanında ZATEN olan kayıtlara karşı yapılır. Dosyada aynı satır
-    // birden çok kez varsa (örn. aynı gün aynı fiyattan iki ayrı alım) bunlar ayrı işlemdir: k. tekrar,
-    // veritabanında o satırdan en az k tane varsa mükerrer sayılır (aynı dosyayı iki kez yüklemek yine güvenli).
-    const existing = new Map<string, number>();
-    for (const t of (await activeTransactions("real"))) {
-      const h = txHash({ date: t.date, symbol: t.symbol, side: t.side, quantity: t.quantity, price: t.price, accountId: t.accountId });
-      existing.set(h, (existing.get(h) ?? 0) + 1);
-    }
     const ordered = [...built].filter((b) => b.body).sort((a, b) => (a.row.date! < b.row.date! ? -1 : a.row.date! > b.row.date! ? 1 : a.row.line - b.row.line));
     const inputs = new Map<Built, TransactionInput>();
     const inFile = new Map<string, number>();
@@ -388,6 +389,16 @@ async function run(text: string, opts: ImportOptions, mode: "preview" | "commit"
       } catch (err) {
         b.row.errors.push(err instanceof ValidationError ? err.message : "Geçersiz satır.");
       }
+    }
+    // Dosyadaki tüm pozisyonların kilitleri baştan, sıralı alınır (eşzamanlı kayıtlarla yarış ve kilitlenme olmasın).
+    await lockPositions([...inputs.values()].map((i) => positionLockKey(i.mode, i.assetType, i.symbol, i.accountId)));
+    // Mükerrer kontrolü yalnızca veritabanında ZATEN olan kayıtlara karşı yapılır. Dosyada aynı satır
+    // birden çok kez varsa (örn. aynı gün aynı fiyattan iki ayrı alım) bunlar ayrı işlemdir: k. tekrar,
+    // veritabanında o satırdan en az k tane varsa mükerrer sayılır (aynı dosyayı iki kez yüklemek yine güvenli).
+    const existing = new Map<string, number>();
+    for (const t of (await activeTransactions("real"))) {
+      const h = txHash({ date: t.date, symbol: t.symbol, side: t.side, quantity: t.quantity, price: t.price, accountId: t.accountId });
+      existing.set(h, (existing.get(h) ?? 0) + 1);
     }
     const seen = new Map<string, number>();
     for (const b of ordered) {
@@ -402,14 +413,11 @@ async function run(text: string, opts: ImportOptions, mode: "preview" | "commit"
         b.row.duplicate = true;
         continue;
       }
-      // Satır hatası (Postgres'te) tüm işlemi bozmasın: kayıt noktası.
-      await db.exec("SAVEPOINT ice_aktar_satir");
+      // Satır hatası tüm işlemi bozmasın: recordTransaction iç içe tx olduğu için kendi kayıt noktasıdır.
       try {
         await recordTransaction(input, { fxTry: b.fxTry, deferFx: true });
-        await db.exec("RELEASE SAVEPOINT ice_aktar_satir");
         inserted++;
       } catch (err) {
-        await db.exec("ROLLBACK TO SAVEPOINT ice_aktar_satir");
         b.row.errors.push(err instanceof ValidationError ? err.message : "Kaydedilemedi.");
       }
     }

@@ -3,8 +3,9 @@ import { toPgPlaceholders } from "./placeholders";
 import type { Driver, Executor, RunResult, SqlParams } from "./types";
 
 // Bulut modu: Neon Postgres, pg (node-postgres) havuzu, havuzlu (PgBouncer, transaction
-// modu) DATABASE_URL ile. Bu yüzden: oturum durumu yok (SET, advisory lock, PREPARE yok);
-// işlemler tek istemcide açık BEGIN/COMMIT ile; yarışlar atomik UPDATE … WHERE … RETURNING ile.
+// modu) DATABASE_URL ile. Bu yüzden: oturum durumu yok (SET, oturum advisory lock'u, PREPARE yok);
+// işlemler tek istemcide açık BEGIN/COMMIT ile; yarışlar atomik UPDATE … WHERE … RETURNING ile ya da
+// işlem süreli kilitle (pg_advisory_xact_lock, Db.lockKey; transaction modunda güvenlidir).
 
 // BIGINT (COUNT, SUM, kimlikler, ms zaman damgaları) ve NUMERIC (SUM/AVG) sayı olarak gelsin.
 pg.types.setTypeParser(20, (v) => Number(v));

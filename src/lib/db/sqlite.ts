@@ -92,25 +92,30 @@ export async function openSqlite(file: string, backupDir: string): Promise<Drive
     },
   };
 
-  // İşlem kilidi: aynı anda tek işlem; işlem sürerken dışarıdaki sorgular bekler.
-  let lock: Promise<void> | null = null;
-  const waitLock = async () => {
-    while (lock) await lock;
+  // Bağlantı kilidi (FIFO söz zinciri): aynı anda tek işlem; işlem sürerken işlem dışındaki
+  // sorgular ve diğer işlemler sırayla bekler. İşlem içindeki sorgular (core.ts bağlamı
+  // üzerinden `direct`) kilidi beklemez; böylece iç içe getDb() çağrıları kilitlenmez.
+  let tail: Promise<void> = Promise.resolve();
+  const acquire = (): Promise<() => void> => {
+    let release!: () => void;
+    const mine = new Promise<void>((r) => (release = r));
+    const prev = tail;
+    tail = prev.then(() => mine);
+    return prev.then(() => release);
+  };
+  const locked = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const release = await acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   };
 
   const root: Executor = {
-    async all<T>(sql: string, params: SqlParams) {
-      if (lock) await waitLock();
-      return direct.all<T>(sql, params);
-    },
-    async run(sql: string, params: SqlParams) {
-      if (lock) await waitLock();
-      return direct.run(sql, params);
-    },
-    async exec(sql: string) {
-      if (lock) await waitLock();
-      return direct.exec(sql);
-    },
+    all: <T>(sql: string, params: SqlParams) => locked(() => direct.all<T>(sql, params)),
+    run: (sql: string, params: SqlParams) => locked(() => direct.run(sql, params)),
+    exec: (sql: string) => locked(() => direct.exec(sql)),
   };
 
   return {
@@ -118,9 +123,7 @@ export async function openSqlite(file: string, backupDir: string): Promise<Drive
     raw: db,
     root,
     async transaction<T>(fn: (ex: Executor) => Promise<T>): Promise<T> {
-      await waitLock();
-      let release!: () => void;
-      lock = new Promise<void>((r) => (release = r));
+      const release = await acquire();
       try {
         db.exec("BEGIN IMMEDIATE");
         try {
@@ -134,7 +137,6 @@ export async function openSqlite(file: string, backupDir: string): Promise<Drive
           throw err;
         }
       } finally {
-        lock = null;
         release();
       }
     },

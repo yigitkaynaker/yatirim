@@ -11,14 +11,22 @@ next-env.d.ts
 
 # ortam değişkenleri (gizli)
 .env
-.env*.local
+.env.*
+!.env.example
 # bulut kurulumunda db:migrate / tasi:neon için Neon bağlantısı (gizli)
 .env.bulut
 # PGlite geliştirme verisi
 .pgdata/
 
-# veritabanı
-data/
+# Vercel CLI
+.vercel/
+
+# veritabanı (yalnızca kök klasördeki data/; src/app/api/data/ gibi kod klasörleri değil)
+/data/
+*.db
+*.db-wal
+*.db-shm
+yedekler/
 
 # diğer
 .DS_Store

@@ -420,4 +420,14 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_tick_runs_started ON tick_runs (started_at);
   `,
+  `
+  -- Giriş kaba kuvvet koruması: istemci adresi (IP) başına hatalı deneme sayısı (zamanla azalır).
+  -- Veritabanında tutulur ki bulutta (her istek ayrı örnekte çalışabilir) da geçerli olsun.
+  CREATE TABLE login_failures (
+    ip       TEXT PRIMARY KEY,
+    count    INTEGER NOT NULL,
+    last_at  INTEGER NOT NULL
+  );
+  CREATE INDEX idx_login_failures_last ON login_failures (last_at);
+  `,
 ];

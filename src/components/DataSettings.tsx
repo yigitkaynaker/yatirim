@@ -361,7 +361,9 @@ export function CloudBackupSection() {
   const [msg, setMsg] = useState<Msg>(null);
   const [busy, setBusy] = useState(false);
   const [staged, setStaged] = useState<DumpPreview | null>(null);
+  const [withSecrets, setWithSecrets] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const exportUrl = withSecrets ? "/api/data/export?gizli=1" : "/api/data/export";
 
   async function pick(file: File) {
     setMsg(null);
@@ -386,7 +388,8 @@ export function CloudBackupSection() {
     setBusy(true);
     setMsg(null);
     try {
-      // Güvenlik için önce mevcut verilerin bir kopyasını indir.
+      // Güvenlik için önce mevcut verilerin bir kopyasını indir (gizli anahtarlar hariç;
+      // geri yüklemede dosyada olmayan anahtarlar zaten korunur).
       const a = document.createElement("a");
       a.href = "/api/data/export";
       a.download = "";
@@ -407,13 +410,20 @@ export function CloudBackupSection() {
       <div id="yedek" className="scroll-mt-20">
         <h2 className="font-semibold">Yedekleme (bulut)</h2>
         <p className="mt-1 text-sm text-slate-400">
-          Verileriniz bulut veritabanında (Neon) duruyor. Ara sıra &quot;Tüm verilerimi indir&quot; ile bir kopyasını bilgisayarınıza alın. Dosya ayarlarınızı (API anahtarı dahil)
-          da içerir; güvenli bir yerde saklayın.
+          Verileriniz bulut veritabanında (Neon) duruyor. Ara sıra &quot;Tüm verilerimi indir&quot; ile bir kopyasını bilgisayarınıza alın. Dosya tüm
+          işlemlerinizi ve portföyünüzü içerir; kimseyle paylaşmayın, güvenli bir yerde saklayın. Gizli anahtarlar (Claude API anahtarı, bildirim
+          anahtarları) siz istemedikçe dosyaya girmez; geri yüklemede mevcut anahtarlarınız korunur.
         </p>
       </div>
-      <a href="/api/data/export" download className="inline-block rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950">
-        Tüm verilerimi indir (JSON)
-      </a>
+      <div className="space-y-2">
+        <a href={exportUrl} download className="inline-block rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950">
+          Tüm verilerimi indir (JSON)
+        </a>
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
+          <input type="checkbox" className="h-4 w-4 accent-amber-500" checked={withSecrets} onChange={(e) => setWithSecrets(e.target.checked)} />
+          gizli anahtarları da dahil et (dosyayı gizli tut!)
+        </label>
+      </div>
       <Note msg={msg} />
       <div className="rounded-xl border border-amber-500/30 p-3">
         <h3 className="text-sm font-medium">JSON&apos;dan geri yükle</h3>

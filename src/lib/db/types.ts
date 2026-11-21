@@ -23,9 +23,17 @@ export interface Db {
   exec(sql: string): Promise<void>;
   /**
    * İşlem (transaction). fn içindeki TÜM getDb() çağrıları (iç içe fonksiyonlar dahil) aynı
-   * işleme katılır (AsyncLocalStorage). Hata fırlatılırsa geri alınır. İç içe tx tek işlemdir.
+   * işleme katılır (AsyncLocalStorage). Hata fırlatılırsa geri alınır. İç içe tx bir kayıt
+   * noktasıdır (SAVEPOINT): içte fırlatılan hata yalnızca iç kısmı geri alır; dış kod hatayı
+   * yakalarsa dış işlem devam eder.
    */
   tx<T>(fn: (t: Db) => Promise<T>): Promise<T>;
+  /**
+   * İşlem sonuna kadar tutulan adlandırılmış kilit (Postgres: pg_advisory_xact_lock). Aynı
+   * anahtarla kontrol-sonra-yaz yapan eşzamanlı işlemleri sıraya sokar. tx() içinde, işlemin
+   * başında çağrılmalıdır. SQLite'ta işlemler zaten tek tek çalıştığı için etkisizdir.
+   */
+  lockKey(key: string): Promise<void>;
 }
 
 /** Bir bağlantı üzerinde ham sorgu çalıştırıcı (bağdaştırıcılar uygular) */

@@ -330,6 +330,18 @@ export const PG_MIGRATIONS: { id: number; name: string; sql: string }[] = [
   CREATE INDEX idx_tick_runs_started ON tick_runs (started_at);
   `,
   },
+  {
+    id: 2,
+    name: "giriş denemeleri (SQLite sürüm 11 ile denk)",
+    sql: `
+  CREATE TABLE login_failures (
+    ip       TEXT PRIMARY KEY,
+    count    BIGINT NOT NULL,
+    last_at  BIGINT NOT NULL
+  );
+  CREATE INDEX idx_login_failures_last ON login_failures (last_at);
+  `,
+  },
 ];
 
 /** Postgres şema sürümü (son geçiş kimliği) */

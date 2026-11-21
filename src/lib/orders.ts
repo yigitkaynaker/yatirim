@@ -247,32 +247,32 @@ async function executeOrder(o: Order): Promise<boolean> {
       // Başka bir tur zaten işledi ya da iptal edildi (değişiklik yok).
       if (claim.changes !== 1) return null;
       let txId: number;
-      // Kayıt hatası (örn. eldekinden fazla satış) işlemin tamamını bozmasın: kayıt noktası.
-      await db.exec("SAVEPOINT emir_kayit");
+      // Kayıt hatası (örn. eldekinden fazla satış) işlemin tamamını bozmasın: iç içe tx bir
+      // kayıt noktasıdır (hata olursa yalnızca kayıt geri alınır, emir "başarısız" kapanır).
       try {
-        // Gerçek emirde hesabın varsayılan komisyon oranı uygulanır.
-        const acc = o.mode === "real" ? (o.accountId != null ? await getAccount(o.accountId) : null) : null;
-        const fee = acc ? Math.round(((pricing.quantity * pricing.price * acc.feePct) / 100) * 1e6) / 1e6 : 0;
-        const tx = await recordTransaction(
-          {
-            mode: o.mode,
-            accountId: o.mode === "real" ? (acc?.id ?? (await resolveAccount({}, { allowArchived: true })).id) : null,
-            fee,
-            assetType: o.assetType,
-            symbol: o.symbol,
-            side: o.side,
-            quantity: pricing.quantity,
-            price: pricing.price,
-            currency: pricing.currency,
-            date: todayIstanbul(),
-            note: `Emir #${o.id} ile otomatik${o.note ? ` · ${o.note}` : ""}`,
-          },
-          { orderId: o.id, priceTime: pricing.priceTime, amount: o.amount, amountCurrency: o.amountCurrency, fxTry: pricing.fxTry },
-        );
-        await db.exec("RELEASE SAVEPOINT emir_kayit");
-        txId = tx.id;
+        txId = await db.tx(async () => {
+          // Gerçek emirde hesabın varsayılan komisyon oranı uygulanır.
+          const acc = o.mode === "real" ? (o.accountId != null ? await getAccount(o.accountId) : null) : null;
+          const fee = acc ? Math.round(((pricing.quantity * pricing.price * acc.feePct) / 100) * 1e6) / 1e6 : 0;
+          const tx = await recordTransaction(
+            {
+              mode: o.mode,
+              accountId: o.mode === "real" ? (acc?.id ?? (await resolveAccount({}, { allowArchived: true })).id) : null,
+              fee,
+              assetType: o.assetType,
+              symbol: o.symbol,
+              side: o.side,
+              quantity: pricing.quantity,
+              price: pricing.price,
+              currency: pricing.currency,
+              date: todayIstanbul(),
+              note: `Emir #${o.id} ile otomatik${o.note ? ` · ${o.note}` : ""}`,
+            },
+            { orderId: o.id, priceTime: pricing.priceTime, amount: o.amount, amountCurrency: o.amountCurrency, fxTry: pricing.fxTry },
+          );
+          return tx.id;
+        });
       } catch (err) {
-        await db.exec("ROLLBACK TO SAVEPOINT emir_kayit");
         // Örn. eldekinden fazla satış: emir başarısız olarak kapanır.
         const msg = err instanceof ValidationError ? err.message : "İşlem kaydedilemedi.";
         await db.run("UPDATE orders SET status = 'failed', executed_at = NULL, executed_price = NULL, error = ? WHERE id = ?", [msg, o.id]);

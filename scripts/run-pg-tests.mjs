@@ -10,6 +10,7 @@ import { startPgDevServer } from "./pg-dev-server.mjs";
 
 const SUITES = [
   ["test-pg.ts", true],
+  ["test-concurrency.ts", true],
   ["test-indicators.ts", false],
   ["test-fx.ts", false],
   ["test-sources.ts", false],
