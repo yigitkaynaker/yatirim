@@ -7,6 +7,7 @@ import type { NewsItem, NewsReport } from "@/lib/news";
 import { goToLogin, usePolling } from "@/lib/usePolling";
 import { AiMissingKey, BudgetLine } from "./AiNotice";
 import { Card } from "./ui";
+import { EmptyState } from "./help";
 
 interface NewsData {
   configured: boolean;
@@ -223,7 +224,14 @@ export function NewsView() {
           )}
 
           {data.reports.length === 0 ? (
-            <Card className="p-6 text-center text-sm text-slate-500">Henüz analiz yok. &quot;Şimdi analiz et&quot; ile ilk raporu oluşturun.</Card>
+            <EmptyState
+              title="Henüz analiz yok"
+              action={data.configured ? { label: "Şimdi analiz et", onClick: () => void scan() } : { label: "Yapay zeka anahtarı ekle", href: "/ayarlar#anahtar" }}
+              guide={{ href: "/kilavuz#yapay-zeka", label: "Kılavuz: Haber analizi ve maliyeti" }}
+            >
+              Analizler, portföyündeki ve izleme listendeki varlıklarla ilgili haberleri yapay zekayla tarar; her biri için kısa özet, önem ve kaynak bağlantıları
+              verir. Her tarama küçük bir ücret tutar.
+            </EmptyState>
           ) : (
             <div className="space-y-3">
               {data.reports.map((r) => (

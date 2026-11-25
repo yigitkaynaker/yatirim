@@ -9,7 +9,7 @@ export interface Term {
   id: string;
   term: string;
   /** Aramada da bulunsun diye diğer adlar */
-  aliases?: string[];
+  aliases?: readonly string[];
   short: string;
   definition: string;
   example: string;
@@ -58,7 +58,7 @@ export const TERMS = [
     aliases: ["kıyaslama", "karşılaştırma ölçütü"],
     short: "Yatırımını karşılaştırdığın basit alternatif: BIST 100, dolar ya da gram altın.",
     definition: "Kendi getirini bir ölçütle kıyaslamaktır: \"Bu parayı sadece endekse ya da altına koysaydım ne olurdu?\" sorusunun cevabı.",
-    example: "Portföyün yılda %30 kazandırdı ama gram altın %45 arttıysa, sen kazandın ama altının gerisinde kaldın.",
+    example: "100.000 TL'lik portföyün bir yılda 130.000 TL oldu (%30); aynı parayla gram altın alsaydın 145.000 TL olacaktı. Kazandın ama altının gerisinde kaldın.",
   },
   {
     id: "bilanco",
@@ -83,7 +83,7 @@ export const TERMS = [
     aliases: ["xu100", "borsa istanbul"],
     short: "Borsa İstanbul'un en büyük 100 şirketinin genel gidişini gösteren endeks.",
     definition: "Türkiye borsasının \"ateşini ölçen\" sayıdır. Yükseliyorsa büyük şirketlerin hisseleri genel olarak değer kazanıyor demektir.",
-    example: "BIST 100 bugün %1 yükseldi; ama senin hissen %2 düştüyse, piyasaya göre kötü bir gün geçirdin.",
+    example: "BIST 100 bugün %1 yükseldi ama 10.000 TL'lik hissen %2 düşüp 9.800 TL oldu: piyasaya göre kötü bir gün geçirdin.",
   },
   {
     id: "bollinger",
@@ -131,7 +131,7 @@ export const TERMS = [
     term: "Endeks",
     short: "Bir grup varlığın ortalama gidişini tek sayıyla gösteren ölçü.",
     definition: "Seçilmiş hisselerin fiyatlarından hesaplanan göstergedir (BIST 100, S&P 500, Nasdaq gibi). Endekse doğrudan değil, onu izleyen fonlarla yatırım yapılabilir.",
-    example: "S&P 500 bir yılda 5.000'den 5.500 puana çıktıysa ABD'nin büyük şirketleri ortalamada %10 değer kazanmıştır.",
+    example: "S&P 500 bir yılda 5.000'den 5.500 puana çıktıysa, endeksi izleyen bir fona koyduğun 10.000 TL (kur değişmediyse) yaklaşık 11.000 TL olur.",
   },
   {
     id: "enflasyon",
@@ -213,7 +213,7 @@ export const TERMS = [
     term: "Hacim",
     short: "Bir günde ne kadar alınıp satıldığı; hareketin arkasındaki ilgiyi gösterir.",
     definition: "İşlem gören adet ya da tutardır. Yüksek hacimli bir yükseliş, düşük hacimli olana göre daha çok katılımcının hemfikir olduğunu düşündürür.",
-    example: "Bir hisse normalde günde 1 milyon adet işlem görürken bugün 3 milyon adet işlem gördüyse hacim 3 katına çıkmıştır.",
+    example: "Bir hissede normalde günde 50 milyon TL'lik işlem olurken bugün 150 milyon TL'lik işlem olduysa hacim 3 katına çıkmıştır.",
     more: { href: "/egitim/hacim", label: "Ders: Hacim" },
   },
   {
@@ -222,7 +222,7 @@ export const TERMS = [
     aliases: ["temettü tarihi", "ex-date"],
     short: "Temettü almak için hisseyi bir gün öncesinden elinde tutman gereken tarih.",
     definition: "Şirketin kâr payını dağıttığı ve hisse fiyatının temettü kadar düzeltildiği gündür. Bu günden önceki günün sonunda hissen varsa temettüye hak kazanırsın.",
-    example: "Hak kullanım 15 Mayıs ise 14 Mayıs akşamı elinde olan 100 hisse için temettü alırsın; 15 Mayıs'ta alırsan alamazsın.",
+    example: "Hak kullanım 15 Mayıs ve hisse başına temettü 3 TL ise, 14 Mayıs akşamı elinde olan 100 hisse için 300 TL brüt alırsın; 15 Mayıs'ta alırsan alamazsın.",
   },
   {
     id: "halka-arz",
@@ -262,7 +262,7 @@ export const TERMS = [
     aliases: ["watchlist", "takip listesi"],
     short: "Almadan takip etmek istediğin varlıkların listesi.",
     definition: "Piyasa sayfasında, ilgilendiğin hisse, fon, altın ya da kriptoları bir arada görmeni sağlar. Para harcamadan izlemenin en kolay yoludur.",
-    example: "ASELS, gram altın ve BTC'yi listene eklersin; her gün tek ekranda yüzde değişimlerini görürsün.",
+    example: "ASELS, gram altın ve BTC'yi listene eklersin; tek kuruş harcamadan (0 TL) her gün tek ekranda fiyatlarını ve yüzde değişimlerini görürsün.",
   },
   {
     id: "kap",
@@ -342,7 +342,7 @@ export const TERMS = [
     term: "MACD",
     short: "İki ortalamanın farkıyla momentumun (hızın) yön değiştirdiğini gösteren gösterge.",
     definition: "Kısa ve uzun vadeli ortalamalar arasındaki farktır. MACD çizgisinin sinyal çizgisini yukarı kesmesi yükseliş hızının arttığına işaret eder; kesin değildir.",
-    example: "Uzun süre düşen bir hissede MACD sinyal çizgisini yukarı kesti: düşüş hız kesiyor olabilir.",
+    example: "120 TL'den 80 TL'ye düşen bir hissede MACD sinyal çizgisini yukarı kesti: düşüş hız kesiyor olabilir, ama bu bir garanti değildir.",
     more: { href: "/egitim/macd", label: "Ders: MACD" },
   },
   {
@@ -407,7 +407,7 @@ export const TERMS = [
     aliases: ["enflasyondan arındırılmış getiri"],
     short: "Enflasyon düşüldükten sonraki gerçek kazanç.",
     definition: "Paranın satın alma gücü olarak ne kadar büyüdüğünü gösterir. Nominal getiri enflasyondan düşükse reel getiri negatiftir.",
-    example: "Yatırımın %50 kazandırdı, enflasyon %40: reel getiri yaklaşık (1,50 ÷ 1,40) − 1 ≈ %7.",
+    example: "Yatırdığın 10.000 TL, 15.000 TL oldu (%50), enflasyon %40: reel getiri yaklaşık (1,50 ÷ 1,40) − 1 ≈ %7; yani bugünün parasıyla yaklaşık 10.700 TL'lik alım gücün var.",
     more: { href: "/hesaplayicilar", label: "Reel getiri hesaplayıcısı" },
   },
   {
@@ -442,7 +442,7 @@ export const TERMS = [
     aliases: ["teknik sinyal", "güçlü al", "güçlü sat"],
     short: "Birkaç teknik göstergenin puanlarının toplamı: Güçlü Al'dan Güçlü Sat'a.",
     definition: "RSI, MACD, ortalamalar, Bollinger ve hacimden gelen artı/eksi puanlar toplanır: +2 ve üstü Al, +5 ve üstü Güçlü Al; −2 ve altı Sat, −5 ve altı Güçlü Sat. Geçmiş fiyata dayanır, geleceği garanti etmez.",
-    example: "RSI +1, MACD kesişimi +2, fiyat ortalamaların üstünde +2: toplam +5, \"Güçlü Al\" etiketi çıkar.",
+    example: "300 TL'lik bir hissede RSI +1, MACD kesişimi +2, fiyat ortalamaların üstünde +2: toplam +5, \"Güçlü Al\" etiketi çıkar. Fiyatın yükseleceği anlamına gelmez.",
     more: { href: "/kilavuz#grafikler", label: "Kılavuz: Sinyaller" },
   },
   {

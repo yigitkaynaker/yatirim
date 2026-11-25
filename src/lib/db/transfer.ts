@@ -3,9 +3,13 @@ import type { Db, Row, SqlValue } from "./types";
 // Veri taşıma / JSON yedek: tüm tabloların satırlarını okur ve başka bir veritabanına
 // (aynı ya da farklı lehçe) tek işlem içinde yazar. Hem "tasi:neon" betiği hem de bulut
 // modundaki "Tüm verilerimi indir / JSON'dan geri yükle" bunu kullanır.
+// İki kapsam: tam (taşıma betiği; users dahil tüm tablolar) ve kullanıcı (userId verilir: yalnızca o
+// kullanıcının satırları okunur / silinir / yazılır; yazılan her satırın user_id'si o kullanıcıya zorlanır
+// ve satırların başka kullanıcının kaydına bağlanmadığı denetlenir).
 
 /** Tablolar, yabancı anahtar sırasına göre (önce bağımsızlar). */
 export const DATA_TABLES = [
+  "users",
   "accounts",
   "settings",
   "transactions",
@@ -27,6 +31,7 @@ export const DATA_TABLES = [
   "alarm_events",
   "daily_summaries",
   "position_notes",
+  "mcp_calls",
   // önbellekler (yeniden oluşur; JSON yedeğinde isteğe bağlı)
   "price_cache",
   "dividend_history",
@@ -38,6 +43,7 @@ export const CACHE_TABLES = new Set<string>(["price_cache", "dividend_history", 
 
 /** Kimlik (id) sütunu otomatik artan tablolar: yükleme sonrası sayaç ayarlanır */
 export const ID_TABLES = new Set<string>([
+  "users",
   "accounts",
   "transactions",
   "orders",
@@ -51,13 +57,55 @@ export const ID_TABLES = new Set<string>([
   "dividends",
   "alarms",
   "alarm_events",
+  "mcp_calls",
 ]);
 
 /**
  * Gizli ayarlar (settings anahtarları): JSON dökümüne varsayılan olarak girmez. Bildirim anahtar
  * çifti birlikte ele alınır (açık anahtar tek başına geri yüklenirse gizli anahtarla uyuşmaz).
  */
-export const SECRET_SETTINGS: readonly string[] = ["anthropic_api_key", "vapid_private_key", "vapid_public_key"];
+export const SECRET_SETTINGS: readonly string[] = ["anthropic_api_key", "openai_api_key", "vapid_private_key", "vapid_public_key"];
+// Not: OAuth / MCP bağlantı tabloları (oauth_clients, oauth_codes, oauth_tokens) dökümlere hiç girmez;
+// geri yüklemeden sonra ChatGPT / Claude.ai bağlantısı gerekirse yeniden kurulur.
+
+/**
+ * Kullanıcıya ait tablolar (user_id sütunlu). Kullanıcı dökümüne yalnızca bunlar girer. Cihaza bağlı
+ * push abonelikleri ve paylaşılan tablolar (fonlar, KAP, zamanlama kayıtları, önbellekler) girmez.
+ */
+export const USER_TABLES = new Set<string>([
+  "accounts",
+  "settings",
+  "transactions",
+  "orders",
+  "notifications",
+  "watchlist",
+  "portfolio_snapshots",
+  "ai_usage",
+  "chat_conversations",
+  "chat_messages",
+  "news_reports",
+  "technical_signals",
+  "dividends",
+  "alarms",
+  "alarm_events",
+  "daily_summaries",
+  "position_notes",
+  "mcp_calls",
+]);
+
+/** Kullanıcı yüklemesinde denetlenen bağlar: [tablo, sütun, hedef tablo] — hedef aynı kullanıcının olmalı */
+const USER_REFS: [string, string, string][] = [
+  ["transactions", "account_id", "accounts"],
+  ["transactions", "source_id", "transactions"],
+  ["transactions", "converted_to_id", "transactions"],
+  ["transactions", "order_id", "orders"],
+  ["orders", "account_id", "accounts"],
+  ["orders", "executed_tx_id", "transactions"],
+  ["notifications", "order_id", "orders"],
+  ["chat_messages", "conversation_id", "chat_conversations"],
+  ["alarms", "account_id", "accounts"],
+  ["alarm_events", "alarm_id", "alarms"],
+];
 
 export const DUMP_FORMAT = "yatirim-veri";
 
@@ -89,16 +137,22 @@ function isSecretRow(r: Row): boolean {
   return SECRET_SETTINGS.includes(String(r.key));
 }
 
-/** Tüm tablolar. includeSecrets verilmezse gizli ayarlar (SECRET_SETTINGS) dökümden çıkarılır. */
+/**
+ * Tüm tablolar (userId verilirse yalnızca o kullanıcının tabloları ve satırları). includeSecrets
+ * verilmezse gizli ayarlar (SECRET_SETTINGS) dökümden çıkarılır.
+ */
 export async function dumpAll(
   db: Db,
-  opts: { includeCaches?: boolean; includeSecrets?: boolean; schemaVersion: number },
+  opts: { includeCaches?: boolean; includeSecrets?: boolean; schemaVersion: number; userId?: number },
 ): Promise<DataDump> {
   const tables: Record<string, Row[]> = {};
+  const uid = opts.userId;
   for (const t of DATA_TABLES) {
+    if (uid != null && !USER_TABLES.has(t)) continue;
     if (!opts.includeCaches && CACHE_TABLES.has(t)) continue;
     const order = (await tableColumns(db, t)).includes("id") ? " ORDER BY id" : "";
-    let rows = await db.all<Row>(`SELECT * FROM ${t}${order}`);
+    let rows = uid != null ? await db.all<Row>(`SELECT * FROM ${t} WHERE user_id = ?${order}`, [uid]) : await db.all<Row>(`SELECT * FROM ${t}${order}`);
+    if (uid != null) rows = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== "user_id")));
     if (t === "settings" && !opts.includeSecrets) rows = rows.filter((r) => !isSecretRow(r));
     tables[t] = rows;
   }
@@ -141,9 +195,27 @@ function toValue(v: unknown, type?: string): SqlValue {
  * Yabancı anahtarlar işlem sonuna ertelenir (işlem ↔ emir döngüsel bağları için).
  * Dökümde olmayan gizli ayarlar (gizli anahtarlar hariç indirilmiş dosya) hedefteki değerleriyle korunur.
  */
-export async function loadAll(db: Db, dump: DataDump, opts: { replace?: boolean; batch?: number } = {}): Promise<LoadResult> {
+export async function loadAll(
+  db: Db,
+  dump: DataDump,
+  opts: {
+    replace?: boolean;
+    batch?: number;
+    userId?: number;
+    /** Bu tablolara hiç dokunulmaz (silinmez, yazılmaz) */
+    skipTables?: ReadonlySet<string>;
+    /** Verilirse settings'te yalnızca bu anahtarlar silinir / yazılır (diğerleri olduğu gibi kalır) */
+    allowedSettings?: readonly string[];
+  } = {},
+): Promise<LoadResult> {
   const counts: Record<string, number> = {};
   const batch = opts.batch ?? 200;
+  const uid = opts.userId;
+  const scoped = (t: string) => uid == null || USER_TABLES.has(t);
+  const where = uid != null ? " WHERE user_id = ?" : "";
+  const whereArgs = uid != null ? [uid] : [];
+  const allowed = opts.allowedSettings ? new Set(opts.allowedSettings) : null;
+  const skip = (t: string) => !scoped(t) || !!opts.skipTables?.has(t);
   await db.tx(async () => {
     if (db.dialect === "pg") await db.exec("SET CONSTRAINTS ALL DEFERRED");
     else await db.exec("PRAGMA defer_foreign_keys = ON");
@@ -151,22 +223,36 @@ export async function loadAll(db: Db, dump: DataDump, opts: { replace?: boolean;
     const dumpKeys = new Set((dump.tables.settings ?? []).map((r) => String(r.key)));
     const keep =
       opts.replace && dump.tables.settings
-        ? (await db.all<Row>("SELECT * FROM settings")).filter((r) => isSecretRow(r) && !dumpKeys.has(String(r.key)))
+        ? (await db.all<Row>(`SELECT * FROM settings${where}`, whereArgs)).filter(
+            (r) => isSecretRow(r) && !dumpKeys.has(String(r.key)) && (!allowed || allowed.has(String(r.key))),
+          )
         : [];
     if (opts.replace) {
       for (const t of [...DATA_TABLES].reverse()) {
+        if (skip(t)) continue;
+        if (t === "settings" && allowed) {
+          // Yalnızca izinli anahtarlar değişir (kota sayaçları vb. korunur)
+          const list = [...allowed];
+          await db.run(`DELETE FROM settings${where}${where ? " AND" : " WHERE"} key IN (${list.map(() => "?").join(", ")})`, [...whereArgs, ...list]);
+          continue;
+        }
+        // Kullanıcısız eski döküm: kullanıcılar (sahip) korunur
+        if (t === "users" && dump.tables.users === undefined) continue;
         if (dump.tables[t] === undefined && CACHE_TABLES.has(t)) continue; // dökümde yoksa önbelleğe dokunma
-        await db.run(`DELETE FROM ${t}`);
+        await db.run(`DELETE FROM ${t}${where}`, whereArgs);
       }
     }
     for (const t of DATA_TABLES) {
-      const rows = dump.tables[t];
-      if (!rows) continue;
+      let raw = dump.tables[t];
+      if (!raw || skip(t)) continue;
+      if (t === "settings" && allowed) raw = raw.filter((r) => allowed.has(String(r.key)));
+      // Kullanıcı yüklemesi: dosyadaki user_id yok sayılır, satır bu kullanıcıya yazılır.
+      const rows: Row[] = uid != null ? raw.map((r) => ({ ...r, user_id: uid })) : raw;
       const have = new Set(await tableColumns(db, t));
       const types = await pgTypes(db, t);
       counts[t] = 0;
       if (rows.length === 0) continue;
-      const cols = Object.keys(rows[0]).filter((c) => have.has(c));
+      const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((c) => have.has(c));
       if (cols.length === 0) continue;
       for (let i = 0; i < rows.length; i += batch) {
         const part = rows.slice(i, i + batch);
@@ -180,9 +266,21 @@ export async function loadAll(db: Db, dump: DataDump, opts: { replace?: boolean;
       const cols = Object.keys(r);
       await db.run(`INSERT INTO settings (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => toValue(r[c])));
     }
+    if (uid != null) await assertOwnRefs(db, uid);
     if (db.dialect === "pg") await resetSequences(db);
   });
   return { counts };
+}
+
+/** Kullanıcı yüklemesinden sonra: kullanıcının satırları yalnızca kendi kayıtlarına bağlanabilir. */
+async function assertOwnRefs(db: Db, uid: number) {
+  for (const [t, col, target] of USER_REFS) {
+    const bad = await db.get(
+      `SELECT 1 AS x FROM ${t} c WHERE c.user_id = ? AND c.${col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${target} p WHERE p.id = c.${col} AND p.user_id = ?) LIMIT 1`,
+      [uid, uid],
+    );
+    if (bad) throw new Error(`Dosyadaki ${t}.${col} kaydı bu hesaba ait olmayan bir kayda bağlı; dosya yüklenemedi.`);
+  }
 }
 
 /** Postgres kimlik sayaçlarını tablolardaki en büyük id'nin sonrasına ayarlar. */
@@ -193,9 +291,14 @@ export async function resetSequences(db: Db) {
 }
 
 /** Tablo başına satır sayıları */
-export async function rowCounts(db: Db, tables: readonly string[] = DATA_TABLES): Promise<Record<string, number>> {
+export async function rowCounts(db: Db, tables: readonly string[] = DATA_TABLES, userId?: number): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
-  for (const t of tables) out[t] = (await db.get<{ c: number }>(`SELECT COUNT(*) AS c FROM ${t}`))?.c ?? 0;
+  for (const t of tables) {
+    out[t] =
+      (userId != null && USER_TABLES.has(t)
+        ? await db.get<{ c: number }>(`SELECT COUNT(*) AS c FROM ${t} WHERE user_id = ?`, [userId])
+        : await db.get<{ c: number }>(`SELECT COUNT(*) AS c FROM ${t}`))?.c ?? 0;
+  }
   return out;
 }
 

@@ -7,6 +7,7 @@ import { getQuotes } from "./prices";
 import { defaultAccount, listAccounts } from "./accounts";
 import { listSnapshots } from "./snapshots";
 import { maxDrawdown, twrIndex } from "./perfMath";
+import { getCurrentUserId } from "./userContext";
 
 // RAPORLAR
 // 1) Yıllık gerçekleşen kazanç raporu: yıl → varlık; satışlardan gerçekleşen K/Z (işlem günü
@@ -103,7 +104,7 @@ export async function getYearlyReport(opts: { account?: number | null } = {}): P
     rowFor(t.date.slice(0, 4), t.assetType, t.symbol).feesTry += t.fee * fx;
   }
 
-  const divs = await (await getDb()).all("SELECT account_id, asset_type, symbol, ex_date, amount, gross_amount, currency, fx_try FROM dividends WHERE mode = 'real' AND status = 'confirmed'") as { account_id: number; asset_type: AssetType; symbol: string; ex_date: string; amount: number; gross_amount: number | null; currency: string; fx_try: number | null }[];
+  const divs = await (await getDb()).all("SELECT account_id, asset_type, symbol, ex_date, amount, gross_amount, currency, fx_try FROM dividends WHERE user_id = ? AND mode = 'real' AND status = 'confirmed'", [await getCurrentUserId()]) as { account_id: number; asset_type: AssetType; symbol: string; ex_date: string; amount: number; gross_amount: number | null; currency: string; fx_try: number | null }[];
   for (const d of divs) {
     if (account && d.account_id !== account.id) continue;
     const fx = d.currency === "TRY" ? 1 : (d.fx_try ?? rate(d.currency));

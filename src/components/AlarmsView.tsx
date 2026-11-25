@@ -7,6 +7,7 @@ import type { Alarm, AlarmEvent, AlarmKind } from "@/lib/alarms";
 import { usePolling } from "@/lib/usePolling";
 import { Card, Explain, Field, inputCls, Modal, PrimaryButton, Segmented } from "./ui";
 import { SymbolField, symbolOnTypeChange } from "./SymbolField";
+import { EmptyState } from "./help";
 
 // Alarmlar: işlem yapmayan uyarılar. Koşul sağlanınca bildirim + push gelir.
 
@@ -73,7 +74,14 @@ export function AlarmsView() {
         {!list ? (
           <Card className="p-6 text-center text-sm text-slate-500">Yükleniyor…</Card>
         ) : list.length === 0 ? (
-          <Card className="p-6 text-center text-sm text-slate-400">Henüz alarm yok. Bir varlığın detay sayfasındaki &quot;Alarm kur&quot; düğmesini de kullanabilirsiniz.</Card>
+          <EmptyState
+            title="Henüz alarm yok"
+            action={{ label: "İlk alarmını kur", onClick: () => setAdding(true) }}
+            guide={{ href: "/kilavuz#alarmlar", label: "Kılavuz: Alarm türleri" }}
+          >
+            Alarm, fiyat bir seviyeye gelince ya da büyük bir hareket olunca sana haber verir; hiçbir işlem yapmaz. Varlık sayfasındaki “Alarm kur” düğmesini de
+            kullanabilirsin.
+          </EmptyState>
         ) : (
           <Card className="divide-y divide-line/70">
             {list.map((a) => (

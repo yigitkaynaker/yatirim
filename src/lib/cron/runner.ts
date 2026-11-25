@@ -2,6 +2,7 @@ import "server-only";
 import { getDb, isCloud, type Db } from "../db";
 import { checkPendingOrders } from "../orders";
 import { maybeRecordSnapshots } from "../snapshots";
+import { forEachUser } from "../users";
 import { expectedMaxGapMs, inFastWindow, istanbulClock, isWeekday, type IstanbulClock } from "./schedule";
 
 // Görev çalıştırıcı (bulut modu nöbeti). Dış zamanlayıcı /api/cron/tick'i çağırır; burada
@@ -14,6 +15,10 @@ import { expectedMaxGapMs, inFastWindow, istanbulClock, isWeekday, type Istanbul
 // Uzun süren işler (yapay zeka taraması, günlük özet, sinyal kontrolü) "yavaş" görevdir ve
 // /api/cron/slow'da ayrı bir işlev çağrısında çalışır (nöbet yanıtı 25 sn'nin altında kalsın).
 // Yerel modda bu dosya kullanılmaz: orderWatcher.ts'deki süreç içi döngü aynen çalışır.
+// Kilitler görev başınadır (kullanıcı başına değil); görev her kullanıcı için ayrı, o kullanıcının
+// bağlamında çalışır (forEachUser). KAP çekme paylaşımlıdır, bildirim kullanıcı başınadır (kap.ts).
+
+const sum = <T>(list: T[], f: (x: T) => number) => list.reduce((a, x) => a + f(x), 0);
 
 export interface TaskDef {
   name: string;
@@ -37,8 +42,9 @@ export const TASKS: TaskDef[] = [
     minIntervalSec: 50,
     leaseSec: 120,
     run: async () => {
-      const r = await checkPendingOrders();
-      return r.executed > 0 ? `${r.executed} emir gerçekleşti` : `${r.checked} emir kontrol edildi`;
+      const r = await forEachUser("emirler", () => checkPendingOrders());
+      const executed = sum(r, (x) => x.executed);
+      return executed > 0 ? `${executed} emir gerçekleşti` : `${sum(r, (x) => x.checked)} emir kontrol edildi`;
     },
   },
   {
@@ -48,8 +54,8 @@ export const TASKS: TaskDef[] = [
     leaseSec: 120,
     run: async () => {
       const { checkAlarms } = await import("../alarms");
-      const r = await checkAlarms({ skipSlow: true });
-      return `${r.checked} alarm, ${r.fired} çaldı`;
+      const r = await forEachUser("alarm", () => checkAlarms({ skipSlow: true }));
+      return `${sum(r, (x) => x.checked)} alarm, ${sum(r, (x) => x.fired)} çaldı`;
     },
   },
   {
@@ -59,8 +65,8 @@ export const TASKS: TaskDef[] = [
     leaseSec: 180,
     run: async () => {
       const { checkAlarms } = await import("../alarms");
-      const r = await checkAlarms({ forceSlow: true });
-      return `${r.checked} alarm, ${r.fired} çaldı`;
+      const r = await forEachUser("alarm", () => checkAlarms({ forceSlow: true }));
+      return `${sum(r, (x) => x.checked)} alarm, ${sum(r, (x) => x.fired)} çaldı`;
     },
   },
   {
@@ -69,7 +75,7 @@ export const TASKS: TaskDef[] = [
     minIntervalSec: 10 * 60,
     leaseSec: 120,
     run: async () => {
-      await maybeRecordSnapshots(true);
+      await forEachUser("anlık görüntü", () => maybeRecordSnapshots(true));
       return "tamam";
     },
   },
@@ -93,7 +99,8 @@ export const TASKS: TaskDef[] = [
     leaseSec: 300,
     run: async () => {
       const { maybeRunScheduledScan } = await import("../news");
-      return await maybeRunScheduledScan();
+      const r = await forEachUser("haber", () => maybeRunScheduledScan());
+      return `${r.filter((x) => x.ran).length} kullanıcı için tarama`;
     },
   },
   {
@@ -105,7 +112,8 @@ export const TASKS: TaskDef[] = [
     active: (c) => isWeekday(c) && c.minutes >= 18 * 60 + 45,
     run: async () => {
       const { maybeRunDailySummary } = await import("../dailySummary");
-      return await maybeRunDailySummary();
+      const r = await forEachUser("özet", () => maybeRunDailySummary());
+      return `${r.filter((x) => x.ran).length} kullanıcı için özet`;
     },
   },
   {
@@ -116,8 +124,9 @@ export const TASKS: TaskDef[] = [
     leaseSec: 300,
     run: async () => {
       const { maybeRunSignalAlerts } = await import("../technical");
-      const r = await maybeRunSignalAlerts();
-      return r.ran ? `${r.checked} varlık, ${r.changes.length} değişim` : r.reason;
+      const r = await forEachUser("teknik", () => maybeRunSignalAlerts());
+      const ran = r.filter((x) => x.ran);
+      return ran.length ? `${ran.length} kullanıcı, ${sum(ran, (x) => (x.ran ? x.changes.length : 0))} değişim` : (r[0]?.ran === false ? r[0].reason : "atlandı");
     },
   },
 ];

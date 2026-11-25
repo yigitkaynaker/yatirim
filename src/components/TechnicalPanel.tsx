@@ -4,6 +4,7 @@ import { formatNumber } from "@/lib/format";
 import { SIGNAL_DISCLAIMER, type SignalLabel } from "@/lib/signalRules";
 import type { TechnicalAnalysis } from "@/lib/technical";
 import { Card } from "./ui";
+import { InfoTip } from "./help";
 
 // Teknik analiz bölümü (varlık detayı) ve sinyal rozeti / uyarısı (Sinyaller sayfası da kullanır).
 
@@ -67,7 +68,7 @@ export function TechnicalPanel({ data, error }: { data: TechnicalAnalysis | null
             <p className="min-w-0 flex-1 text-sm text-slate-300">{data.labelExplain}</p>
           </div>
           <p className="text-xs text-slate-500">
-            Puan, aşağıdaki nedenlerin toplamıdır: +2 ve üstü Al, +5 ve üstü Güçlü Al; −2 ve altı Sat, −5 ve altı Güçlü Sat; arası Nötr.
+            Puan <InfoTip term="sinyal-skoru" className="mx-0.5" />, aşağıdaki nedenlerin toplamıdır: +2 ve üstü Al, +5 ve üstü Güçlü Al; −2 ve altı Sat, −5 ve altı Güçlü Sat; arası Nötr.
             {data.asOf ? ` Son veri: ${fmtDay.format(new Date(data.asOf * 1000))} (${data.snapshot.bars} gün).` : ""}
           </p>
 

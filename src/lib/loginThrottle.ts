@@ -34,6 +34,18 @@ export async function recordLoginFailure(key: string, now = Date.now()): Promise
   return row?.count ?? 1;
 }
 
+/** Zamanla azalmış güncel sayaç (kaydetmeden) */
+export async function currentFailures(key: string, now = Date.now()): Promise<number> {
+  const row = await (await getDb()).get<{ count: number; last_at: number }>("SELECT count, last_at FROM login_failures WHERE ip = ?", [key]);
+  if (!row) return 0;
+  return Math.max(0, row.count - Math.floor((now - row.last_at) / DECAY_MS));
+}
+
+/** Bu kadar hatalı denemeden sonra (sayaç azalana kadar) şifre hiç denenmez: 429 */
+export const LOCK_AFTER = 20;
+/** Kayıt: IP başına art arda en fazla bu kadar deneme (dakikada bir hak geri gelir) */
+export const REGISTER_LIMIT = 5;
+
 /** Başarılı girişte sayaç sıfırlanır. */
 export async function clearLoginFailures(key: string): Promise<void> {
   await (await getDb()).run("DELETE FROM login_failures WHERE ip = ?", [key]);

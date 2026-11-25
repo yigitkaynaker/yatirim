@@ -19,6 +19,8 @@ const { PG, resetDatabase } = await import("./test-db");
 const db = await import("../src/lib/db");
 const portfolio = await import("../src/lib/portfolio");
 const accounts = await import("../src/lib/accounts");
+// Çok kullanıcılı mod: betik sahibin (kullanıcı 1) bağlamında çalışır.
+(await import("../src/lib/userContext")).enterUserForScripts(1);
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>) {

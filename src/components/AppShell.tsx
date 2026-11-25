@@ -4,13 +4,16 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { NotificationBell } from "./NotificationBell";
+import { BOOK_ICON_PATH } from "./help";
+import { NO_ADVICE } from "@/content/kilavuz/types";
 
 // Gezinme öğeleri. Masaüstünde üst menü, küçük ekranda alt sekme çubuğu.
 // short: alt çubukta sığması için kısa ad. mobile: false olanlar menüde değil,
 // üst çubukta simge olarak görünür (Ayarlar). primary: telefonda alt çubukta ve
 // orta genişlikte üst menüde doğrudan görünür; diğerleri "Daha fazla" menüsündedir
-// (geniş ekranda hepsi üst menüde). Yeni sayfa için buraya satır eklemek yeterli.
-const NAV: { href: string; label: string; short: string; icon: string; mobile?: boolean; primary?: boolean }[] = [
+// (geniş ekranda hepsi üst menüde). extra: yardım sayfaları; masaüstünde her zaman "Daha fazla"
+// menüsünde durur (üst menüye sığsın diye). Yeni sayfa için buraya satır eklemek yeterli.
+const NAV: { href: string; label: string; short: string; icon: string; mobile?: boolean; primary?: boolean; extra?: boolean }[] = [
   { href: "/", label: "Portföy", short: "Portföy", primary: true, icon: "M3 13h4v8H3zM10 8h4v13h-4zM17 3h4v18h-4z" },
   { href: "/piyasa", label: "Piyasa", short: "Piyasa", primary: true, icon: "M3 17l5-5 4 4 8-9M14 7h6v6" },
   { href: "/sinyaller", label: "Sinyaller", short: "Sinyaller", icon: "M3 12h4l3-8 4 16 3-8h4" },
@@ -24,6 +27,8 @@ const NAV: { href: string; label: string; short: string; icon: string; mobile?: 
   { href: "/hesaplayicilar", label: "Hesaplayıcılar", short: "Hesapla", icon: "M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 7h8M8 12h2M14 12h2M8 16h2M14 16h2" },
   { href: "/sohbet", label: "Sohbet", short: "Sohbet", primary: true, icon: "M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" },
   { href: "/analizler", label: "Analizler", short: "Analiz", icon: "M4 5h16v14H4zM8 9h8M8 13h8M8 17h5" },
+  { href: "/kilavuz", label: "Kılavuz", short: "Kılavuz", extra: true, icon: BOOK_ICON_PATH },
+  { href: "/sozluk", label: "Sözlük", short: "Sözlük", extra: true, icon: "M4 19V6a2 2 0 0 1 2-2h12v14H6a2 2 0 0 0-2 2zM8 13l2.5-6 2.5 6M8.8 11h3.4M15 9h2" },
   {
     href: "/ayarlar",
     label: "Ayarlar",
@@ -71,7 +76,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             Yatırım
           </Link>
           <nav className="hidden items-center gap-0.5 md:flex lg:gap-1">
-            {MAIN_NAV.map((n) => (
+            {MAIN_NAV.filter((n) => !n.extra).map((n) => (
               <Link
                 key={n.href}
                 href={n.href}
@@ -82,7 +87,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {n.label}
               </Link>
             ))}
-            <div className="relative xl:hidden">
+            <div className="relative">
               <button
                 type="button"
                 onClick={() => setMoreOpen((o) => !o)}
@@ -102,7 +107,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         key={n.href}
                         href={n.href}
                         onClick={() => setMoreOpen(false)}
-                        className={`flex items-center gap-3 px-3 py-2 text-sm ${isActive(pathname, n.href) ? "text-accent" : "text-slate-300 hover:bg-surface-2 hover:text-white"}`}
+                        className={`flex items-center gap-3 px-3 py-2 text-sm ${n.extra ? "" : "xl:hidden"} ${isActive(pathname, n.href) ? "text-accent" : "text-slate-300 hover:bg-surface-2 hover:text-white"}`}
                       >
                         <NavIcon d={n.icon} />
                         {n.label}
@@ -130,7 +135,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 pt-4 pb-28 md:px-6 md:pt-6 md:pb-10">{children}</main>
+      <main className="mx-auto max-w-6xl px-4 pt-4 pb-28 md:px-6 md:pt-6 md:pb-10">
+        {children}
+        <p className="mt-8 text-center text-[11px] text-slate-600">
+          {NO_ADVICE}{" "}
+          <Link href="/kilavuz" className="hover:text-slate-400">
+            Kullanım kılavuzu
+          </Link>
+        </p>
+      </main>
 
       <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-line/70 bg-bg/95 backdrop-blur md:hidden">
         <div className="grid" style={{ gridTemplateColumns: `repeat(${PRIMARY_NAV.length + 1}, minmax(0, 1fr))` }}>

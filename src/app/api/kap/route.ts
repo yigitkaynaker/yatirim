@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 async function snapshot(ticker?: string | null, limit = 100) {
   const interest = await tickersOfInterest();
   return {
+    // Hisse seçilmediyse yalnızca bu kullanıcının hisseleri (bkz. actions.listKapDisclosures)
     items: await actions.listKapDisclosures({ ticker: ticker || undefined, limit }),
     tickers: [...interest.entries()].map(([symbol, i]) => ({ symbol, ...i })).sort((a, b) => a.symbol.localeCompare(b.symbol)),
     status: kapStatus(),

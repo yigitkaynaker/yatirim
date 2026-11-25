@@ -6,6 +6,7 @@ import type { KapDisclosure } from "@/lib/kap";
 import { goToLogin, usePolling } from "@/lib/usePolling";
 import { KAP_EXPLAIN, KapItem } from "./AssetPanels";
 import { Card, Explain, formatSourceTime } from "./ui";
+import { EmptyState } from "./help";
 
 interface KapData {
   items: KapDisclosure[];
@@ -82,10 +83,24 @@ export function KapView() {
             ))}
           </div>
           {data.tickers.length === 0 && (
-            <Card className="p-6 text-center text-sm text-slate-500">Takip edilen BIST hissesi yok. Portföye ya da izleme listesine BIST hissesi ekleyin.</Card>
+            <EmptyState
+              title="Takip edilen BIST hissesi yok"
+              action={{ label: "İzleme listesine hisse ekle", href: "/piyasa" }}
+              guide={{ href: "/kilavuz#turkiye", label: "Kılavuz: KAP nedir?" }}
+            >
+              KAP, şirketlerin resmî duyurularını yayımladığı yerdir. Portföyüne ya da izleme listene bir BIST hissesi eklediğinde o şirketin duyuruları burada
+              görünür.
+            </EmptyState>
           )}
           {data.tickers.length > 0 && data.items.length === 0 && (
-            <Card className="p-6 text-center text-sm text-slate-500">{ticker ? `${ticker} için kayıtlı bildirim yok.` : "Henüz kayıtlı bildirim yok."}</Card>
+            <EmptyState
+              compact
+              title={ticker ? `${ticker} için kayıtlı bildirim yok` : "Henüz kayıtlı bildirim yok"}
+              action={{ label: "Şimdi kontrol et", onClick: () => void checkNow() }}
+              guide={{ href: "/kilavuz#turkiye", label: "Kılavuz: KAP bildirimleri" }}
+            >
+              Takip ettiğin hisseler için KAP hafta içi 08:00–22:00 arasında düzenli kontrol edilir; yeni bir duyuru olunca burada listelenir.
+            </EmptyState>
           )}
           {data.items.length > 0 && (
             <Card>

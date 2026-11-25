@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ASSET_TYPE_INFO, displaySymbol, isCurrency, type Mode } from "@/lib/assets";
 import type { DividendSuggestion } from "@/lib/dividends";
 import { formatDate, formatMoney, formatPercent, formatQuantity, formatSigned, formatTime, pnlClass } from "@/lib/format";
@@ -19,6 +19,8 @@ import { ACCOUNT_EXPLAIN, AccountChips, refreshAccounts } from "./AccountControl
 import { AnnualReturn, XIRR_EXPLAIN } from "./PositionExtras";
 import { SanalRealityCard } from "./SanalReality";
 import type { AccountTotal } from "@/lib/portfolio";
+import { FirstSteps } from "./FirstSteps";
+import { EmptyState, InfoTip, Term } from "./help";
 
 export function PortfolioView() {
   const [mode, setMode] = useState<Mode>("real");
@@ -27,6 +29,12 @@ export function PortfolioView() {
   const { data, error, loading, lastSuccess, reload } = usePolling<PortfolioSummary>(`/api/portfolio?mode=${mode}${acc != null ? `&hesap=${acc}` : ""}`);
   const [adding, setAdding] = useState(false);
   const [converting, setConverting] = useState<Holding | null>(null);
+
+  // /?mod=sanal ile (kılavuz ve ders bağlantıları) sanal sekmesiyle açılır.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (new URLSearchParams(window.location.search).get("mod") === "sanal") setMode("virtual");
+  }, []);
 
   // Mod / hesap değişince bir önceki görünümün verisini gösterme.
   const summary = data && data.mode === mode && (data.account ?? null) === acc ? data : null;
@@ -66,6 +74,14 @@ export function PortfolioView() {
 
       {error && <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-300">{error}</p>}
 
+      <FirstSteps
+        refreshKey={`${mode}:${summary?.holdings.length ?? -1}`}
+        onStartVirtual={() => {
+          setMode("virtual");
+          setAdding(true);
+        }}
+      />
+
       <DailySummaryCard />
 
       <Summary summary={summary} mode={mode} accountName={acc != null ? (lastAccounts?.find((a) => a.accountId === acc)?.name ?? null) : null} />
@@ -81,7 +97,7 @@ export function PortfolioView() {
       {summary?.holdings.some((h) => h.assetType === "gold" && h.ask != null) && (
         <p className="rounded-xl border border-line/70 bg-bg/40 px-3 py-2 text-xs text-slate-400">
           <span className="text-slate-200">Altın değeri:</span> Elinizdeki altın kuyumcunun <b>alış</b> fiyatıyla (bugün satsanız elinize geçecek tutarla) değerlenir.
-          Alırken ödediğiniz <b>satış</b> fiyatı daha yüksektir; aradaki fark (makas) yüzünden altın alır almaz küçük bir zarar görünür. Gram altın fiyatı ons ve dolar
+          Alırken ödediğiniz <b>satış</b> fiyatı daha yüksektir; aradaki fark (makas <InfoTip term="makas" />) yüzünden altın alır almaz küçük bir zarar görünür. Gram altın fiyatı ons ve dolar
           kurundan hesaplanır ve makas içermez.
         </p>
       )}
@@ -223,12 +239,14 @@ function Summary({ summary, mode, accountName }: { summary: PortfolioSummary | n
         {t?.annual && (t.annual.pct != null || (t.annual.short && t.annual.totalPct != null)) && (
           <span title={XIRR_EXPLAIN}>
             <span className="text-slate-500">{t.annual.short ? "Getiri " : "Yıllık "}</span>
+            <InfoTip term="xirr" className="mr-1" />
             <AnnualReturn a={t.annual} />
           </span>
         )}
         {t && t.dayChangeTry != null && (
           <span title="Bugün: fiyatların bir önceki kapanışa göre değişimi (hafta sonu ve tatilde son seansın değişimi)">
             <span className="text-slate-500">Bugün </span>
+            <InfoTip term="bugun" className="mr-1" />
             <span className={pnlClass(t.dayChangeTry)}>
               {formatSigned(t.dayChangeTry)} ({formatPercent(t.dayChangePct)})
             </span>
@@ -241,11 +259,15 @@ function Summary({ summary, mode, accountName }: { summary: PortfolioSummary | n
           <dd className="font-medium">{t ? formatMoney(t.costTry) : "—"}</dd>
         </div>
         <div>
-          <dt className="text-slate-500">Gerçekleşmemiş K/Z</dt>
+          <dt className="text-slate-500">
+            <Term term="gerceklesmemis-kz">Gerçekleşmemiş K/Z</Term>
+          </dt>
           <dd className={`font-medium ${pnlClass(t?.pnlTry)}`}>{t ? formatSigned(t.pnlTry) : "—"}</dd>
         </div>
         <div>
-          <dt className="text-slate-500">Gerçekleşen K/Z</dt>
+          <dt className="text-slate-500">
+            <Term term="gerceklesen-kz">Gerçekleşen K/Z</Term>
+          </dt>
           <dd className={`font-medium ${pnlClass(t?.realizedPnlTry)}`}>{t ? formatSigned(t.realizedPnlTry) : "—"}</dd>
           {t && t.dividendsTry > 0 && (
             <dd className="text-xs text-slate-500" title="Onayladığınız temettü (kâr payı) gelirleri gerçekleşen K/Z'ye eklenir.">
@@ -263,7 +285,7 @@ function Summary({ summary, mode, accountName }: { summary: PortfolioSummary | n
       )}
       {t && t.feesTry > 0 && (
         <p className="mt-3 text-xs text-slate-500">
-          Ödenen komisyon: <span className="num text-slate-300">{formatMoney(t.feesTry)}</span> (maliyete ve gerçekleşen K/Z’ye dahil).
+          <Term term="komisyon">Ödenen komisyon:</Term> <span className="num text-slate-300">{formatMoney(t.feesTry)}</span> (maliyete ve gerçekleşen K/Z’ye dahil).
         </p>
       )}
       {t?.annual && (t.annual.pct == null || t.annual.short) && t.annual.note && <p className="mt-1 text-xs text-slate-500">Yıllık getiri: {t.annual.note}</p>}
@@ -351,15 +373,15 @@ function Holdings({
   if (!summary) return <Card className="p-6 text-center text-sm text-slate-500">Yükleniyor…</Card>;
   if (summary.holdings.length === 0) {
     return (
-      <Card className="p-8 text-center">
-        <p className="text-slate-300">{virtual ? "Henüz sanal pozisyon yok." : "Henüz pozisyon yok."}</p>
-        <p className="mt-1 text-sm text-slate-500">
-          {virtual ? "Bir tutar girin, “alsaydım ne olurdu” takip edilsin." : "İlk alış işleminizi ekleyerek başlayın."}
-        </p>
-        <PrimaryButton tone={mode} onClick={onAdd} className="mt-4">
-          {virtual ? "Sanal pozisyon aç" : "İşlem ekle"}
-        </PrimaryButton>
-      </Card>
+      <EmptyState
+        title={virtual ? "Henüz sanal pozisyon yok" : "Henüz pozisyon yok"}
+        action={{ label: virtual ? "Sanal pozisyon aç" : "İlk işlemini ekle", onClick: onAdd, tone: mode }}
+        guide={virtual ? { href: "/kilavuz#sanal-portfoy", label: "Kılavuz: Sanal portföy nasıl kullanılır?" } : { href: "/kilavuz#gercek-portfoy", label: "Kılavuz: Gerçek portföye işlem eklemek" }}
+      >
+        {virtual
+          ? "Sanal portföy, gerçek para kullanmadan “alsaydım ne olurdu?” diye denediğin yerdir. Bir varlık seç, tutar gir; canlı fiyatla takip edilir."
+          : "Gerçek portföy, bankanda ya da aracı kurumunda yaptığın alım satımların kaydıdır. Aldığın bir varlığı eklediğinde değeri ve kâr/zararı burada görünür."}
+      </EmptyState>
     );
   }
 
@@ -409,7 +431,7 @@ function Holdings({
               ) : (
                 <>
                   <Dt label="Miktar">{formatQuantity(h.quantity)}</Dt>
-                  <Dt label="Ort. maliyet">{formatMoney(h.avgCost, cur(h), 4)}</Dt>
+                  <Dt label={<Term term="ortalama-maliyet">Ort. maliyet</Term>}>{formatMoney(h.avgCost, cur(h), 4)}</Dt>
                   <Dt label="Güncel fiyat">
                     {formatMoney(h.price, cur(h), 4)}
                     <GoldBid h={h} />
@@ -455,7 +477,9 @@ function Holdings({
               ) : (
                 <>
                   <th className="px-3 py-3 text-right font-medium">Miktar</th>
-                  <th className="px-3 py-3 text-right font-medium">Ort. maliyet</th>
+                  <th className="px-3 py-3 text-right font-medium">
+                    <Term term="ortalama-maliyet">Ort. maliyet</Term>
+                  </th>
                   <th className="px-3 py-3 text-right font-medium">Güncel fiyat</th>
                   <th className="px-3 py-3 text-right font-medium">Bugün</th>
                 </>
@@ -545,14 +569,14 @@ function FxBreakdown({ h, className = "", stacked = false }: { h: Holding; class
       </span>
       {!stacked && <span className="px-1.5">·</span>}
       <span className={stacked ? "block" : ""}>
-        Kur etkisi <span className={pnlClass(h.fxEffectTry)}>{formatSigned(h.fxEffectTry)}</span>
+        Kur etkisi <InfoTip term="kur-etkisi" /> <span className={pnlClass(h.fxEffectTry)}>{formatSigned(h.fxEffectTry)}</span>
         {h.fxEstimated && " *"}
       </span>
     </div>
   );
 }
 
-function Dt({ label, children }: { label: string; children: React.ReactNode }) {
+function Dt({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <dt className="text-xs text-slate-500">{label}</dt>

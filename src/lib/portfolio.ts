@@ -1,6 +1,7 @@
 import "server-only";
 import { background } from "./background";
 import { getDb, sqlNow } from "./db";
+import { getCurrentUserId } from "./userContext";
 import {
   ASSET_TYPES,
   instrumentId,
@@ -125,10 +126,11 @@ function fromRow(r: TxRow): Transaction {
 
 export async function listTransactions(mode?: Mode): Promise<Transaction[]> {
   const db = await getDb();
+  const uid = await getCurrentUserId();
   const rows = (
     mode
-      ? await db.all("SELECT * FROM transactions WHERE mode = ? ORDER BY date DESC, id DESC", [mode])
-      : await db.all("SELECT * FROM transactions ORDER BY date DESC, id DESC")
+      ? await db.all("SELECT * FROM transactions WHERE user_id = ? AND mode = ? ORDER BY date DESC, id DESC", [uid, mode])
+      : await db.all("SELECT * FROM transactions WHERE user_id = ? ORDER BY date DESC, id DESC", [uid])
   ) as unknown as TxRow[];
   return rows.map(fromRow);
 }
@@ -139,7 +141,7 @@ export async function activeTransactions(mode: Mode): Promise<Transaction[]> {
 }
 
 export async function getTransaction(id: number): Promise<Transaction | null> {
-  const row = await (await getDb()).get("SELECT * FROM transactions WHERE id = ?", [id]) as unknown as TxRow | undefined;
+  const row = await (await getDb()).get("SELECT * FROM transactions WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()]) as unknown as TxRow | undefined;
   return row ? fromRow(row) : null;
 }
 
@@ -247,9 +249,9 @@ export interface InsertExtras {
 }
 
 async function insert(input: TransactionInput, extras: InsertExtras = {}): Promise<number> {
-  const res = await (await getDb()).run(`INSERT INTO transactions (mode, asset_type, symbol, side, quantity, price, currency, date, note,
+  const res = await (await getDb()).run(`INSERT INTO transactions (user_id, mode, asset_type, symbol, side, quantity, price, currency, date, note,
          amount, amount_currency, price_time, source_id, order_id, fx_try, account_id, fee)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [input.mode, input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, extras.amount ?? null, extras.amountCurrency ?? null, extras.priceTime ?? null, extras.sourceId ?? null, extras.orderId ?? null, input.currency === "TRY" ? 1 : (extras.fxTry ?? null), input.mode === "real" ? input.accountId : null, input.fee]);
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [await getCurrentUserId(), input.mode, input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, extras.amount ?? null, extras.amountCurrency ?? null, extras.priceTime ?? null, extras.sourceId ?? null, extras.orderId ?? null, input.currency === "TRY" ? 1 : (extras.fxTry ?? null), input.mode === "real" ? input.accountId : null, input.fee]);
   const id = res.lastId!;
   // Kur bilinmiyorsa (elle girilen USD/EUR işlem) arka planda o günün kuruyla doldur.
   if (input.currency !== "TRY" && extras.fxTry == null && !extras.deferFx) background(() => ensureFxRates({ force: true }));
@@ -321,7 +323,7 @@ export async function updateTransaction(id: number, input: TransactionInput): Pr
     const fxTry =
       input.currency === "TRY" ? 1 : existing.currency === input.currency && existing.date === input.date ? existing.fxTry : null;
     await db.run(`UPDATE transactions SET asset_type=?, symbol=?, side=?, quantity=?, price=?, currency=?, date=?, note=?,
-           fx_try=?, account_id=?, fee=?, updated_at=? WHERE id=?`, [input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, fxTry, accountId, input.fee, sqlNow(), id]);
+           fx_try=?, account_id=?, fee=?, updated_at=? WHERE id=? AND user_id=?`, [input.assetType, input.symbol, input.side, input.quantity, input.price, input.currency, input.date, input.note, fxTry, accountId, input.fee, sqlNow(), id, await getCurrentUserId()]);
     if (fxTry == null) background(() => ensureFxRates({ force: true }));
     return await getTransaction(id);
   });
@@ -336,7 +338,7 @@ export async function deleteTransaction(id: number): Promise<boolean> {
     const existing = await getTransaction(id);
     if (!existing) return false;
     if (!existing.convertedAt) assertNoOversell(await sameAsset(existing.mode, existing.assetType, existing.symbol, existing.accountId, id));
-    await db.run("DELETE FROM transactions WHERE id = ?", [id]);
+    await db.run("DELETE FROM transactions WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()]);
     return true;
   });
 }
@@ -455,7 +457,7 @@ export async function convertVirtualPosition(body: unknown): Promise<Transaction
     const newId = await insert(input, { sourceId: firstBuy.id });
     const now = sqlNow();
     for (const t of virtual) {
-      await db.run("UPDATE transactions SET converted_at = ?, converted_to_id = ?, updated_at = ? WHERE id = ?", [now, newId, now, t.id]);
+      await db.run("UPDATE transactions SET converted_at = ?, converted_to_id = ?, updated_at = ? WHERE id = ? AND user_id = ?", [now, newId, now, t.id, await getCurrentUserId()]);
     }
     return (await getTransaction(newId))!;
   });
@@ -621,7 +623,7 @@ interface DivRowTry {
  * kaydedilmemişse güncel kur kullanılır.
  */
 async function confirmedDividendRows(mode: Mode, rate: (cur: string) => number | null): Promise<DivRowTry[]> {
-  const rows = await (await getDb()).all("SELECT account_id, asset_type, symbol, ex_date, amount, currency, fx_try FROM dividends WHERE mode = ? AND status = 'confirmed'", [mode]) as { account_id: number; asset_type: AssetType; symbol: string; ex_date: string; amount: number; currency: string; fx_try: number | null }[];
+  const rows = await (await getDb()).all("SELECT account_id, asset_type, symbol, ex_date, amount, currency, fx_try FROM dividends WHERE user_id = ? AND mode = ? AND status = 'confirmed'", [await getCurrentUserId(), mode]) as { account_id: number; asset_type: AssetType; symbol: string; ex_date: string; amount: number; currency: string; fx_try: number | null }[];
   const out: DivRowTry[] = [];
   for (const r of rows) {
     const fx = r.currency === "TRY" ? 1 : (r.fx_try ?? rate(r.currency));

@@ -14,8 +14,9 @@ import * as notes from "./notes";
 import * as backup from "./backup";
 import * as io from "./importExport";
 import * as reports from "./reports";
-import { runOrderCheck } from "./orderWatcher";
+import { isOwner, requireOwner } from "./userContext";
 import { getQuotes, type InstrumentRef } from "./prices";
+import * as onboarding from "./onboarding";
 
 // EYLEM KATMANI
 // Portföyü değiştiren / okuyan tüm işlemler buradaki düz, tipli fonksiyonlardan
@@ -162,8 +163,12 @@ export interface PlaceOrderParams {
 export async function placeOrder(p: PlaceOrderParams, source: orders.OrderSource = "manuel") {
   const entryBy = p.quantity != null && p.quantity !== "" ? "quantity" : "amount";
   const order = await orders.createOrder({ ...p, entryBy }, source);
-  // Koşul zaten sağlanıyorsa beklemeden kontrol et.
-  await runOrderCheck();
+  // Koşul zaten sağlanıyorsa beklemeden kontrol et (yalnızca bu kullanıcının emirleri).
+  try {
+    await orders.checkPendingOrders();
+  } catch (err) {
+    console.error("[emirler] kontrol hatası", err);
+  }
   return (await orders.getOrder(order.id))!;
 }
 
@@ -288,8 +293,17 @@ export async function removeDividend(id: number) {
 export type { KapDisclosure } from "./kap";
 
 /** Saklanan KAP bildirimleri (en yeni önce); ticker verilirse yalnızca o hisse. */
+/**
+ * KAP bildirimleri. Kayıtlar kullanıcılar arasında paylaşılır (herkese açık resmi veri); hisse verilmezse
+ * yalnızca geçerli kullanıcının pozisyon / izleme listesi hisseleri gösterilir (başkalarının hisseleri sızmasın).
+ */
 export async function listKapDisclosures(opts: { ticker?: string; limit?: number; sinceMs?: number } = {}) {
-  return await kap.listKap(opts);
+  if (opts.ticker) return await kap.listKap(opts);
+  const limit = opts.limit ?? 100;
+  const interest = await kap.tickersOfInterest();
+  if (interest.size === 0) return [];
+  const all = await kap.listKap({ ...opts, limit: Math.max(limit * 5, 500) });
+  return all.filter((d) => d.stockCodes.some((c) => interest.has(c))).slice(0, limit);
 }
 
 // ---- Pozisyon detayı ----------------------------------------------------------------
@@ -421,22 +435,27 @@ export async function createNoteAlarms(p: { mode: Mode; assetType: AssetType; sy
 
 export type { BackupFile, BackupCheck } from "./backup";
 
-export function listBackups() {
+// Dosya yedekleri tüm veritabanını (bütün kullanıcıları) kapsar: yalnızca sahip.
+export async function listBackups() {
+  if (!(await isOwner())) return [];
   return backup.listBackups();
 }
 
 /** Şimdi yedekle (çalışırken güvenli). */
 export async function createBackup() {
+  await requireOwner();
   return await backup.createBackup("elle");
 }
 
 /** Yüklenen yedeği doğrular ve geri yükleme için hazırlar (henüz bir şey değişmez). */
 export async function stageRestore(bytes: Uint8Array) {
+  await requireOwner();
   return await backup.stageUpload(bytes);
 }
 
 /** Hazırlanan yedeği geri yükler (önce mevcut veri yedeklenir). */
 export async function restoreBackup(token: string) {
+  await requireOwner();
   const file = backup.stagedPath(token);
   if (!file) throw new portfolio.ValidationError("Yüklenen dosya bulunamadı ya da süresi doldu; yeniden yükleyin.");
   return await backup.restoreFromFile(file);
@@ -487,4 +506,9 @@ export function getYearlyReport(opts: { account?: number | null } = {}) {
 /** Sanal portföyün gerçeklik kontrolü: kazanan/kaybeden, en iyi/kötü, en büyük düşüş, tahmini komisyon. */
 export function getSanalRealityCheck() {
   return reports.getSanalRealityCheck();
+}
+
+/** "İlk adımlar" kartı: sanal alım, izleme listesi, emir/alarm, bildirim yapıldı mı */
+export function getOnboardingStatus() {
+  return onboarding.getOnboardingStatus();
 }

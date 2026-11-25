@@ -1,15 +1,17 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { getDb, sqlNow } from "./db";
-import { aiErrorMessage, currentModel, getAiClient, getBudgetStatus, recordUsage, type AiClient } from "./aiClient";
+import { aiErrorMessage, getBudgetStatus } from "./aiClient";
+import { getProvider, type AiBackend, type AiProvider } from "./aiProvider";
 import { getAiSettings } from "./settings";
 import { CHAT_TOOLS, executeChatTool, toolLabel, type ActionCard } from "./chatTools";
 import { todayIstanbul } from "./portfolio";
 import { kapContext, tickersOfInterest } from "./kap";
 import { unverifiedNumbers } from "./numberCheck";
+import { getCurrentUserId } from "./userContext";
 
 // SOHBET
-// Claude ile araç kullanan sohbet. Mesajlar API içerik blokları olarak
+// Yapay zeka (Claude ya da OpenAI, bkz. aiProvider.ts) ile araç kullanan sohbet. Mesajlar Claude içerik blokları olarak
 // chat_messages tablosunda saklanır ve her turda geri gönderilir. Yanıt
 // istemciye NDJSON olayları olarak akıtılır (bkz. ChatEvent).
 
@@ -49,7 +51,7 @@ interface MsgRow {
 // ---- Saklama ----------------------------------------------------------------------
 
 export async function listConversations(limit = 50): Promise<Conversation[]> {
-  const rows = await (await getDb()).all("SELECT * FROM chat_conversations ORDER BY updated_at DESC, id DESC LIMIT ?", [limit]) as unknown as {
+  const rows = await (await getDb()).all("SELECT * FROM chat_conversations WHERE user_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?", [await getCurrentUserId(), limit]) as unknown as {
     id: number;
     title: string;
     created_at: string;
@@ -63,17 +65,17 @@ export async function getConversation(id: number): Promise<Conversation | null> 
 }
 
 export async function deleteConversation(id: number): Promise<boolean> {
-  return Number((await (await getDb()).run("DELETE FROM chat_conversations WHERE id = ?", [id])).changes) > 0;
+  return Number((await (await getDb()).run("DELETE FROM chat_conversations WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()])).changes) > 0;
 }
 
 async function createConversation(firstMessage: string): Promise<number> {
   const title = firstMessage.replace(/\s+/g, " ").trim().slice(0, 60) || "Yeni sohbet";
-  return (await (await getDb()).run("INSERT INTO chat_conversations (title) VALUES (?) RETURNING id", [title])).lastId!;
+  return (await (await getDb()).run("INSERT INTO chat_conversations (user_id, title) VALUES (?, ?) RETURNING id", [await getCurrentUserId(), title])).lastId!;
 }
 
 async function insertMessage(conversationId: number, role: "user" | "assistant", content: unknown, cards?: ActionCard[]): Promise<number> {
-  const res = await (await getDb()).run("INSERT INTO chat_messages (conversation_id, role, content, cards) VALUES (?, ?, ?, ?) RETURNING id", [conversationId, role, JSON.stringify(content), cards && cards.length ? JSON.stringify(cards) : null]);
-  await (await getDb()).run("UPDATE chat_conversations SET updated_at = ? WHERE id = ?", [sqlNow(), conversationId]);
+  const res = await (await getDb()).run("INSERT INTO chat_messages (user_id, conversation_id, role, content, cards) VALUES (?, ?, ?, ?, ?) RETURNING id", [await getCurrentUserId(), conversationId, role, JSON.stringify(content), cards && cards.length ? JSON.stringify(cards) : null]);
+  await (await getDb()).run("UPDATE chat_conversations SET updated_at = ? WHERE id = ? AND user_id = ?", [sqlNow(), conversationId, await getCurrentUserId()]);
   return res.lastId!;
 }
 
@@ -95,7 +97,7 @@ async function verifyNumbers(conversationId: number, turnText: string, system: s
 }
 
 async function rowsFor(conversationId: number): Promise<MsgRow[]> {
-  return await (await getDb()).all("SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY id", [conversationId]) as unknown as MsgRow[];
+  return await (await getDb()).all("SELECT * FROM chat_messages WHERE conversation_id = ? AND user_id = ? ORDER BY id", [conversationId, await getCurrentUserId()]) as unknown as MsgRow[];
 }
 
 type Block = { type: string; text?: string; citations?: { type: string; url?: string; title?: string | null }[] | null };
@@ -216,7 +218,8 @@ export async function runChatTurn(opts: {
   conversationId?: number | null;
   message: string;
   emit: (e: ChatEvent) => void;
-  client?: AiClient;
+  /** Claude istemcisi ya da sağlayıcı (testler); verilmezse Ayarlar'daki etkin sağlayıcı */
+  client?: AiBackend;
   signal?: AbortSignal;
 }): Promise<{ conversationId: number | null }> {
   const { emit } = opts;
@@ -227,9 +230,9 @@ export async function runChatTurn(opts: {
     return { conversationId: opts.conversationId ?? null };
   }
 
-  let client: AiClient;
+  let provider: AiProvider;
   try {
-    client = opts.client ?? (await getAiClient());
+    provider = await getProvider(opts.client);
   } catch (err) {
     emit({ type: "error", message: aiErrorMessage(err) });
     emit({ type: "done" });
@@ -252,54 +255,41 @@ export async function runChatTurn(opts: {
 
   await insertMessage(conversationId, "user", [{ type: "text", text }]);
 
-  const model = await currentModel();
   const { maxSearches } = await getAiSettings();
-  const tools: Anthropic.ToolUnion[] = [
-    ...CHAT_TOOLS,
-    ...(maxSearches > 0 ? [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: maxSearches }] : []),
-  ];
   const system = await systemPrompt();
   let turnText = "";
   let lastAssistantId: number | null = null;
+  // Web araması bütün tur için sınırlıdır (her adımda kalan hak gönderilir).
+  let searchesLeft = maxSearches;
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
-      const stream = client.messages.stream(
-        {
-          model: model.id,
-          max_tokens: 8000,
-          system,
-          tools,
-          messages: await historyFor(conversationId),
-          output_config: { effort: "medium" },
-          cache_control: { type: "ephemeral" },
+      const msg = await provider.chatStep({
+        system,
+        tools: CHAT_TOOLS,
+        maxSearches: searchesLeft,
+        messages: await historyFor(conversationId),
+        signal: opts.signal,
+        onText: (delta) => {
+          turnText += delta;
+          emit({ type: "text", delta });
         },
-        { signal: opts.signal },
-      );
-      for await (const event of stream) {
-        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-          turnText += event.delta.text;
-          emit({ type: "text", delta: event.delta.text });
-        } else if (event.type === "content_block_start") {
-          const b = event.content_block;
-          if (b.type === "server_tool_use" || b.type === "tool_use") emit({ type: "status", text: `${toolLabel(b.name)}…` });
-        }
-      }
-      const msg = await stream.finalMessage();
-      await recordUsage("sohbet", model.id, msg.usage);
+        onStatus: (name) => emit({ type: "status", text: `${toolLabel(name)}…` }),
+      });
+      searchesLeft = Math.max(0, searchesLeft - msg.usage.webSearches);
 
-      if (msg.stop_reason === "pause_turn") {
+      if (msg.stop === "pause") {
         await insertMessage(conversationId, "assistant", msg.content);
         continue;
       }
-      const toolUses = msg.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-      if (toolUses.length === 0 || msg.stop_reason === "refusal") {
+      const toolUses = msg.toolCalls;
+      if (toolUses.length === 0 || msg.stop === "refusal") {
         lastAssistantId = await insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
-        if (msg.stop_reason === "refusal") emit({ type: "warning", message: "Yapay zeka bu isteği yanıtlamadı." });
-        if (msg.stop_reason === "max_tokens") emit({ type: "warning", message: "Yanıt uzunluk sınırına ulaştı ve kesildi." });
+        if (msg.stop === "refusal") emit({ type: "warning", message: "Yapay zeka bu isteği yanıtlamadı." });
+        if (msg.stop === "max_tokens") emit({ type: "warning", message: "Yanıt uzunluk sınırına ulaştı ve kesildi." });
         break;
       }
-      if (msg.stop_reason === "max_tokens") {
+      if (msg.stop === "max_tokens") {
         // Araç girdisi yarım kalmış olabilir: çalıştırma.
         await insertMessage(conversationId, "assistant", msg.content.filter((b) => b.type !== "tool_use"));
         emit({ type: "warning", message: "Yanıt uzunluk sınırına ulaştı; işlem yapılmadı. Lütfen tekrar deneyin." });
@@ -339,7 +329,7 @@ export async function runChatTurn(opts: {
     const warn = await verifyNumbers(conversationId, turnText, system);
     if (warn) {
       emit({ type: "card", card: warn });
-      if (lastAssistantId != null) await (await getDb()).run("UPDATE chat_messages SET cards = ? WHERE id = ?", [JSON.stringify([warn]), lastAssistantId]);
+      if (lastAssistantId != null) await (await getDb()).run("UPDATE chat_messages SET cards = ? WHERE id = ? AND user_id = ?", [JSON.stringify([warn]), lastAssistantId, await getCurrentUserId()]);
     }
   } catch (err) {
     console.warn("[sohbet] rakam kontrolü yapılamadı", err);

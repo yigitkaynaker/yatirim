@@ -9,6 +9,7 @@ import { Card, Modal, ModeTabs, PrimaryButton } from "./ui";
 import { VirtualEntryForm } from "./VirtualEntryForm";
 import { fetchJson, goToLogin, UnauthorizedError } from "@/lib/usePolling";
 import { AccountChips, useAccounts } from "./AccountControls";
+import { EmptyState } from "./help";
 
 export function TransactionsView() {
   const [mode, setMode] = useState<Mode>("real");
@@ -77,7 +78,15 @@ export function TransactionsView() {
       {!visible ? (
         <Card className="p-6 text-center text-sm text-slate-500">Yükleniyor…</Card>
       ) : visible.length === 0 ? (
-        <Card className="p-8 text-center text-sm text-slate-400">Henüz işlem yok.</Card>
+        <EmptyState
+          title={virtual ? "Henüz sanal işlem yok" : "Henüz işlem yok"}
+          action={{ label: virtual ? "Sanal pozisyon aç" : "İlk işlemini ekle", onClick: () => setAdding(true), tone: mode }}
+          guide={{ href: virtual ? "/kilavuz#sanal-portfoy" : "/kilavuz#gercek-portfoy", label: "Kılavuz: İşlem eklemek" }}
+        >
+          {virtual
+            ? "Sanal alımların burada listelenir. Gerçek para kullanmadan “alsaydım ne olurdu?” diye denemek için bir sanal pozisyon aç."
+            : "Gerçekte yaptığın her alış ve satış burada listelenir; düzenleyebilir ya da silebilirsin. Başka bir kurumdan dosyayla almak için Rapor & veri sayfasını kullan."}
+        </EmptyState>
       ) : (
         <Card className="divide-y divide-line/70">
           {visible.map((t) => (

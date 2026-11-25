@@ -21,6 +21,8 @@ import { SanalRealityCard } from "./SanalReality";
 import { SignalBadge } from "./TechnicalPanel";
 import { TransactionForm, toInput, today } from "./TransactionForm";
 import { Card, Explain, Modal, PriceMeta, Segmented } from "./ui";
+import { InfoTip } from "./help";
+import type { TermId } from "@/content/sozluk/terimler";
 
 const RANGES: { value: ChartRange; label: string }[] = [
   { value: "1H", label: "1H" },
@@ -219,7 +221,7 @@ export function PositionDetailView() {
             <Item label="Miktar">
               {formatQuantity(h.quantity)} {unit}
             </Item>
-            <Item label={virtual ? "Giriş fiyatı" : "Ortalama maliyet"}>{formatMoney(h.avgCost, cur, 4)}</Item>
+            <Item label={virtual ? "Giriş fiyatı" : "Ortalama maliyet"} tip={virtual ? undefined : "ortalama-maliyet"}>{formatMoney(h.avgCost, cur, 4)}</Item>
             <Item label={virtual ? "Yatırılan" : "Maliyet (TL)"}>{formatMoney(h.costTry)}</Item>
             <Item label="Güncel değer">{formatMoney(h.valueTry)}</Item>
             <Item label="K/Z (TL)">
@@ -228,7 +230,7 @@ export function PositionDetailView() {
             <Item label="K/Z %">
               <span className={pnlClass(h.pnlPct)}>{formatPercent(h.pnlPct)}</span>
             </Item>
-            <Item label="Bugün">
+            <Item label="Bugün" tip="bugun">
               {h.dayChangeTry == null ? (
                 "—"
               ) : (
@@ -247,7 +249,7 @@ export function PositionDetailView() {
                 <Item label="Fiyat etkisi">
                   <span className={pnlClass(h.priceEffectTry)}>{formatSigned(h.priceEffectTry)}</span>
                 </Item>
-                <Item label="Kur etkisi">
+                <Item label="Kur etkisi" tip="kur-etkisi">
                   <span className={pnlClass(h.fxEffectTry)}>{formatSigned(h.fxEffectTry)}</span>
                   {h.fxEstimated && " *"}
                 </Item>
@@ -259,7 +261,7 @@ export function PositionDetailView() {
               </Item>
             )}
             {h.feesTry > 0 && <Item label="Ödenen komisyon">{formatMoney(h.feesTry)}</Item>}
-            <Item label="Yıllık getiri (XIRR)">
+            <Item label="Yıllık getiri (XIRR)" tip="xirr">
               <AnnualReturn a={h.annual} />
             </Item>
             {!virtual && (account != null || h.accounts.length === 1) && (
@@ -629,10 +631,13 @@ export function PositionDetailView() {
   );
 }
 
-function Item({ label, children }: { label: string; children: React.ReactNode }) {
+function Item({ label, tip, children }: { label: string; tip?: TermId; children: React.ReactNode }) {
   return (
     <div>
-      <dt className="text-xs text-slate-500">{label}</dt>
+      <dt className="flex items-center gap-1 text-xs text-slate-500">
+        {label}
+        {tip && <InfoTip term={tip} />}
+      </dt>
       <dd>{children}</dd>
     </div>
   );

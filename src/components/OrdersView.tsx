@@ -21,6 +21,7 @@ import { usePolling } from "@/lib/usePolling";
 import { Card, Field, inputCls, Modal, PrimaryButton, Segmented } from "./ui";
 import { SymbolField, symbolOnTypeChange } from "./SymbolField";
 import { AccountSelect } from "./AccountControls";
+import { EmptyState } from "./help";
 
 const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   pending: { label: "Bekliyor", cls: "bg-sky-500/15 text-sky-300" },
@@ -65,6 +66,15 @@ export function OrdersView() {
         <h2 className="text-sm font-medium text-slate-300">Bekleyen emirler</h2>
         {!orders ? (
           <Card className="p-6 text-center text-sm text-slate-500">Yükleniyor…</Card>
+        ) : orders.length === 0 ? (
+          <EmptyState
+            title="Henüz emir yok"
+            action={{ label: "İlk emrini ver", onClick: () => setAdding(true) }}
+            guide={{ href: "/kilavuz#emirler", label: "Kılavuz: Emirler nasıl çalışır?" }}
+          >
+            Emir, “fiyat şu seviyeye gelince al ya da sat” talimatıdır. Koşul sağlanınca işlem portföy kaydına kendiliğinden yazılır; gerçek bir aracı kuruma gitmez.
+            Denemek için sanal portföyü seçebilirsin.
+          </EmptyState>
         ) : pending.length === 0 ? (
           <Card className="p-6 text-center text-sm text-slate-400">Bekleyen emir yok.</Card>
         ) : (

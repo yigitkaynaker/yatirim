@@ -167,8 +167,12 @@ export interface Lesson {
   minutes: number;
   /** "Nedir?": 2–3 kısa paragraf */
   what: string[];
-  /** "Grafikte nasıl görünür?" örnekleri */
+  /** "Grafikte nasıl görünür?" örnekleri (fiyat grafiği gerekmeyen derslerde boş, yerine diagram) */
   examples: ChartExample[];
+  /** Fiyat grafiği yerine gösterilecek açıklayıcı çizim (src/components/egitim/LessonDiagram.tsx) */
+  diagram?: { id: DiagramId; title: string; caption: string };
+  /** Dizinde hangi bölümde listelenir: grafik (varsayılan) ya da yatırımın temelleri */
+  track?: "temel";
   /** "Nasıl yorumlanır?": adım adım */
   steps: string[];
   /** "Sık yapılan hatalar" */
@@ -181,8 +185,10 @@ export interface Lesson {
   extra?: "positionCalculator";
 }
 
+export type DiagramId = "ucret" | "stopaj" | "cesitlendirme" | "duygular";
+
 /** Dizin sayfası ve gezinme için hafif özet (grafik verisi olmadan) */
-export type LessonSummary = Pick<Lesson, "slug" | "title" | "summary" | "level" | "minutes">;
+export type LessonSummary = Pick<Lesson, "slug" | "title" | "summary" | "level" | "minutes" | "track">;
 
 /** Her eğitim sayfasının altındaki uyarı */
 export const DISCLAIMER = "Bu içerik eğitim amaçlıdır, yatırım tavsiyesi değildir.";

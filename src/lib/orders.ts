@@ -17,6 +17,7 @@ import { getQuotes, quoteUsable } from "./prices";
 import { parseSizing, priceAtMarket, recordTransaction, todayIstanbul, ValidationError } from "./portfolio";
 import { sendPushToAll, type PushPayload } from "./push";
 import { accountNames, getAccount, resolveAccount } from "./accounts";
+import { getCurrentUserId } from "./userContext";
 
 // Koşullu al/sat emirleri. YALNIZCA uygulama içinde gerçekleşir: koşul
 // sağlanınca ilgili portföye (gerçek/sanal) işlem kaydı düşülür. Aracı kurum ya
@@ -107,15 +108,15 @@ export async function listOrders(status?: OrderStatus): Promise<Order[]> {
   const db = await getDb();
   const rows = (
     status
-      ? await db.all("SELECT * FROM orders WHERE status = ? ORDER BY id DESC", [status])
-      : await db.all("SELECT * FROM orders ORDER BY id DESC")
+      ? await db.all("SELECT * FROM orders WHERE user_id = ? AND status = ? ORDER BY id DESC", [await getCurrentUserId(), status])
+      : await db.all("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC", [await getCurrentUserId()])
   ) as unknown as OrderRow[];
   const names = await accountNames();
   return rows.map((r) => fromRow(r, names));
 }
 
 export async function getOrder(id: number): Promise<Order | null> {
-  const row = await (await getDb()).get("SELECT * FROM orders WHERE id = ?", [id]) as unknown as OrderRow | undefined;
+  const row = await (await getDb()).get("SELECT * FROM orders WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()]) as unknown as OrderRow | undefined;
   return row ? fromRow(row, await accountNames()) : null;
 }
 
@@ -144,14 +145,14 @@ export async function createOrder(body: unknown, source: OrderSource = "manuel")
   const [q] = await getQuotes([{ type: assetType, symbol }]);
   if (q.price == null || !q.currency) throw new ValidationError(`${symbol} için fiyat bulunamadı; sembolü kontrol edin.`);
 
-  const res = await (await getDb()).run(`INSERT INTO orders (mode, asset_type, symbol, side, condition, trigger_price, trigger_currency,
+  const res = await (await getDb()).run(`INSERT INTO orders (user_id, mode, asset_type, symbol, side, condition, trigger_price, trigger_currency,
          quantity, amount, amount_currency, source, note, account_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [b.mode, assetType, symbol, b.side, b.condition, triggerPrice, q.currency, sizing.quantity, sizing.amount, sizing.amountCurrency, source, noteRaw ? noteRaw.slice(0, 500) : null, accountId]);
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [await getCurrentUserId(), b.mode, assetType, symbol, b.side, b.condition, triggerPrice, q.currency, sizing.quantity, sizing.amount, sizing.amountCurrency, source, noteRaw ? noteRaw.slice(0, 500) : null, accountId]);
   return (await getOrder(res.lastId!))!;
 }
 
 export async function cancelOrder(id: number): Promise<Order | null> {
-  const r = await (await getDb()).run("UPDATE orders SET status = 'cancelled', cancelled_at = ? WHERE id = ? AND status = 'pending'", [sqlNow(), id]);
+  const r = await (await getDb()).run("UPDATE orders SET status = 'cancelled', cancelled_at = ? WHERE id = ? AND user_id = ? AND status = 'pending'", [sqlNow(), id, await getCurrentUserId()]);
   if (Number(r.changes) === 0) {
     const o = await getOrder(id);
     if (!o) return null;
@@ -173,12 +174,13 @@ export interface AppNotification {
 }
 
 export async function addNotification(n: { kind: string; title: string; body: string; orderId?: number; data?: unknown }) {
-  await (await getDb()).run("INSERT INTO notifications (kind, title, body, order_id, data) VALUES (?, ?, ?, ?, ?)", [n.kind, n.title, n.body, n.orderId ?? null, n.data === undefined ? null : JSON.stringify(n.data)]);
+  await (await getDb()).run("INSERT INTO notifications (user_id, kind, title, body, order_id, data) VALUES (?, ?, ?, ?, ?, ?)", [await getCurrentUserId(), n.kind, n.title, n.body, n.orderId ?? null, n.data === undefined ? null : JSON.stringify(n.data)]);
 }
 
 export async function listNotifications(limit = 30): Promise<{ items: AppNotification[]; unread: number }> {
   const db = await getDb();
-  const rows = await db.all("SELECT * FROM notifications ORDER BY id DESC LIMIT ?", [limit]) as unknown as {
+  const uid = await getCurrentUserId();
+  const rows = await db.all("SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?", [uid, limit]) as unknown as {
     id: number;
     kind: string;
     title: string;
@@ -187,7 +189,7 @@ export async function listNotifications(limit = 30): Promise<{ items: AppNotific
     created_at: string;
     read_at: string | null;
   }[];
-  const { c } = await db.get("SELECT COUNT(*) AS c FROM notifications WHERE read_at IS NULL") as { c: number };
+  const { c } = await db.get("SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read_at IS NULL", [uid]) as { c: number };
   return {
     items: rows.map((r) => ({
       id: r.id,
@@ -203,7 +205,7 @@ export async function listNotifications(limit = 30): Promise<{ items: AppNotific
 }
 
 export async function markNotificationsRead() {
-  await (await getDb()).run("UPDATE notifications SET read_at = ? WHERE read_at IS NULL", [sqlNow()]);
+  await (await getDb()).run("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL", [sqlNow(), await getCurrentUserId()]);
 }
 
 // ---- Emir izleyici ----------------------------------------------------------
@@ -241,8 +243,8 @@ async function executeOrder(o: Order): Promise<boolean> {
   try {
     push = await db.tx(async (): Promise<PushPayload | null> => {
       const claim = await db.run(
-        "UPDATE orders SET status = 'executed', executed_at = ?, executed_price = ? WHERE id = ? AND status = 'pending'",
-        [sqlNow(), pricing.quotePrice, o.id],
+        "UPDATE orders SET status = 'executed', executed_at = ?, executed_price = ? WHERE id = ? AND user_id = ? AND status = 'pending'",
+        [sqlNow(), pricing.quotePrice, o.id, await getCurrentUserId()],
       );
       // Başka bir tur zaten işledi ya da iptal edildi (değişiklik yok).
       if (claim.changes !== 1) return null;
@@ -275,7 +277,7 @@ async function executeOrder(o: Order): Promise<boolean> {
       } catch (err) {
         // Örn. eldekinden fazla satış: emir başarısız olarak kapanır.
         const msg = err instanceof ValidationError ? err.message : "İşlem kaydedilemedi.";
-        await db.run("UPDATE orders SET status = 'failed', executed_at = NULL, executed_price = NULL, error = ? WHERE id = ?", [msg, o.id]);
+        await db.run("UPDATE orders SET status = 'failed', executed_at = NULL, executed_price = NULL, error = ? WHERE id = ? AND user_id = ?", [msg, o.id, await getCurrentUserId()]);
         const failedNote = {
           kind: "order_failed",
           title: `Emir gerçekleşemedi: ${name}`,
@@ -285,7 +287,7 @@ async function executeOrder(o: Order): Promise<boolean> {
         await addNotification(failedNote);
         return { title: failedNote.title, body: failedNote.body, url: "/emirler", tag: `emir-${o.id}` };
       }
-      await db.run("UPDATE orders SET executed_tx_id = ? WHERE id = ?", [txId, o.id]);
+      await db.run("UPDATE orders SET executed_tx_id = ? WHERE id = ? AND user_id = ?", [txId, o.id, await getCurrentUserId()]);
       const doneNote = {
         kind: "order_executed",
         title: `Emir gerçekleşti: ${name} ${sideLabel(o.side).toLocaleLowerCase("tr-TR")}`,

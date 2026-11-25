@@ -1,10 +1,9 @@
 import "server-only";
 import { background } from "./background";
-import type Anthropic from "@anthropic-ai/sdk";
 import { getDb, sqlNow } from "./db";
 import { displaySymbol, instrumentId, parseInstrumentId, type Mode } from "./assets";
-import { AI_MODELS } from "./settings";
-import { getAiClient, getBudgetStatus, isAiConfigured, recordUsage, type AiClient } from "./aiClient";
+import { getBudgetStatus, isAiConfigured } from "./aiClient";
+import { getProvider, type AiBackend } from "./aiProvider";
 import { getPortfolio, type PortfolioSummary } from "./portfolio";
 import { listKap, tickersOfInterest } from "./kap";
 import { cachedHeadlines, getHeadlines, headlineLine, type Headline } from "./freeNews";
@@ -13,6 +12,8 @@ import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
 import { getQuotes } from "./prices";
 import { unverifiedNumbers } from "./numberCheck";
+import { usesSharedAi } from "./settings";
+import { getCurrentUserId } from "./userContext";
 
 // GÜNLÜK ÖZET ve "NEDEN HAREKET EDİYOR?"
 // Günlük özet: hafta içi 18:45'ten (İstanbul) sonra bir kez. YALNIZCA önbellekteki /
@@ -24,7 +25,6 @@ import { unverifiedNumbers } from "./numberCheck";
 
 export const SUMMARY_TIME = "18:45";
 export const WHY_MIN_MOVE_PCT = 3;
-const CHEAP_MODEL = AI_MODELS.ekonomik.id;
 
 export interface DailySummary {
   date: string;
@@ -91,7 +91,7 @@ export async function collectSummaryData(now = new Date()): Promise<SummaryData>
   movers.sort((a, b) => Math.abs(b.dayChangePct) - Math.abs(a.dayChangePct));
 
   const signals = (
-    await (await getDb()).all("SELECT instrument, label, checked_date FROM technical_signals ORDER BY checked_date DESC") as { instrument: string; label: string; checked_date: string }[]
+    await (await getDb()).all("SELECT instrument, label, checked_date FROM technical_signals WHERE user_id = ? ORDER BY checked_date DESC", [await getCurrentUserId()]) as { instrument: string; label: string; checked_date: string }[]
   )
     .filter((s) => held.has(s.instrument))
     .map((s) => ({ name: held.get(s.instrument)!.name, label: s.label, date: s.checked_date }));
@@ -153,18 +153,11 @@ function dataBlock(d: SummaryData): string {
   );
 }
 
-async function askCheap(client: AiClient, kind: "ozet" | "neden", system: string, user: string): Promise<{ text: string; costUsd: number }> {
-  const msg = await client.messages
-    .stream({ model: CHEAP_MODEL, max_tokens: 900, system, messages: [{ role: "user", content: user }], output_config: { effort: "low" } })
-    .finalMessage();
-  const usage = await recordUsage(kind, CHEAP_MODEL, msg.usage);
-  const text = msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("")
-    .trim();
-  if (!text) throw new Error("Boş yanıt");
-  return { text, costUsd: usage.costUsd };
+/** Etkin sağlayıcının ucuz modeliyle tek çağrı (araç ve web araması yok). */
+async function askCheap(client: AiBackend | undefined, kind: "ozet" | "neden", system: string, user: string): Promise<{ text: string; costUsd: number; model: string }> {
+  const provider = await getProvider(client);
+  const r = await provider.complete({ kind, system, user, cheap: true });
+  return { text: r.text, costUsd: r.usage.costUsd, model: r.model };
 }
 
 const SUMMARY_SYSTEM = [
@@ -176,7 +169,7 @@ const SUMMARY_SYSTEM = [
 ].join("\n");
 
 /** Özeti üretir ve kaydeder (aynı gün yeniden üretilirse üzerine yazar). Hata fırlatmaz. */
-export async function generateDailySummary(opts: { now?: Date; client?: AiClient; notify?: boolean } = {}): Promise<DailySummary> {
+export async function generateDailySummary(opts: { now?: Date; client?: AiBackend; notify?: boolean } = {}): Promise<DailySummary> {
   const now = opts.now ?? new Date();
   const d = await collectSummaryData(now);
   let text = deterministicSummary(d);
@@ -184,23 +177,24 @@ export async function generateDailySummary(opts: { now?: Date; client?: AiClient
   let model: string | null = null;
   let costUsd = 0;
   let unverified: string[] = [];
-  const canAi = !!opts.client || (await isAiConfigured());
+  // Zamanlanmış (bildirimli) özette sahibin anahtarını paylaşan kullanıcı için yapay zeka kullanılmaz: maliyet koruması.
+  const canAi = !!opts.client || ((await isAiConfigured()) && !(opts.notify && (await usesSharedAi())));
   if (canAi && d.portfolios.length > 0 && !(await getBudgetStatus(now)).overBudget) {
     try {
       const user = `Bugünün verisi (${d.date}, kaynak: uygulamanın önbelleği):\n${dataBlock(d)}`;
-      const r = await askCheap(opts.client ?? (await getAiClient()), "ozet", SUMMARY_SYSTEM, user);
+      const r = await askCheap(opts.client, "ozet", SUMMARY_SYSTEM, user);
       text = r.text;
       ai = true;
-      model = CHEAP_MODEL;
+      model = r.model;
       costUsd = r.costUsd;
       unverified = unverifiedNumbers(text, [user]);
     } catch (err) {
       console.warn("[özet] yapay zeka özeti alınamadı, kurallı özet kullanılıyor:", (err as Error).message);
     }
   }
-  await (await getDb()).run(`INSERT INTO daily_summaries (date, text, ai, model, cost_usd, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(date) DO UPDATE SET text = excluded.text, ai = excluded.ai, model = excluded.model, cost_usd = excluded.cost_usd,
-         data = excluded.data, created_at = excluded.created_at`, [d.date, text, ai ? 1 : 0, model, costUsd, JSON.stringify({ unverified }), sqlNow()]);
+  await (await getDb()).run(`INSERT INTO daily_summaries (user_id, date, text, ai, model, cost_usd, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, date) DO UPDATE SET text = excluded.text, ai = excluded.ai, model = excluded.model, cost_usd = excluded.cost_usd,
+         data = excluded.data, created_at = excluded.created_at`, [await getCurrentUserId(), d.date, text, ai ? 1 : 0, model, costUsd, JSON.stringify({ unverified }), sqlNow()]);
   if (opts.notify) {
     const first = text.split("\n").find((l) => l.trim()) ?? text;
     const n = { kind: "daily_summary", title: "Günlük özet", body: first.replace(/^[-•*\s]+/, "").slice(0, 300) };
@@ -214,8 +208,8 @@ export async function generateDailySummary(opts: { now?: Date; client?: AiClient
 export async function getLatestSummary(date?: string): Promise<DailySummary | null> {
   const r = (
     date
-      ? await (await getDb()).get("SELECT * FROM daily_summaries WHERE date = ?", [date])
-      : await (await getDb()).get("SELECT * FROM daily_summaries ORDER BY date DESC LIMIT 1")
+      ? await (await getDb()).get("SELECT * FROM daily_summaries WHERE user_id = ? AND date = ?", [await getCurrentUserId(), date])
+      : await (await getDb()).get("SELECT * FROM daily_summaries WHERE user_id = ? ORDER BY date DESC LIMIT 1", [await getCurrentUserId()])
   ) as
     | { date: string; text: string; ai: number; model: string | null; cost_usd: number; data: string | null; created_at: string }
     | undefined;
@@ -230,12 +224,12 @@ export async function getLatestSummary(date?: string): Promise<DailySummary | nu
 export type SummaryRunResult = { ran: true; ai: boolean } | { ran: false; reason: "hafta_sonu" | "zamani_degil" | "zaten_calisti" | "hata" };
 
 /** Emir izleyici döngüsünden: hafta içi 18:45 sonrası günde bir kez (scheduled_runs ile korunur). */
-export async function maybeRunDailySummary(now = new Date(), client?: AiClient): Promise<SummaryRunResult> {
+export async function maybeRunDailySummary(now = new Date(), client?: AiBackend): Promise<SummaryRunResult> {
   const p = istanbulParts(now);
   if (p.weekday === "Sat" || p.weekday === "Sun") return { ran: false, reason: "hafta_sonu" };
   const [h, m] = SUMMARY_TIME.split(":").map(Number);
   if (p.minutes < h * 60 + m) return { ran: false, reason: "zamani_degil" };
-  const claim = await (await getDb()).run("INSERT INTO scheduled_runs (slot, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING", [`ozet ${p.date}`, sqlNow()]);
+  const claim = await (await getDb()).run("INSERT INTO scheduled_runs (slot, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING", [`u${await getCurrentUserId()} ozet ${p.date}`, sqlNow()]);
   if (Number(claim.changes) !== 1) return { ran: false, reason: "zaten_calisti" };
   try {
     const s = await generateDailySummary({ now, client, notify: true });
@@ -266,7 +260,7 @@ const WHY_TTL_MS = 30 * 60_000;
  * Günlük hareketi %3 ve üstü olan varlık için kısa açıklama. Önce ücretsiz RSS + KAP;
  * yapay zeka yalnızca anahtar varsa ve bütçe uygunsa (web araması yok, ucuz model).
  */
-export async function whyMoving(id: string, opts: { client?: AiClient; force?: boolean } = {}): Promise<WhyMoving> {
+export async function whyMoving(id: string, opts: { client?: AiBackend; force?: boolean } = {}): Promise<WhyMoving> {
   const ref = parseInstrumentId(id);
   if (!ref) throw new Error("Varlık geçersiz.");
   const instrument = instrumentId(ref.type, ref.symbol);
@@ -306,7 +300,7 @@ export async function whyMoving(id: string, opts: { client?: AiClient; force?: b
       "Başlıklar nedeni açıklamıyorsa bunu açıkça söyle ve güveni düşük ver. Al/sat tavsiyesi verme.",
     ].join("\n");
     try {
-      const r = await askCheap(opts.client ?? (await getAiClient()), "neden", system, user);
+      const r = await askCheap(opts.client, "neden", system, user);
       text = r.text;
       ai = true;
       unverified = unverifiedNumbers(text, [user]);

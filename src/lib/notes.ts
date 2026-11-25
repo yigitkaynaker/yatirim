@@ -3,6 +3,7 @@ import { getDb, sqlNow } from "./db";
 import { isAssetType, isMode, isValidSymbol, normalizeSymbol, type AssetType, type Mode } from "./assets";
 import { parseDecimal } from "./format";
 import { ValidationError } from "./portfolio";
+import { getCurrentUserId } from "./userContext";
 
 // POZİSYON NOTU
 // Her (gerçek / sanal) pozisyon için: "Neden aldım?", "Ne olursa satarım?" ve isteğe bağlı
@@ -44,13 +45,13 @@ const fromRow = (r: NoteRow): PositionNote => ({
 });
 
 export async function getNote(mode: Mode, assetType: AssetType, symbol: string): Promise<PositionNote | null> {
-  const r = await (await getDb()).get("SELECT * FROM position_notes WHERE mode = ? AND asset_type = ? AND symbol = ?", [mode, assetType, symbol]) as unknown as NoteRow | undefined;
+  const r = await (await getDb()).get("SELECT * FROM position_notes WHERE user_id = ? AND mode = ? AND asset_type = ? AND symbol = ?", [await getCurrentUserId(), mode, assetType, symbol]) as unknown as NoteRow | undefined;
   return r ? fromRow(r) : null;
 }
 
 /** Bir varlığın notları (önce gerçek) */
 export async function notesForInstrument(assetType: AssetType, symbol: string): Promise<PositionNote[]> {
-  const rows = await (await getDb()).all("SELECT * FROM position_notes WHERE asset_type = ? AND symbol = ? ORDER BY CASE mode WHEN 'real' THEN 0 ELSE 1 END", [assetType, symbol]) as unknown as NoteRow[];
+  const rows = await (await getDb()).all("SELECT * FROM position_notes WHERE user_id = ? AND asset_type = ? AND symbol = ? ORDER BY CASE mode WHEN 'real' THEN 0 ELSE 1 END", [await getCurrentUserId(), assetType, symbol]) as unknown as NoteRow[];
   return rows.map(fromRow);
 }
 
@@ -84,13 +85,13 @@ export async function saveNote(body: Record<string, unknown>): Promise<PositionN
   }
   const db = await getDb();
   if (!why && !exitPlan && targetPrice == null && stopPrice == null) {
-    await db.run("DELETE FROM position_notes WHERE mode = ? AND asset_type = ? AND symbol = ?", [body.mode, body.assetType, symbol]);
+    await db.run("DELETE FROM position_notes WHERE user_id = ? AND mode = ? AND asset_type = ? AND symbol = ?", [await getCurrentUserId(), body.mode, body.assetType, symbol]);
     return null;
   }
-  await db.run(`INSERT INTO position_notes (mode, asset_type, symbol, why, exit_plan, target_price, stop_price, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(mode, asset_type, symbol) DO UPDATE SET why = excluded.why, exit_plan = excluded.exit_plan,
-       target_price = excluded.target_price, stop_price = excluded.stop_price, updated_at = excluded.updated_at`, [body.mode, body.assetType, symbol, why, exitPlan, targetPrice, stopPrice, sqlNow()]);
+  await db.run(`INSERT INTO position_notes (user_id, mode, asset_type, symbol, why, exit_plan, target_price, stop_price, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, mode, asset_type, symbol) DO UPDATE SET why = excluded.why, exit_plan = excluded.exit_plan,
+       target_price = excluded.target_price, stop_price = excluded.stop_price, updated_at = excluded.updated_at`, [await getCurrentUserId(), body.mode, body.assetType, symbol, why, exitPlan, targetPrice, stopPrice, sqlNow()]);
   return await getNote(body.mode, body.assetType, symbol);
 }
 

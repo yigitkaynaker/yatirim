@@ -1,21 +1,23 @@
 import "server-only";
 import * as webpush from "web-push";
 import { getDb, sqlNow } from "./db";
-import { getSetting, setSetting } from "./settings";
+import { getGlobalSetting, setGlobalSetting } from "./settings";
 import { ValidationError } from "./portfolio";
+import { getCurrentUserId } from "./userContext";
 
 // Web Push bildirimleri. VAPID anahtarları ilk kullanımda üretilir ve settings
-// tablosunda saklanır (.env düzenlemek gerekmez). Birden fazla cihaz abone olabilir.
+// tablosunda sunucu geneli olarak saklanır (.env düzenlemek gerekmez). Abonelikler kullanıcı
+// başınadır: bildirim yalnızca geçerli kullanıcının cihazlarına gider.
 
 const SUBJECT = "mailto:yatirim@example.com";
 
 export async function getVapidKeys(): Promise<{ publicKey: string; privateKey: string }> {
-  const pub = await getSetting("vapid_public_key");
-  const priv = await getSetting("vapid_private_key");
+  const pub = await getGlobalSetting("vapid_public_key");
+  const priv = await getGlobalSetting("vapid_private_key");
   if (pub && priv) return { publicKey: pub, privateKey: priv };
   const keys = webpush.generateVAPIDKeys();
-  await setSetting("vapid_public_key", keys.publicKey);
-  await setSetting("vapid_private_key", keys.privateKey);
+  await setGlobalSetting("vapid_public_key", keys.publicKey);
+  await setGlobalSetting("vapid_private_key", keys.privateKey);
   return keys;
 }
 
@@ -39,7 +41,7 @@ interface SubRow {
 }
 
 export async function listSubscriptions(): Promise<PushSubscriptionInfo[]> {
-  const rows = await (await getDb()).all("SELECT * FROM push_subscriptions ORDER BY id") as unknown as SubRow[];
+  const rows = await (await getDb()).all("SELECT * FROM push_subscriptions WHERE user_id = ? ORDER BY id", [await getCurrentUserId()]) as unknown as SubRow[];
   return rows.map((r) => ({
     id: r.id,
     endpointHost: safeHost(r.endpoint),
@@ -64,19 +66,22 @@ export async function saveSubscription(body: unknown, userAgent: string | null):
   const p256dh = typeof b.keys?.p256dh === "string" ? b.keys.p256dh : "";
   const auth = typeof b.keys?.auth === "string" ? b.keys.auth : "";
   if (!/^https:\/\//.test(endpoint) || !p256dh || !auth) throw new ValidationError("Abonelik bilgisi geçersiz.");
-  await (await getDb()).run(`INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_agent) VALUES (?, ?, ?, ?)
-       ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth,
-         user_agent = excluded.user_agent, fail_count = 0`, [endpoint, p256dh, auth, userAgent?.slice(0, 300) ?? null]);
-  const row = await (await getDb()).get("SELECT id FROM push_subscriptions WHERE endpoint = ?", [endpoint]) as { id: number };
+  const uid = await getCurrentUserId();
+  // Aynı cihaz (endpoint) başka bir kullanıcıyla girildiyse abonelik yeni kullanıcıya geçer.
+  await (await getDb()).run(`INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth,
+         user_agent = excluded.user_agent, fail_count = 0`, [uid, endpoint, p256dh, auth, userAgent?.slice(0, 300) ?? null]);
+  const row = await (await getDb()).get("SELECT id FROM push_subscriptions WHERE endpoint = ? AND user_id = ?", [endpoint, uid]) as { id: number };
   return { id: row.id };
 }
 
 export async function removeSubscription(opts: { endpoint?: unknown; id?: unknown }): Promise<boolean> {
   const db = await getDb();
+  const uid = await getCurrentUserId();
   const r =
     typeof opts.endpoint === "string"
-      ? await db.run("DELETE FROM push_subscriptions WHERE endpoint = ?", [opts.endpoint])
-      : await db.run("DELETE FROM push_subscriptions WHERE id = ?", [Number(opts.id)]);
+      ? await db.run("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?", [opts.endpoint, uid])
+      : await db.run("DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?", [Number(opts.id), uid]);
   return Number(r.changes) > 0;
 }
 
@@ -89,19 +94,20 @@ export interface PushPayload {
 }
 
 /**
- * Tüm abone cihazlara gönderir. Hata fırlatmaz. 404/410 dönen (süresi dolmuş)
- * abonelikler silinir.
+ * Geçerli kullanıcının tüm abone cihazlarına gönderir. Hata fırlatmaz. 404/410 dönen
+ * (süresi dolmuş) abonelikler silinir.
  */
 export async function sendPushToAll(payload: PushPayload): Promise<{ sent: number; failed: number }> {
   let rows: SubRow[];
   try {
-    rows = await (await getDb()).all("SELECT * FROM push_subscriptions") as unknown as SubRow[];
+    rows = await (await getDb()).all("SELECT * FROM push_subscriptions WHERE user_id = ?", [await getCurrentUserId()]) as unknown as SubRow[];
   } catch {
     return { sent: 0, failed: 0 };
   }
   if (rows.length === 0) return { sent: 0, failed: 0 };
   const { publicKey, privateKey } = await getVapidKeys();
   const db = await getDb();
+  const uid = await getCurrentUserId();
   let sent = 0;
   let failed = 0;
   await Promise.all(
@@ -112,15 +118,15 @@ export async function sendPushToAll(payload: PushPayload): Promise<{ sent: numbe
           JSON.stringify(payload),
           { vapidDetails: { subject: SUBJECT, publicKey, privateKey }, TTL: 60 * 60 * 12, timeout: 10_000 },
         );
-        await db.run("UPDATE push_subscriptions SET last_ok_at = ?, fail_count = 0 WHERE id = ?", [sqlNow(), r.id]);
+        await db.run("UPDATE push_subscriptions SET last_ok_at = ?, fail_count = 0 WHERE id = ? AND user_id = ?", [sqlNow(), r.id, uid]);
         sent++;
       } catch (err) {
         failed++;
         const status = (err as { statusCode?: number }).statusCode;
         if (status === 404 || status === 410 || r.fail_count >= 9) {
-          await db.run("DELETE FROM push_subscriptions WHERE id = ?", [r.id]);
+          await db.run("DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?", [r.id, uid]);
         } else {
-          await db.run("UPDATE push_subscriptions SET fail_count = fail_count + 1 WHERE id = ?", [r.id]);
+          await db.run("UPDATE push_subscriptions SET fail_count = fail_count + 1 WHERE id = ? AND user_id = ?", [r.id, uid]);
         }
         console.warn(`[push] gönderilemedi (${status ?? "ağ"})`, safeHost(r.endpoint));
       }

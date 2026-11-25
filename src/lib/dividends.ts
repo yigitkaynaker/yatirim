@@ -21,6 +21,7 @@ import { politeFetch } from "./http";
 import { listKap, type KapDisclosure } from "./kap";
 import { parseDecimal } from "./format";
 import { accountNames, resolveAccount } from "./accounts";
+import { getCurrentUserId } from "./userContext";
 
 // TEMETTÜ (KÂR PAYI)
 // - Geçmiş: Yahoo Finance aylık grafik uç noktasının "div" olayları (BIST .IS ve ABD hisseleri).
@@ -207,8 +208,8 @@ const fromRow = (r: DivRow, names: Map<number, string>): DividendRecord => {
 };
 
 export async function listDividendRecords(opts: { mode?: Mode; status?: "confirmed" | "dismissed" } = {}): Promise<DividendRecord[]> {
-  const where: string[] = [];
-  const args: string[] = [];
+  const where: string[] = ["user_id = ?"];
+  const args: (string | number)[] = [await getCurrentUserId()];
   if (opts.mode) {
     where.push("mode = ?");
     args.push(opts.mode);
@@ -289,7 +290,7 @@ export async function getDividendSuggestions(): Promise<DividendSuggestion[]> {
   const assets = await dividendAssets();
   const known = new Set(
     (
-      await (await getDb()).all("SELECT mode, account_id, asset_type, symbol, ex_date FROM dividends") as {
+      await (await getDb()).all("SELECT mode, account_id, asset_type, symbol, ex_date FROM dividends WHERE user_id = ?", [await getCurrentUserId()]) as {
         mode: string;
         account_id: number;
         asset_type: string;
@@ -372,42 +373,42 @@ export async function confirmDividend(body: Record<string, unknown>): Promise<Di
   const fx = h.currency === "TRY" ? 1 : await fxRateOn(h.currency, ref.exDate).catch(() => null);
   if (fx == null || !(fx > 0)) throw new ValidationError(`${h.currency}/TRY kuru alınamadı; biraz sonra tekrar deneyin.`);
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, 300) : null;
-  await (await getDb()).run(`INSERT INTO dividends (mode, account_id, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try, status, source, note, gross_amount, withholding_pct)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'otomatik', ?, ?, ?)
-       ON CONFLICT(mode, account_id, asset_type, symbol, ex_date) DO UPDATE SET per_share = excluded.per_share, quantity = excluded.quantity,
+  await (await getDb()).run(`INSERT INTO dividends (user_id, mode, account_id, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try, status, source, note, gross_amount, withholding_pct)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'otomatik', ?, ?, ?)
+       ON CONFLICT(user_id, mode, account_id, asset_type, symbol, ex_date) DO UPDATE SET per_share = excluded.per_share, quantity = excluded.quantity,
          amount = excluded.amount, currency = excluded.currency, fx_try = excluded.fx_try, status = 'confirmed', note = excluded.note,
-         gross_amount = excluded.gross_amount, withholding_pct = excluded.withholding_pct`, [ref.mode, ref.accountId, ref.assetType, ref.symbol, ref.exDate, ev.amount, quantity, amount, h.currency, fx, note, gross, withholdingPct]);
+         gross_amount = excluded.gross_amount, withholding_pct = excluded.withholding_pct`, [await getCurrentUserId(), ref.mode, ref.accountId, ref.assetType, ref.symbol, ref.exDate, ev.amount, quantity, amount, h.currency, fx, note, gross, withholdingPct]);
   return (await getRecord(ref))!;
 }
 
 /** Onaylanmış temettünün tutarını / notunu açıkça düzenler (örn. hesaba geçen gerçek net tutar). */
 export async function updateDividend(id: number, body: Record<string, unknown>): Promise<DividendRecord | null> {
-  const row = await (await getDb()).get("SELECT * FROM dividends WHERE id = ?", [id]) as unknown as DivRow | undefined;
+  const row = await (await getDb()).get("SELECT * FROM dividends WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()]) as unknown as DivRow | undefined;
   if (!row) return null;
   if (row.status !== "confirmed") throw new ValidationError("Yalnızca kaydedilmiş temettüler düzenlenebilir.");
   const a = parseDecimal((body.amount ?? "") as string | number);
   if (!Number.isFinite(a) || a <= 0) throw new ValidationError("Tutar sıfırdan büyük olmalı.");
   const note = typeof body.note === "string" ? body.note.trim().slice(0, 300) || null : row.note;
-  await (await getDb()).run("UPDATE dividends SET amount = ?, note = ?, source = 'elle' WHERE id = ?", [a, note, id]);
+  await (await getDb()).run("UPDATE dividends SET amount = ?, note = ?, source = 'elle' WHERE id = ? AND user_id = ?", [a, note, id, await getCurrentUserId()]);
   return await getRecord({ mode: row.mode, accountId: row.account_id, assetType: row.asset_type, symbol: row.symbol, exDate: row.ex_date });
 }
 
 /** Öneriyi gizler (bir daha gösterilmez; gelir olarak sayılmaz). */
 export async function dismissDividend(body: Record<string, unknown>): Promise<DividendRecord> {
   const ref = await parseRef(body);
-  await (await getDb()).run(`INSERT INTO dividends (mode, account_id, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try, status)
-       VALUES (?, ?, ?, ?, ?, 0, 0, 0, 'TRY', 1, 'dismissed')
-       ON CONFLICT(mode, account_id, asset_type, symbol, ex_date) DO UPDATE SET status = 'dismissed'`, [ref.mode, ref.accountId, ref.assetType, ref.symbol, ref.exDate]);
+  await (await getDb()).run(`INSERT INTO dividends (user_id, mode, account_id, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try, status)
+       VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 'TRY', 1, 'dismissed')
+       ON CONFLICT(user_id, mode, account_id, asset_type, symbol, ex_date) DO UPDATE SET status = 'dismissed'`, [await getCurrentUserId(), ref.mode, ref.accountId, ref.assetType, ref.symbol, ref.exDate]);
   return (await getRecord(ref))!;
 }
 
 /** Kaydı siler (onaylanmış temettü geri alınır, gizlenen öneri yeniden görünür). */
 export async function deleteDividend(id: number): Promise<boolean> {
-  return Number((await (await getDb()).run("DELETE FROM dividends WHERE id = ?", [id])).changes) > 0;
+  return Number((await (await getDb()).run("DELETE FROM dividends WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()])).changes) > 0;
 }
 
 async function getRecord(ref: DivRef): Promise<DividendRecord | null> {
-  const row = await (await getDb()).get("SELECT * FROM dividends WHERE mode = ? AND account_id = ? AND asset_type = ? AND symbol = ? AND ex_date = ?", [ref.mode, ref.accountId, ref.assetType, ref.symbol, ref.exDate]) as unknown as DivRow | undefined;
+  const row = await (await getDb()).get("SELECT * FROM dividends WHERE user_id = ? AND mode = ? AND account_id = ? AND asset_type = ? AND symbol = ? AND ex_date = ?", [await getCurrentUserId(), ref.mode, ref.accountId, ref.assetType, ref.symbol, ref.exDate]) as unknown as DivRow | undefined;
   return row ? fromRow(row, await accountNames()) : null;
 }
 

@@ -17,6 +17,8 @@ const SUITES = [
   ["test-batchb.ts", true],
   ["test-batchc.ts", true],
   ["test-ai.ts", true],
+  ["test-help.ts", true],
+  ["test-users.ts", true],
 ];
 
 /** Alt süreci çalıştırır; çıkış kodu */

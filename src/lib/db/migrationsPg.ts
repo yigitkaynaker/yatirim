@@ -342,6 +342,144 @@ export const PG_MIGRATIONS: { id: number; name: string; sql: string }[] = [
   CREATE INDEX idx_login_failures_last ON login_failures (last_at);
   `,
   },
+  {
+    id: 3,
+    name: "OpenAI sağlayıcısı ve MCP / OAuth (SQLite sürüm 12 ile denk)",
+    sql: `
+  ALTER TABLE ai_usage ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
+
+  CREATE TABLE oauth_clients (
+    id                  TEXT PRIMARY KEY,
+    name                TEXT,
+    redirect_uris       TEXT    NOT NULL,
+    secret_hash         TEXT,
+    created_at          BIGINT  NOT NULL
+  );
+  CREATE TABLE oauth_codes (
+    code_hash           TEXT PRIMARY KEY,
+    client_id           TEXT    NOT NULL,
+    redirect_uri        TEXT    NOT NULL,
+    code_challenge      TEXT    NOT NULL,
+    resource            TEXT    NOT NULL,
+    scope               TEXT,
+    expires_at          BIGINT  NOT NULL,
+    used_at             BIGINT
+  );
+  CREATE TABLE oauth_tokens (
+    token_hash          TEXT PRIMARY KEY,
+    kind                TEXT    NOT NULL CHECK (kind IN ('access','refresh','static')),
+    client_id           TEXT,
+    resource            TEXT    NOT NULL,
+    scope               TEXT,
+    expires_at          BIGINT,
+    created_at          BIGINT  NOT NULL,
+    last_used_at        BIGINT,
+    revoked_at          BIGINT
+  );
+  CREATE INDEX idx_oauth_tokens_client ON oauth_tokens (client_id);
+  CREATE TABLE mcp_calls (
+    id          ${ID},
+    client      TEXT,
+    tool        TEXT    NOT NULL,
+    input       TEXT,
+    ok          BIGINT  NOT NULL,
+    is_write    BIGINT  NOT NULL,
+    summary     TEXT,
+    created_at  BIGINT  NOT NULL
+  );
+  CREATE INDEX idx_mcp_calls_created ON mcp_calls (created_at);
+  `,
+  },
+  {
+    id: 4,
+    name: "çok kullanıcılı mod: users ve user_id (SQLite sürüm 13 ile denk)",
+    sql: `
+  -- Çok kullanıcılı mod: kullanıcılar ve kullanıcıya ait tüm tablolarda user_id.
+  -- Mevcut tüm veri sahibe (id 1) atanır. Sahip e-postasızdır; APP_PASSWORD ile girer ve
+  -- isterse Ayarlar'dan e-posta + şifre tanımlar. user_id varsayılanı 0'dır (hiçbir kullanıcı):
+  -- kimliksiz eklenen satır kimseye görünmez. Ayarlarda user_id 0 sunucu geneli anahtarlardır (VAPID, KAP).
+  -- Paylaşılan önbellekler (fiyat, fon, temettü geçmişi, KAP, dış kaynak) ve nöbet tabloları kullanıcısızdır.
+  CREATE TABLE users (
+    id             ${ID},
+    email          TEXT UNIQUE,
+    password_hash  TEXT,
+    created_at     TEXT NOT NULL DEFAULT ${NOW}
+  );
+  INSERT INTO users (id, email) VALUES (1, NULL);
+  SELECT setval(pg_get_serial_sequence('users', 'id'), 1, true);
+  ALTER TABLE transactions ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE transactions ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE orders ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE orders ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE notifications ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE notifications ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE ai_usage ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE ai_usage ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE chat_conversations ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE chat_conversations ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE chat_messages ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE chat_messages ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE news_reports ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE news_reports ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE push_subscriptions ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE push_subscriptions ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE alarms ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE alarms ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE alarm_events ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE alarm_events ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE accounts ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE accounts ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE oauth_codes ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE oauth_codes ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE oauth_tokens ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE oauth_tokens ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE mcp_calls ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE mcp_calls ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE settings ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE settings ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE watchlist ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE watchlist ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE portfolio_snapshots ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE portfolio_snapshots ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE technical_signals ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE technical_signals ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE daily_summaries ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE daily_summaries ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE position_notes ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE position_notes ALTER COLUMN user_id SET DEFAULT 0;
+  ALTER TABLE dividends ADD COLUMN user_id BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE dividends ALTER COLUMN user_id SET DEFAULT 0;
+  CREATE INDEX idx_transactions_user ON transactions (user_id, mode);
+  CREATE INDEX idx_orders_user ON orders (user_id, status);
+  CREATE INDEX idx_notifications_user ON notifications (user_id, id);
+  CREATE INDEX idx_ai_usage_user ON ai_usage (user_id, created_at);
+  CREATE INDEX idx_chat_conversations_user ON chat_conversations (user_id);
+  CREATE INDEX idx_news_reports_user ON news_reports (user_id, id);
+  CREATE INDEX idx_push_subscriptions_user ON push_subscriptions (user_id);
+  CREATE INDEX idx_alarms_user ON alarms (user_id);
+  CREATE INDEX idx_alarm_events_user ON alarm_events (user_id, fired_at);
+  CREATE INDEX idx_oauth_tokens_user ON oauth_tokens (user_id);
+  CREATE INDEX idx_mcp_calls_user ON mcp_calls (user_id, created_at);
+  DROP INDEX idx_accounts_name;
+  CREATE UNIQUE INDEX idx_accounts_name ON accounts (user_id, lower(name));
+  UPDATE settings SET user_id = 0 WHERE key IN ('vapid_public_key', 'vapid_private_key', 'kap_last_ok');
+  ALTER TABLE settings DROP CONSTRAINT settings_pkey;
+  ALTER TABLE settings ADD PRIMARY KEY (user_id, key);
+  ALTER TABLE watchlist DROP CONSTRAINT watchlist_asset_type_symbol_key;
+  ALTER TABLE watchlist ADD CONSTRAINT watchlist_user_asset_key UNIQUE (user_id, asset_type, symbol);
+  ALTER TABLE portfolio_snapshots DROP CONSTRAINT portfolio_snapshots_pkey;
+  ALTER TABLE portfolio_snapshots ADD PRIMARY KEY (user_id, date, mode);
+  ALTER TABLE technical_signals DROP CONSTRAINT technical_signals_pkey;
+  ALTER TABLE technical_signals ADD PRIMARY KEY (user_id, instrument);
+  ALTER TABLE daily_summaries DROP CONSTRAINT daily_summaries_pkey;
+  ALTER TABLE daily_summaries ADD PRIMARY KEY (user_id, date);
+  ALTER TABLE position_notes DROP CONSTRAINT position_notes_pkey;
+  ALTER TABLE position_notes ADD PRIMARY KEY (user_id, mode, asset_type, symbol);
+  ALTER TABLE dividends DROP CONSTRAINT dividends_mode_account_id_asset_type_symbol_ex_date_key;
+  ALTER TABLE dividends ADD CONSTRAINT dividends_user_key UNIQUE (user_id, mode, account_id, asset_type, symbol, ex_date);
+  CREATE INDEX idx_dividends_user ON dividends (user_id);
+  `,
+  },
 ];
 
 /** Postgres şema sürümü (son geçiş kimliği) */

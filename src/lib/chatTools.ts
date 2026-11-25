@@ -284,7 +284,10 @@ async function accountIdOf(i: Input): Promise<number | null> {
   return acc.id;
 }
 const accountLabel = async (id: number | null | undefined) => (id != null ? ((await actions.listAccounts({ includeArchived: true })).find((a) => a.id === id)?.name ?? null) : null);
-const note = (i: Input) => (typeof i.note === "string" && i.note.trim() ? `${i.note.trim()} · ${AI_NOTE}` : AI_NOTE);
+const note = (i: Input, ctx: ToolContext) => {
+  const tag = ctx.note ?? AI_NOTE;
+  return typeof i.note === "string" && i.note.trim() ? `${i.note.trim()} · ${tag}` : tag;
+};
 
 function sizingLine(o: { amount: number | null; amountCurrency: string | null; quantity: number | null }) {
   return o.amount != null ? `${formatMoney(o.amount, o.amountCurrency ?? "TRY")} tutarında` : `${formatQuantity(o.quantity ?? 0)} adet`;
@@ -292,11 +295,16 @@ function sizingLine(o: { amount: number | null; amountCurrency: string | null; q
 
 // ---- Çalıştırma -------------------------------------------------------------------
 
+/** Aracı kim çağırıyor: note, işlem / emir notuna eklenen etiket (varsayılan "Yapay zeka sohbetiyle"). */
+export interface ToolContext {
+  note?: string;
+}
+
 /** Aracı çalıştırır. Hata fırlatmaz: doğrulama hataları isError sonuç + hata kartı olur. */
-export async function executeChatTool(name: string, rawInput: unknown): Promise<ToolOutcome> {
+export async function executeChatTool(name: string, rawInput: unknown, ctx: ToolContext = {}): Promise<ToolOutcome> {
   const input = (rawInput && typeof rawInput === "object" ? rawInput : {}) as Input;
   try {
-    return await run(name, input);
+    return await run(name, input, ctx);
   } catch (err) {
     const message = err instanceof actions.ValidationError ? err.message : "İşlem sırasında beklenmeyen bir hata oluştu.";
     if (!(err instanceof actions.ValidationError)) console.error(`[sohbet] ${name} hatası`, err);
@@ -318,8 +326,12 @@ const ERROR_TITLES: Record<string, string> = {
   delete_alarm: "Alarm silinemedi",
 };
 const MUTATING = new Set(Object.keys(ERROR_TITLES));
+/** Değişiklik yapan (yazma) araçları */
+export function isMutatingTool(name: string): boolean {
+  return MUTATING.has(name);
+}
 
-async function run(name: string, i: Input): Promise<ToolOutcome> {
+async function run(name: string, i: Input, ctx: ToolContext): Promise<ToolOutcome> {
   switch (name) {
     case "get_portfolio_summary": {
       const mode: Mode = i.mode === "virtual" ? "virtual" : "real";
@@ -408,7 +420,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
       const tx = await actions.createSanalPosition({
         ...a,
         ...(quantity != null ? { quantity } : { amount, amountCurrency }),
-        note: note(i),
+        note: note(i, ctx),
       });
       const name = displaySymbol(tx.assetType, tx.symbol);
       return {
@@ -450,7 +462,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
         price,
         currency,
         date: typeof i.date === "string" && i.date ? i.date : todayIstanbul(),
-        note: note(i),
+        note: note(i, ctx),
         accountId: await accountIdOf(i),
         fee: opt<number>(i.fee) ?? null,
       });
@@ -483,7 +495,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
         price: i.price as number,
         currency: i.currency,
         date: typeof i.date === "string" && i.date ? i.date : todayIstanbul(),
-        note: note(i),
+        note: note(i, ctx),
         accountId: mode === "real" ? await accountIdOf(i) : null,
         fee: opt<number>(i.fee) ?? null,
         feePct: opt<number>(i.fee_pct) ?? null,
@@ -516,7 +528,7 @@ async function run(name: string, i: Input): Promise<ToolOutcome> {
           condition: i.condition === "gte" ? "gte" : "lte",
           triggerPrice: i.trigger_price as number,
           ...(quantity != null ? { quantity } : { amount, amountCurrency: isCurrency(i.amount_currency) ? i.amount_currency : "TRY" }),
-          note: note(i),
+          note: note(i, ctx),
           accountId: i.mode === "virtual" ? null : await accountIdOf(i),
         },
         "yapay_zeka",

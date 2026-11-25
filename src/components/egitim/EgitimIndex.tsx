@@ -6,10 +6,11 @@ import { LEVEL_LABEL, type Level, type LessonSummary } from "@/content/egitim/ty
 import { CheckIcon, Disclaimer, LevelBadge } from "./common";
 import { setLessonDone, useCompletedLessons } from "./progress";
 
-const LEVELS: { level: Level; intro: string }[] = [
+const LEVELS: { level: Level | "temel"; intro: string }[] = [
   { level: "baslangic", intro: "Grafik okumanın temelleri. Buradan başla." },
   { level: "orta", intro: "En sık kullanılan göstergeler ve mum formasyonları." },
   { level: "ileri", intro: "Formasyonlar, Fibonacci ve hepsini risk yönetimiyle birleştirmek." },
+  { level: "temel", intro: "Grafikten bağımsız konular: ücretler, vergi, çeşitlendirme ve duygular." },
 ];
 
 export function EgitimIndex({ lessons }: { lessons: LessonSummary[] }) {
@@ -24,7 +25,7 @@ export function EgitimIndex({ lessons }: { lessons: LessonSummary[] }) {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Öğretici Analiz Desteği</h1>
         <p className="mt-1 max-w-2xl text-sm text-slate-400">
-          Grafiklere ilk kez bakıyorsan doğru yerdesin. Her ders bir tekniği sade bir dille anlatır, etkileşimli bir örnek grafikte gösterir ve kısa bir testle
+          Grafiklere ilk kez bakıyorsan doğru yerdesin. Yatırıma tamamen yeniysen en alttaki “Yatırımın temelleri” bölümüyle de başlayabilirsin. Her ders bir tekniği sade bir dille anlatır, etkileşimli bir örnek grafikte gösterir ve kısa bir testle
           pekiştirir. Dersleri önerilen sırayla takip etmen yeterli; her biri birkaç dakika sürer.
         </p>
       </div>
@@ -74,12 +75,12 @@ export function EgitimIndex({ lessons }: { lessons: LessonSummary[] }) {
       </Card>
 
       {LEVELS.map(({ level, intro }) => {
-        const group = lessons.filter((l) => l.level === level);
+        const group = lessons.filter((l) => (level === "temel" ? l.track === "temel" : l.level === level && l.track !== "temel"));
         if (group.length === 0) return null;
         return (
           <section key={level}>
             <div className="mb-2 flex items-baseline gap-2">
-              <h2 className="font-semibold">{LEVEL_LABEL[level]}</h2>
+              <h2 className="font-semibold">{level === "temel" ? "Yatırımın temelleri" : LEVEL_LABEL[level]}</h2>
               <span className="text-xs text-slate-500">{intro}</span>
             </div>
             <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

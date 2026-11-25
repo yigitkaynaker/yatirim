@@ -11,6 +11,7 @@ import { goToLogin } from "@/lib/usePolling";
 import { FEE_EXPLAIN } from "./AccountControls";
 import { toInput } from "./TransactionForm";
 import { Card, Explain, Field, inputCls, PrimaryButton } from "./ui";
+import { GuideLink, InfoTip, Term } from "./help";
 
 // Pozisyon detayı ekleri: yıllık getiri (XIRR), hesap kırılımı, pozisyon notu, "şimdi satarsam".
 
@@ -101,7 +102,9 @@ export function SellEstimateCard({ s, virtual }: { s: SellEstimate; virtual: boo
           <dd>{formatMoney(s.grossTry)}</dd>
         </div>
         <div>
-          <dt className="text-xs text-slate-500">Komisyon (%{s.feePct.toLocaleString("tr-TR", { maximumFractionDigits: 3 })})</dt>
+          <dt className="text-xs text-slate-500">
+            <Term term="komisyon">Komisyon (%{s.feePct.toLocaleString("tr-TR", { maximumFractionDigits: 3 })})</Term>
+          </dt>
           <dd className="text-rose-300">−{formatMoney(s.feeTry)}</dd>
         </div>
         <div>
@@ -113,7 +116,10 @@ export function SellEstimateCard({ s, virtual }: { s: SellEstimate; virtual: boo
           <dd className={pnlClass(s.pnlTry)}>{formatSigned(s.pnlTry)}</dd>
         </div>
       </dl>
-      <p className="mt-3 text-xs text-slate-400">{s.taxNote}</p>
+      <p className="mt-3 text-xs text-slate-400">
+        <InfoTip term="stopaj" className="mr-1.5" />
+        {s.taxNote}
+      </p>
       <p className="mt-1 text-xs text-slate-500">
         {FEE_EXPLAIN} {s.feePct === 0 && !virtual ? "Bu hesap için komisyon oranı girilmemiş; Ayarlar › Hesaplar'dan ekleyebilirsiniz." : ""}
         {virtual ? " Sanal pozisyonda komisyon, varsayılan hesabınızın oranıyla tahmin edilir." : ""}
@@ -259,14 +265,24 @@ export function PositionNoteCard({
     <Card className="p-4 md:p-6">
       <div className="flex items-center justify-between gap-2">
         <h2 className="font-semibold">Pozisyon notu</h2>
-        <button onClick={() => setEditing(true)} className="text-xs text-accent">
-          {note ? "Düzenle" : "+ Not ekle"}
-        </button>
+        {note && (
+          <button onClick={() => setEditing(true)} className="text-xs text-accent">
+            Düzenle
+          </button>
+        )}
       </div>
       {!note ? (
-        <p className="mt-2 text-sm text-slate-400">
-          Neden aldığını ve hangi durumda satacağını şimdi yaz. Fiyat hızla değiştiğinde bu not, duyguyla değil plana göre karar vermene yardım eder.
-        </p>
+        <div className="mt-2">
+          <p className="text-sm text-slate-400">
+            Neden aldığını ve hangi durumda satacağını şimdi yaz. Fiyat hızla değiştiğinde bu not, duyguyla değil plana göre karar vermene yardım eder.
+          </p>
+          <PrimaryButton tone={mode} onClick={() => setEditing(true)} className="mt-3">
+            Not yaz
+          </PrimaryButton>
+          <GuideLink href="/kilavuz#pozisyon-detay" className="mt-2 flex">
+            Kılavuz: Not, hedef ve stop
+          </GuideLink>
+        </div>
       ) : (
         <div className="mt-2 space-y-2 text-sm">
           {note.why && (

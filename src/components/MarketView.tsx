@@ -9,6 +9,7 @@ import type { SearchResult, WatchItem } from "@/lib/market";
 import type { Quote } from "@/lib/prices";
 import { goToLogin, usePolling } from "@/lib/usePolling";
 import { Card, inputCls, Modal, PriceMeta, PrimaryButton, StaleBadge } from "./ui";
+import { EmptyState } from "./help";
 
 /** Genel bakış kartları: kimlik + Türkçe ad */
 export const OVERVIEW: { id: string; label: string }[] = [
@@ -116,10 +117,14 @@ export function MarketView() {
         {!items ? (
           <Card className="p-6 text-center text-sm text-slate-500">Yükleniyor…</Card>
         ) : items.length === 0 ? (
-          <Card className="p-8 text-center">
-            <p className="text-slate-300">İzleme listeniz boş.</p>
-            <p className="mt-1 text-sm text-slate-500">Takip etmek istediğiniz hisse, kripto ya da dövizi arayıp ekleyin.</p>
-          </Card>
+          <EmptyState
+            title="İzleme listen boş"
+            action={{ label: "Varlık ekle", onClick: () => setAdding(true) }}
+            guide={{ href: "/kilavuz#piyasa", label: "Kılavuz: İzleme listesi" }}
+          >
+            İzleme listesi, almadan takip etmek istediğin hisse, fon, altın, döviz ya da kriptoların listesidir. Para harcamadan bir varlığı tanımanın en kolay
+            yoludur.
+          </EmptyState>
         ) : (
           <Card className="divide-y divide-line/70">
             {items.map((w) => {

@@ -5,9 +5,13 @@ import { fetchJson, goToLogin, UnauthorizedError } from "@/lib/usePolling";
 import { BudgetLine } from "./AiNotice";
 import { AccountsSection, BackupSection, NobetSection } from "./DataSettings";
 import { Card, Field, inputCls, PrimaryButton, Segmented } from "./ui";
+import { useHashScroll } from "./help";
 
 interface SettingsData {
-  key: { source: "env" | "db" | null; masked: string | null };
+  /** owner: sahibin anahtarı paylaşımlı kullanılıyor (anahtarın kendisi gösterilmez) */
+  key: { source: "env" | "db" | "owner" | null; masked: string | null };
+  isOwner?: boolean;
+  sharedAi?: { active: boolean; dailyLimit: number; usedToday: number; globalLimit?: number; totalToday?: number };
   settings: { model: "ekonomik" | "gelismis"; scheduleEnabled: boolean; scheduleTimes: string[]; maxSearches: number; budgetUsd: number };
   models: { key: string; id: string; label: string; inputPerMTok: number; outputPerMTok: number }[];
   budget: { spentUsd: number; budgetUsd: number; overBudget: boolean; searches: number; calls: number };
@@ -46,6 +50,7 @@ function Note({ msg }: { msg: Msg }) {
 export function SettingsView() {
   const [data, setData] = useState<SettingsData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  useHashScroll();
 
   const load = useCallback(async () => {
     try {
@@ -65,6 +70,7 @@ export function SettingsView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <h1 className="text-xl font-semibold tracking-tight">Ayarlar</h1>
+      <UserSection />
       <AccountsSection />
       <BackupSection />
       <NobetSection />
@@ -74,6 +80,7 @@ export function SettingsView() {
       ) : (
         <>
           <KeySection data={data} onChange={setData} />
+          {data.isOwner && data.sharedAi && <SharedAiLimitSection data={data} onChange={setData} />}
           <AiSettingsSection key={JSON.stringify(data.settings)} data={data} onChange={setData} />
           <SignalAlertsSection data={data} onChange={setData} />
           <KapSection data={data} onChange={setData} />
@@ -140,13 +147,26 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
 
   return (
     <Card className="space-y-4 p-4 md:p-6">
-      <div>
+      <div id="anahtar" className="scroll-mt-20">
         <h2 className="font-semibold">Yapay zeka anahtarı</h2>
         <p className="mt-1 text-sm text-slate-500">Sohbet ve haber analizi Claude yapay zekasını kullanır. Bunun için bir API anahtarı gerekir.</p>
       </div>
 
+      {source === "owner" && data.sharedAi && (
+        <p className="rounded-xl bg-sky-500/10 px-3 py-2 text-sm text-sky-200">
+          Kendi anahtarınız olmadığı için uygulama sahibinin yapay zeka erişimi kullanılıyor. Günde en fazla{" "}
+          <b className="num">{data.sharedAi.dailyLimit}</b> istek yapabilirsiniz (bugün <span className="num">{data.sharedAi.usedToday}</span> kullanıldı). Otomatik
+          (zamanlanmış) haber taraması bu durumda çalışmaz. Kendi anahtarınızı eklerseniz sınır kalkar.
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-bg px-3 py-2.5 text-sm">
-        {source ? (
+        {source === "owner" ? (
+          <>
+            <span className="h-2 w-2 rounded-full bg-sky-400" />
+            <span className="text-slate-300">Uygulama sahibinin erişimi (paylaşımlı)</span>
+          </>
+        ) : source ? (
           <>
             <span className="h-2 w-2 rounded-full bg-emerald-400" />
             <span className="num font-mono">{masked}</span>
@@ -166,7 +186,7 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
         </p>
       ) : (
         <form onSubmit={save} className="space-y-2">
-          <Field label={source ? "Anahtarı değiştir" : "Anahtarı yapıştırın"} hint="Anahtar bu bilgisayardaki veritabanında saklanır ve ekranda yalnızca maskeli gösterilir.">
+          <Field label={source && source !== "owner" ? "Anahtarı değiştir" : "Kendi anahtarınızı yapıştırın"} hint="Anahtar bu bilgisayardaki veritabanında saklanır ve ekranda yalnızca maskeli gösterilir.">
             <input
               type="password"
               autoComplete="off"
@@ -222,6 +242,182 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
         </ol>
         <p className="mt-2 text-xs text-slate-500">Harcamayı aşağıdaki aylık bütçeyle sınırlayabilirsiniz. Console&apos;da da harcama limiti koymanız önerilir.</p>
       </details>
+    </Card>
+  );
+}
+
+// ---- Hesap (giriş bilgileri) ------------------------------------------------------------
+
+interface AccountInfo {
+  user: { id: number; email: string | null; isOwner: boolean } | null;
+}
+
+function UserSection() {
+  const [info, setInfo] = useState<AccountInfo | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg>(null);
+
+  useEffect(() => {
+    fetchJson<AccountInfo>("/api/account")
+      .then((d) => {
+        setInfo(d);
+        setEmail(d.user?.email ?? "");
+      })
+      .catch((err) => {
+        if (err instanceof UnauthorizedError) goToLogin();
+      });
+  }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      const d = (await send("/api/account", "POST", { email: email.trim(), password })) as AccountInfo;
+      setInfo(d);
+      setPassword("");
+      setMsg({ ok: true, text: "Giriş bilgileri kaydedildi. Artık bu e-posta ve şifreyle de girebilirsiniz." });
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const u = info?.user;
+  if (!u) return null;
+  return (
+    <Card className="space-y-3 p-4 md:p-6">
+      <div id="hesabim" className="scroll-mt-20">
+        <h2 className="font-semibold">Hesabım</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          {u.email ? (
+            <>
+              Giriş e-postası: <b className="text-slate-300">{u.email}</b>
+            </>
+          ) : (
+            "Bu hesaba henüz giriş e-postası tanımlanmadı; uygulama şifresiyle (e-posta boş) giriliyor."
+          )}
+          {" "}Verileriniz yalnızca bu hesapta görünür.
+        </p>
+      </div>
+      {u.email && <ChangePasswordForm />}
+      {u.isOwner && (
+        <form onSubmit={save} className="space-y-2">
+          <p className="text-sm text-slate-400">
+            Uygulama sahibi olarak isterseniz kendinize e-posta + şifre tanımlayabilirsiniz (isteğe bağlı). Uygulama şifresiyle girmeye devam edebilirsiniz.
+          </p>
+          <div className="grid gap-2 md:grid-cols-2">
+            <Field label="E-posta">
+              <input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} />
+            </Field>
+            <Field label="Yeni şifre" hint="En az 8 karakter.">
+              <input type="password" autoComplete="new-password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} />
+            </Field>
+          </div>
+          <PrimaryButton type="submit" tone="virtual" disabled={busy || !email.trim() || password.length < 8}>
+            {busy ? "Kaydediliyor…" : "Giriş bilgilerini kaydet"}
+          </PrimaryButton>
+          <Note msg={msg} />
+        </form>
+      )}
+    </Card>
+  );
+}
+
+function ChangePasswordForm() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [next2, setNext2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (next !== next2) return setMsg({ ok: false, text: "Yeni şifreler aynı değil." });
+    setBusy(true);
+    setMsg(null);
+    try {
+      await send("/api/account", "PUT", { currentPassword: current, newPassword: next });
+      setCurrent("");
+      setNext("");
+      setNext2("");
+      setMsg({ ok: true, text: "Şifreniz değiştirildi." });
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="space-y-2">
+      <h3 className="text-sm font-medium text-slate-200">Şifre değiştir</h3>
+      <div className="grid gap-2 md:grid-cols-3">
+        <Field label="Mevcut şifre">
+          <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Yeni şifre" hint="En az 8 karakter.">
+          <input type="password" autoComplete="new-password" minLength={8} value={next} onChange={(e) => setNext(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Yeni şifre (tekrar)">
+          <input type="password" autoComplete="new-password" minLength={8} value={next2} onChange={(e) => setNext2(e.target.value)} className={inputCls} />
+        </Field>
+      </div>
+      <PrimaryButton type="submit" tone="virtual" disabled={busy || !current || next.length < 8 || !next2}>
+        {busy ? "Kaydediliyor…" : "Şifreyi değiştir"}
+      </PrimaryButton>
+      <Note msg={msg} />
+    </form>
+  );
+}
+
+// ---- Paylaşılan yapay zeka sınırı (yalnızca sahip) --------------------------------------
+
+function SharedAiLimitSection({ data, onChange }: { data: SettingsData; onChange: (d: SettingsData) => void }) {
+  const [value, setValue] = useState(String(data.sharedAi?.dailyLimit ?? 50));
+  const [total, setTotal] = useState(String(data.sharedAi?.globalLimit ?? 300));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      onChange((await send("/api/settings", "PUT", { sharedAiDailyLimit: value, sharedAiGlobalLimit: total })) as SettingsData);
+      setMsg({ ok: true, text: "Kaydedildi." });
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="space-y-3 p-4 md:p-6">
+      <div id="paylasilan-yz" className="scroll-mt-20">
+        <h2 className="font-semibold">Diğer kullanıcılar için yapay zeka sınırı</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Kendi anahtarı olmayan kullanıcılar sizin yapay zeka anahtarınızı kullanır (anahtarınızı göremezler). Maliyeti sınırlamak için kullanıcı başına
+          günlük istek sınırı ve tüm kullanıcılar için toplam günlük tavan uygulanır; sizin için sınır yoktur. Otomatik haber taraması bu kullanıcılarda çalışmaz. 0: paylaşım kapalı.
+          {data.sharedAi?.totalToday != null && <> Bugün toplam <span className="num">{data.sharedAi.totalToday}</span> istek yapıldı.</>}
+        </p>
+      </div>
+      <form onSubmit={save} className="flex flex-wrap items-end gap-2">
+        <Field label="Günlük istek sınırı (kullanıcı başına)">
+          <input inputMode="numeric" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputCls} w-32`} />
+        </Field>
+        <Field label="Toplam günlük tavan (tüm kullanıcılar)">
+          <input inputMode="numeric" value={total} onChange={(e) => setTotal(e.target.value)} className={`${inputCls} w-32`} />
+        </Field>
+        <PrimaryButton type="submit" tone="virtual" disabled={busy}>
+          {busy ? "Kaydediliyor…" : "Kaydet"}
+        </PrimaryButton>
+      </form>
+      <Note msg={msg} />
     </Card>
   );
 }
@@ -581,7 +777,7 @@ function PushSection() {
 
   return (
     <Card className="space-y-4 p-4 md:p-6">
-      <div>
+      <div id="bildirimler" className="scroll-mt-20">
         <h2 className="font-semibold">Bildirimler</h2>
         <p className="mt-1 text-sm text-slate-500">
           Emir gerçekleşince ya da başarısız olunca, önemli (4–5) haberlerde ve teknik sinyal değişince bu cihaza anlık bildirim gönderilir. Uygulama içi zil aynı şekilde çalışmaya devam eder.

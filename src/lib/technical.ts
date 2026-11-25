@@ -8,6 +8,7 @@ import { getPortfolio } from "./portfolio";
 import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
 import { getSignalAlertsEnabled } from "./settings";
+import { getCurrentUserId } from "./userContext";
 import { bollinger, ema, last, macd, recentCross, rsi, sma, volumeRatio, type Series } from "./indicators";
 import {
   evaluateSignals,
@@ -394,15 +395,16 @@ export interface SignalChange {
  */
 export async function recordSignals(rows: SignalRow[], date: string): Promise<SignalChange[]> {
   const db = await getDb();
+  const uid = await getCurrentUserId();
   const changes: SignalChange[] = [];
 
   for (const r of rows) {
     if (!r.label || r.score == null || r.insufficient) continue;
-    const prev = await db.get<{ label: SignalLabel }>("SELECT label FROM technical_signals WHERE instrument = ?", [r.instrument]);
+    const prev = await db.get<{ label: SignalLabel }>("SELECT label FROM technical_signals WHERE user_id = ? AND instrument = ?", [uid, r.instrument]);
     await db.run(
-      `INSERT INTO technical_signals (instrument, label, score, checked_date, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(instrument) DO UPDATE SET label = excluded.label, score = excluded.score, checked_date = excluded.checked_date, updated_at = excluded.updated_at`,
-      [r.instrument, r.label, Math.round(r.score), date, sqlNow()],
+      `INSERT INTO technical_signals (user_id, instrument, label, score, checked_date, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, instrument) DO UPDATE SET label = excluded.label, score = excluded.score, checked_date = excluded.checked_date, updated_at = excluded.updated_at`,
+      [uid, r.instrument, r.label, Math.round(r.score), date, sqlNow()],
     );
     if (prev && prev.label !== r.label) changes.push({ instrument: r.instrument, name: r.name, from: prev.label, to: r.label, score: r.score });
   }
@@ -419,7 +421,9 @@ export async function recordSignals(rows: SignalRow[], date: string): Promise<Si
   return changes;
 }
 
-const gs = globalThis as unknown as { __yatirimSignalRunning?: boolean };
+/** Kontrolü süren kullanıcılar */
+const gs = globalThis as unknown as { __yatirimSignalRunning?: Set<number> };
+const signalRunning = () => (gs.__yatirimSignalRunning ??= new Set());
 
 export type SignalAlertResult =
   | { ran: true; checked: number; changes: SignalChange[] }
@@ -435,11 +439,12 @@ export async function maybeRunSignalAlerts(now = new Date()): Promise<SignalAler
   const p = istanbulParts(now);
   const [h, m] = SIGNAL_CHECK_TIME.split(":").map(Number);
   if (p.minutes < h * 60 + m) return { ran: false, reason: "zamani_degil" };
-  if (gs.__yatirimSignalRunning) return { ran: false, reason: "mesgul" };
-  const slot = `teknik ${p.date}`;
+  const uid = await getCurrentUserId();
+  if (signalRunning().has(uid)) return { ran: false, reason: "mesgul" };
+  const slot = `u${uid} teknik ${p.date}`;
   const claim = await (await getDb()).run("INSERT INTO scheduled_runs (slot, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING", [slot, sqlNow()]);
   if (Number(claim.changes) !== 1) return { ran: false, reason: "zaten_calisti" };
-  gs.__yatirimSignalRunning = true;
+  signalRunning().add(uid);
   try {
     const rows = await computeSignalRows(await collectSignalAssets(), { force: true });
     const changes = await recordSignals(rows, p.date);
@@ -449,6 +454,6 @@ export async function maybeRunSignalAlerts(now = new Date()): Promise<SignalAler
     console.error("[teknik] günlük kontrol hatası", err);
     return { ran: false, reason: "hata" };
   } finally {
-    gs.__yatirimSignalRunning = false;
+    signalRunning().delete(uid);
   }
 }

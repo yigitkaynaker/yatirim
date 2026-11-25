@@ -10,6 +10,7 @@ import { usePolling } from "@/lib/usePolling";
 import { detailHref } from "./MarketView";
 import { SignalBadge, SignalDisclaimer } from "./TechnicalPanel";
 import { Card, Segmented } from "./ui";
+import { EmptyState, InfoTip } from "./help";
 
 type SortKey = "signal" | "rsi" | "change" | "name";
 
@@ -96,10 +97,13 @@ export function SignalsView() {
       {!sorted ? (
         <Card className="p-6 text-center text-sm text-slate-500">Göstergeler hesaplanıyor… (ilk açılışta birkaç saniye sürebilir)</Card>
       ) : sorted.length === 0 ? (
-        <Card className="p-8 text-center">
-          <p className="text-slate-300">Gösterilecek varlık yok.</p>
-          <p className="mt-1 text-sm text-slate-500">Portföyünüze ya da Piyasa sayfasındaki izleme listesine varlık ekleyin.</p>
-        </Card>
+        <EmptyState
+          title="Gösterilecek varlık yok"
+          action={{ label: "İzleme listesine varlık ekle", href: "/piyasa" }}
+          guide={{ href: "/kilavuz#grafikler", label: "Kılavuz: Sinyaller nasıl okunur?" }}
+        >
+          Sinyaller, portföyündeki ve izleme listendeki varlıkların teknik göstergelerini tek listede özetler. Önce takip etmek istediğin bir varlık ekle.
+        </EmptyState>
       ) : (
         <Card className="divide-y divide-line/70">
           {sorted.map((r) => (
@@ -145,8 +149,8 @@ export function SignalsView() {
           ))}
         </ul>
         <p className="text-xs text-slate-500">
-          Sinyal; RSI, MACD, 50 ve 200 günlük ortalamalar, altın/ölüm kesişimi, Bollinger bantları ve hacimden gelen puanların toplamıdır.
-          RSI (0–100) son 14 günün yükseliş/düşüş gücünü gösterir: 70 üstü çok hızlı yükseliş, 30 altı çok hızlı düşüş demektir.
+          Sinyal <InfoTip term="sinyal-skoru" className="mx-0.5" />; RSI, MACD, 50 ve 200 günlük ortalamalar, altın/ölüm kesişimi, Bollinger bantları ve hacimden gelen puanların toplamıdır.
+          RSI <InfoTip term="rsi" className="mx-0.5" /> (0–100) son 14 günün yükseliş/düşüş gücünü gösterir: 70 üstü çok hızlı yükseliş, 30 altı çok hızlı düşüş demektir.
           Değişim, son günün kapanışa göre yüzde değişimidir.
         </p>
       </Card>

@@ -6,7 +6,9 @@ import { buildPositions } from "./positions";
 import { listWatchlist } from "./market";
 import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
-import { getKapNotifyScope, getSetting, setSetting } from "./settings";
+import { getGlobalSetting, getKapNotifyScope, setGlobalSetting } from "./settings";
+import { listUserIds } from "./users";
+import { runAsUser } from "./userContext";
 import { politeFetch } from "./http";
 
 // KAP (Kamuyu Aydınlatma Platformu) bildirimleri.
@@ -14,7 +16,8 @@ import { politeFetch } from "./http";
 // izleyici döngüsünden çağrılır; en fazla 10 dakikada bir ve yalnızca hafta içi
 // 08:00–22:00 (İstanbul) arasında tarih aralığıyla çekilir. Hisse filtresi kaynakta
 // güvenilir olmadığından yerelde süzülür: yalnızca gerçek / sanal pozisyonlardaki
-// ve izleme listesindeki BIST hisseleriyle ilgili bildirimler saklanır.
+// ve izleme listesindeki BIST hisseleriyle ilgili bildirimler saklanır. Çekme ve saklama tüm
+// kullanıcılar için tektir (paylaşılan önbellek); bildirim her kullanıcıya kendi hisseleri için gider.
 
 const KAP_URL = "https://www.kap.org.tr/tr/api/disclosure/members/byCriteria";
 const POLL_EVERY_MS = 10 * 60_000;
@@ -170,14 +173,22 @@ export function kapFromMs(now: number, lastOk: number | null, latestStored: numb
 }
 
 export async function pollKapNow(now = Date.now()): Promise<KapPollResult> {
-  const interest = await tickersOfInterest();
+  // Her kullanıcının ilgilendiği hisseler; çekme hepsinin birleşimiyle bir kez yapılır.
+  const perUser = new Map<number, Map<string, TickerInterest>>();
+  const interest = new Set<string>();
+  for (const uid of await listUserIds()) {
+    const mine = await runAsUser(uid, () => tickersOfInterest());
+    if (mine.size === 0) continue;
+    perUser.set(uid, mine);
+    for (const t of mine.keys()) interest.add(t);
+  }
   if (interest.size === 0) return { fetched: 0, stored: 0, notified: 0 };
   const db = await getDb();
   // Boşluk kalmasın: son başarılı çekimden (yoksa en son saklanan bildirimden) 1 gün öncesinden
   // başla; en fazla 7 gün geriye git. Hiç çekim yoksa son 3 gün.
-  const from = istanbulDate(kapFromMs(now, Number(await getSetting(LAST_OK_KEY)) || null, (await db.get("SELECT MAX(publish_at) AS m FROM kap_disclosures") as { m: number | null }).m));
+  const from = istanbulDate(kapFromMs(now, Number(await getGlobalSetting(LAST_OK_KEY)) || null, (await db.get("SELECT MAX(publish_at) AS m FROM kap_disclosures") as { m: number | null }).m));
   const items = await fetchKap(from, istanbulDate(now));
-  await setSetting(LAST_OK_KEY, String(now));
+  await setGlobalSetting(LAST_OK_KEY, String(now));
 
   const insert = (...p: SqlValue[]) =>
     db.run(
@@ -185,7 +196,6 @@ export async function pollKapNow(now = Date.now()): Promise<KapPollResult> {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
       [...p, sqlNow()],
     );
-  const scope = await getKapNotifyScope();
   const fresh: { item: KapDisclosure; codes: string[] }[] = [];
   let stored = 0;
   for (const it of items) {
@@ -206,14 +216,24 @@ export async function pollKapNow(now = Date.now()): Promise<KapPollResult> {
     }
   }
 
-  // Bildirim: yalnızca pozisyon hisseleri, son 3 saatte yayımlananlar (ilk çalışmada eski bildirim yağmuru olmasın).
+  // Bildirim: her kullanıcıya yalnızca kendi pozisyon hisseleri, son 3 saatte yayımlananlar (ilk çalışmada eski bildirim yağmuru olmasın).
+  let notified = 0;
+  for (const [uid, mine] of perUser) {
+    notified += await runAsUser(uid, () => notifyFresh(fresh, mine, now));
+  }
+  return { fetched: items.length, stored, notified };
+}
+
+/** Geçerli kullanıcıya yeni KAP bildirimlerinden ilgili olanları bildirir (ayarına göre). */
+async function notifyFresh(fresh: { item: KapDisclosure; codes: string[] }[], interest: Map<string, TickerInterest>, now: number): Promise<number> {
+  const scope = await getKapNotifyScope();
   let notified = 0;
   if (scope !== "off") {
     const relevant = fresh.filter(
       ({ item, codes }) =>
         now - item.publishAt < 3 * 3600_000 &&
         !QUIET_SUBJECTS.test(item.subject ?? "") &&
-        codes.some((c) => interest.get(c)!.real || (scope === "all" && interest.get(c)!.virtual)),
+        codes.some((c) => interest.get(c)?.real || (scope === "all" && interest.get(c)?.virtual)),
     );
     for (const { item, codes } of relevant.slice(0, 5)) {
       const n = {
@@ -230,7 +250,7 @@ export async function pollKapNow(now = Date.now()): Promise<KapPollResult> {
       await addNotification({ kind: "kap", title: `KAP: ${relevant.length - 5} bildirim daha`, body: "Tümünü KAP sayfasında görebilirsiniz." });
     }
   }
-  return { fetched: items.length, stored, notified };
+  return notified;
 }
 
 const gk = globalThis as unknown as { __yatirimKap?: { at: number; running: boolean; lastOk: number | null; lastError: string | null } };

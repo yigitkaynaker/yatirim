@@ -7,6 +7,7 @@ import type { DailySummary } from "@/lib/dailySummary";
 import { formatMoney, formatPercent, pnlClass } from "@/lib/format";
 import { usePolling } from "@/lib/usePolling";
 import { Card, Explain, inputCls, PrimaryButton } from "./ui";
+import { InfoTip } from "./help";
 
 // Portföy sayfası ek kartları: Günlük özet, kıyaslama (benchmark) ve risk.
 
@@ -106,7 +107,9 @@ export function PortfolioAnalytics({ mode }: { mode: Mode }) {
 function BenchmarkCard({ b }: { b: BenchmarkResult | null }) {
   return (
     <Card className="p-4 md:p-5">
-      <h2 className="font-semibold">Portföyüm vs BIST 100 / Dolar / Gram altın</h2>
+      <h2 className="flex items-center gap-1.5 font-semibold">
+        Portföyüm vs BIST 100 / Dolar / Gram altın <InfoTip term="benchmark" />
+      </h2>
       <Explain className="mt-2" title="Kıyaslama (benchmark) nedir?">
         Yatırımınızın iyi gidip gitmediğini anlamak için onu basit alternatiflerle karşılaştırırız: &quot;Bu parayı BIST 100&apos;e, dolara ya da gram altına koysaydım ne olurdu?&quot;
         Hepsi ilk işleminizin olduğu gün 100 kabul edilir. Portföy çizgisi, eklediğiniz ya da çektiğiniz parayı getiri saymaz (zaman ağırlıklı getiri).
@@ -164,6 +167,7 @@ function RiskCard({ r, onSaved }: { r: RiskResult | null; onSaved: () => void })
         <span className={`text-sm font-medium ${scoreCls}`}>
           Yoğunlaşma puanı {m.concentrationScore}/100 · {m.concentrationLabel}
         </span>
+        <InfoTip term="risk-puani" />
       </div>
       <p className="mt-1 text-xs text-slate-500">
         Yoğunlaşma puanı, paranızın birkaç varlıkta ne kadar toplandığını gösterir (0: çok dağınık, 100: hepsi tek varlıkta). Tüm yumurtaları aynı sepete koymak, o

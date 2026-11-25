@@ -2,6 +2,7 @@ import "server-only";
 import { after, NextResponse } from "next/server";
 import { ConflictError, ValidationError } from "./portfolio";
 import { drainBackground, hasBackgroundWork } from "./background";
+import { contextUserId, ForbiddenError, runAsUser, sessionUserId, UnauthorizedError } from "./userContext";
 
 /**
  * Route handler sarmalayıcı: ValidationError → 400 (Türkçe mesaj), ConflictError → 409.
@@ -10,7 +11,9 @@ import { drainBackground, hasBackgroundWork } from "./background";
  */
 export async function handle(fn: () => unknown, status = 200): Promise<NextResponse> {
   try {
-    const result = await fn();
+    // Oturumdaki kullanıcı bağlamı kurulur: fn ve başlattığı arka plan işleri bu kullanıcıyla çalışır.
+    const uid = contextUserId() ?? (await sessionUserId());
+    const result = await (uid != null ? runAsUser(uid, fn) : fn());
     if (result instanceof NextResponse) return result;
     return NextResponse.json(result, { status });
   } catch (err) {
@@ -29,6 +32,8 @@ export async function handle(fn: () => unknown, status = 200): Promise<NextRespo
 
 /** ValidationError / ConflictError için JSON yanıtı (diğer hatalarda null) */
 export function errorResponse(err: unknown): NextResponse | null {
+  if (err instanceof UnauthorizedError) return NextResponse.json({ error: err.message }, { status: 401 });
+  if (err instanceof ForbiddenError) return NextResponse.json({ error: err.message }, { status: 403 });
   if (err instanceof ConflictError) return NextResponse.json({ error: err.message }, { status: 409 });
   if (err instanceof ValidationError) return NextResponse.json({ error: err.message }, { status: 400 });
   return null;

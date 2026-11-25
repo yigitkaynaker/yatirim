@@ -2,6 +2,7 @@ import "server-only";
 import { getDb } from "./db";
 import { parseDecimal } from "./format";
 import { ValidationError } from "./portfolio";
+import { getCurrentUserId } from "./userContext";
 
 // HESAPLAR
 // Varlıklarınızı tuttuğunuz yerler: aracı kurum (Midas, İş Yatırım…), banka, altın kasası,
@@ -41,28 +42,30 @@ const fromRow = (r: AccountRow): Account => ({
 });
 
 export async function listAccounts(opts: { includeArchived?: boolean } = {}): Promise<Account[]> {
-  const rows = await (await getDb()).all(`SELECT * FROM accounts ${opts.includeArchived ? "" : "WHERE archived = 0"} ORDER BY sort_order, id`) as unknown as AccountRow[];
+  const rows = await (await getDb()).all(`SELECT * FROM accounts WHERE user_id = ? ${opts.includeArchived ? "" : "AND archived = 0"} ORDER BY sort_order, id`, [await getCurrentUserId()]) as unknown as AccountRow[];
   return rows.map(fromRow);
 }
 
+/** Geçerli kullanıcının hesabı (başka kullanıcının hesabı → null) */
 export async function getAccount(id: number): Promise<Account | null> {
-  const r = await (await getDb()).get("SELECT * FROM accounts WHERE id = ?", [id]) as unknown as AccountRow | undefined;
+  const r = await (await getDb()).get("SELECT * FROM accounts WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()]) as unknown as AccountRow | undefined;
   return r ? fromRow(r) : null;
 }
 
 /** Varsayılan hesap: arşivlenmemiş ilk hesap (yoksa ilk hesap; hiç yoksa "Ana hesap" oluşturulur). */
 export async function defaultAccount(): Promise<Account> {
   const db = await getDb();
+  const uid = await getCurrentUserId();
   const r =
-    (await db.get("SELECT * FROM accounts WHERE archived = 0 ORDER BY sort_order, id LIMIT 1") as unknown as AccountRow | undefined) ??
-    (await db.get("SELECT * FROM accounts ORDER BY sort_order, id LIMIT 1") as unknown as AccountRow | undefined);
+    (await db.get("SELECT * FROM accounts WHERE user_id = ? AND archived = 0 ORDER BY sort_order, id LIMIT 1", [uid]) as unknown as AccountRow | undefined) ??
+    (await db.get("SELECT * FROM accounts WHERE user_id = ? ORDER BY sort_order, id LIMIT 1", [uid]) as unknown as AccountRow | undefined);
   if (r) return fromRow(r);
-  const res = await db.run("INSERT INTO accounts (name) VALUES ('Ana hesap') RETURNING id");
+  const res = await db.run("INSERT INTO accounts (user_id, name) VALUES (?, 'Ana hesap') RETURNING id", [uid]);
   return (await getAccount(res.lastId!))!;
 }
 
 async function findByName(name: string): Promise<Account | null> {
-  const r = await (await getDb()).get("SELECT * FROM accounts WHERE lower(name) = lower(?)", [name.trim()]) as unknown as AccountRow | undefined;
+  const r = await (await getDb()).get("SELECT * FROM accounts WHERE user_id = ? AND lower(name) = lower(?)", [await getCurrentUserId(), name.trim()]) as unknown as AccountRow | undefined;
   return r ? fromRow(r) : null;
 }
 
@@ -120,15 +123,16 @@ export async function createAccount(body: Record<string, unknown>): Promise<Acco
   const feePct = parseFeePct(body.feePct);
   const include = body.includeInTotal === false ? 0 : 1;
   const db = await getDb();
-  const { m } = await db.get("SELECT COALESCE(MAX(sort_order), 0) AS m FROM accounts") as { m: number };
-  const res = await db.run("INSERT INTO accounts (name, fee_pct, include_in_total, sort_order) VALUES (?, ?, ?, ?) RETURNING id", [name, feePct, include, m + 1]);
+  const uid = await getCurrentUserId();
+  const { m } = await db.get("SELECT COALESCE(MAX(sort_order), 0) AS m FROM accounts WHERE user_id = ?", [uid]) as { m: number };
+  const res = await db.run("INSERT INTO accounts (user_id, name, fee_pct, include_in_total, sort_order) VALUES (?, ?, ?, ?, ?) RETURNING id", [uid, name, feePct, include, m + 1]);
   return (await getAccount(res.lastId!))!;
 }
 
 /** Hesabın açık pozisyonu var mı (gerçek, aktif işlemlerden) */
 async function hasOpenPositions(id: number): Promise<boolean> {
   const rows = await (await getDb()).all(`SELECT asset_type, symbol, SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS q
-       FROM transactions WHERE mode = 'real' AND account_id = ? AND converted_at IS NULL GROUP BY asset_type, symbol`, [id]) as { q: number }[];
+       FROM transactions WHERE user_id = ? AND mode = 'real' AND account_id = ? AND converted_at IS NULL GROUP BY asset_type, symbol`, [await getCurrentUserId(), id]) as { q: number }[];
   return rows.some((r) => r.q > 1e-9);
 }
 
@@ -137,13 +141,14 @@ export async function updateAccount(id: number, body: Record<string, unknown>): 
   const acc = await getAccount(id);
   if (!acc) return null;
   const db = await getDb();
+  const uid = await getCurrentUserId();
   if (body.name !== undefined) {
     const name = parseName(body.name);
     await assertUniqueName(name, id);
-    await db.run("UPDATE accounts SET name = ? WHERE id = ?", [name, id]);
+    await db.run("UPDATE accounts SET name = ? WHERE id = ? AND user_id = ?", [name, id, uid]);
   }
-  if (body.feePct !== undefined) await db.run("UPDATE accounts SET fee_pct = ? WHERE id = ?", [parseFeePct(body.feePct), id]);
-  if (body.includeInTotal !== undefined) await db.run("UPDATE accounts SET include_in_total = ? WHERE id = ?", [body.includeInTotal ? 1 : 0, id]);
+  if (body.feePct !== undefined) await db.run("UPDATE accounts SET fee_pct = ? WHERE id = ? AND user_id = ?", [parseFeePct(body.feePct), id, uid]);
+  if (body.includeInTotal !== undefined) await db.run("UPDATE accounts SET include_in_total = ? WHERE id = ? AND user_id = ?", [body.includeInTotal ? 1 : 0, id, uid]);
   if (body.archived !== undefined) {
     const archive = !!body.archived;
     if (archive && !acc.archived) {
@@ -154,10 +159,10 @@ export async function updateAccount(id: number, body: Record<string, unknown>): 
           `"${acc.name}" hesabında açık pozisyon var. Arşivlemek yerine "Toplama dahil" anahtarını kapatabilir ya da önce pozisyonları satabilirsiniz.`,
         );
       }
-      const pending = await db.get("SELECT COUNT(*) AS c FROM orders WHERE account_id = ? AND status = 'pending'", [id]) as { c: number };
+      const pending = await db.get("SELECT COUNT(*) AS c FROM orders WHERE user_id = ? AND account_id = ? AND status = 'pending'", [uid, id]) as { c: number };
       if (pending.c > 0) throw new ValidationError(`"${acc.name}" hesabında bekleyen emir var; önce iptal edin.`);
     }
-    await db.run("UPDATE accounts SET archived = ? WHERE id = ?", [archive ? 1 : 0, id]);
+    await db.run("UPDATE accounts SET archived = ? WHERE id = ? AND user_id = ?", [archive ? 1 : 0, id, uid]);
   }
   return await getAccount(id);
 }

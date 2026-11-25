@@ -2,10 +2,12 @@ import "server-only";
 import { checkPendingOrders } from "./orders";
 import { maybeRecordSnapshots } from "./snapshots";
 import { markLocalTick } from "./cron/runner";
+import { forEachUser } from "./users";
 
 // Sunucu çalıştığı sürece bekleyen emirleri ~30 sn'de bir kontrol eder,
 // günlük portföy değeri anlık görüntüsünü (gerçek / sanal) kaydeder ve
 // zamanı gelen otomatik haber taramasını ve günlük teknik sinyal kontrolünü başlatır.
+// Kullanıcıya ait görevler her kullanıcı için ayrı, o kullanıcının bağlamında çalışır (forEachUser).
 // instrumentation.ts'den bir kez başlatılır; dev modda çift başlatmaya karşı
 // globalThis üzerinde korunur. YALNIZCA yerel mod: bulut modunda (DATABASE_URL) aynı görevleri
 // dış zamanlayıcının çağırdığı /api/cron/tick çalıştırır (cron/runner.ts).
@@ -25,13 +27,14 @@ export async function runOrderCheck() {
   if (s?.running) return;
   if (s) s.running = true;
   try {
-    const r = await checkPendingOrders();
-    if (r.executed > 0) console.log(`[emirler] ${r.executed} emir gerçekleşti`);
+    const r = await forEachUser("emirler", () => checkPendingOrders());
+    const executed = r.reduce((a, b) => a + b.executed, 0);
+    if (executed > 0) console.log(`[emirler] ${executed} emir gerçekleşti`);
   } catch (err) {
     console.error("[emirler] kontrol hatası", err);
   }
   try {
-    await maybeRecordSnapshots();
+    await forEachUser("anlık görüntü", () => maybeRecordSnapshots());
   } catch (err) {
     console.error("[anlık görüntü] hata", err);
   } finally {
@@ -64,7 +67,7 @@ export function startOrderWatcher() {
 async function runScheduledNews() {
   try {
     const { maybeRunScheduledScan } = await import("./news");
-    await maybeRunScheduledScan();
+    await forEachUser("haber", () => maybeRunScheduledScan());
   } catch (err) {
     console.error("[haber] zamanlayıcı hatası", err);
   }
@@ -74,7 +77,7 @@ async function runScheduledNews() {
 async function runSignalAlerts() {
   try {
     const { maybeRunSignalAlerts } = await import("./technical");
-    await maybeRunSignalAlerts();
+    await forEachUser("teknik", () => maybeRunSignalAlerts());
   } catch (err) {
     console.error("[teknik] zamanlayıcı hatası", err);
   }
@@ -84,8 +87,9 @@ async function runSignalAlerts() {
 async function runAlarms() {
   try {
     const { checkAlarms } = await import("./alarms");
-    const r = await checkAlarms();
-    if (r.fired > 0) console.log(`[alarm] ${r.fired} alarm çaldı`);
+    const r = await forEachUser("alarm", () => checkAlarms());
+    const fired = r.reduce((a, b) => a + b.fired, 0);
+    if (fired > 0) console.log(`[alarm] ${fired} alarm çaldı`);
   } catch (err) {
     console.error("[alarm] kontrol hatası", err);
   }
@@ -109,7 +113,7 @@ async function runDailyBackup() {
 async function runDailySummary() {
   try {
     const { maybeRunDailySummary } = await import("./dailySummary");
-    await maybeRunDailySummary();
+    await forEachUser("özet", () => maybeRunDailySummary());
   } catch (err) {
     console.error("[özet] zamanlayıcı hatası", err);
   }

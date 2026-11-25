@@ -430,4 +430,222 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_login_failures_last ON login_failures (last_at);
   `,
+  `
+  -- Yapay zeka kullanımının sağlayıcısı (anthropic / openai)
+  ALTER TABLE ai_usage ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
+
+  -- ChatGPT / Claude.ai bağlayıcısı (MCP) için tek kullanıcılı OAuth 2.1 sunucusu.
+  -- İstemciler dinamik kayıtla (DCR) eklenir; gizli anahtar varsa yalnızca SHA-256 özeti tutulur.
+  CREATE TABLE oauth_clients (
+    id                  TEXT PRIMARY KEY,
+    name                TEXT,
+    redirect_uris       TEXT    NOT NULL,
+    secret_hash         TEXT,
+    created_at          INTEGER NOT NULL
+  );
+  -- Yetki kodları: kısa ömürlü, tek kullanımlık (used_at), PKCE S256 meydan okumasıyla.
+  CREATE TABLE oauth_codes (
+    code_hash           TEXT PRIMARY KEY,
+    client_id           TEXT    NOT NULL,
+    redirect_uri        TEXT    NOT NULL,
+    code_challenge      TEXT    NOT NULL,
+    resource            TEXT    NOT NULL,
+    scope               TEXT,
+    expires_at          INTEGER NOT NULL,
+    used_at             INTEGER
+  );
+  -- Erişim / yenileme / statik belirteçler: yalnızca SHA-256 özeti saklanır.
+  -- resource: belirtecin geçerli olduğu MCP adresi (statikte '*').
+  CREATE TABLE oauth_tokens (
+    token_hash          TEXT PRIMARY KEY,
+    kind                TEXT    NOT NULL CHECK (kind IN ('access','refresh','static')),
+    client_id           TEXT,
+    resource            TEXT    NOT NULL,
+    scope               TEXT,
+    expires_at          INTEGER,
+    created_at          INTEGER NOT NULL,
+    last_used_at        INTEGER,
+    revoked_at          INTEGER
+  );
+  CREATE INDEX idx_oauth_tokens_client ON oauth_tokens (client_id);
+  -- MCP araç çağrıları günlüğü ("Son ChatGPT işlemleri")
+  CREATE TABLE mcp_calls (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    client      TEXT,
+    tool        TEXT    NOT NULL,
+    input       TEXT,
+    ok          INTEGER NOT NULL,
+    is_write    INTEGER NOT NULL,
+    summary     TEXT,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX idx_mcp_calls_created ON mcp_calls (created_at);
+  `,
+  `
+  -- Çok kullanıcılı mod: kullanıcılar ve kullanıcıya ait tüm tablolarda user_id.
+  -- Mevcut tüm veri sahibe (id 1) atanır. Sahip e-postasızdır; APP_PASSWORD ile girer ve
+  -- isterse Ayarlar'dan e-posta + şifre tanımlar. user_id varsayılanı 0'dır (hiçbir kullanıcı):
+  -- kimliksiz eklenen satır kimseye görünmez. Ayarlarda user_id 0 sunucu geneli anahtarlardır (VAPID, KAP).
+  -- Paylaşılan önbellekler (fiyat, fon, temettü geçmişi, KAP, dış kaynak) ve nöbet tabloları kullanıcısızdır.
+  CREATE TABLE users (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    email          TEXT UNIQUE,
+    password_hash  TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  INSERT INTO users (id, email) VALUES (1, NULL);
+  ALTER TABLE transactions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE transactions SET user_id = 1;
+  ALTER TABLE orders ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE orders SET user_id = 1;
+  ALTER TABLE notifications ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE notifications SET user_id = 1;
+  ALTER TABLE ai_usage ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE ai_usage SET user_id = 1;
+  ALTER TABLE chat_conversations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE chat_conversations SET user_id = 1;
+  ALTER TABLE chat_messages ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE chat_messages SET user_id = 1;
+  ALTER TABLE news_reports ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE news_reports SET user_id = 1;
+  ALTER TABLE push_subscriptions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE push_subscriptions SET user_id = 1;
+  ALTER TABLE alarms ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE alarms SET user_id = 1;
+  ALTER TABLE alarm_events ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE alarm_events SET user_id = 1;
+  ALTER TABLE accounts ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE accounts SET user_id = 1;
+  ALTER TABLE oauth_codes ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE oauth_codes SET user_id = 1;
+  ALTER TABLE oauth_tokens ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE oauth_tokens SET user_id = 1;
+  ALTER TABLE mcp_calls ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+  UPDATE mcp_calls SET user_id = 1;
+  CREATE INDEX idx_transactions_user ON transactions (user_id, mode);
+  CREATE INDEX idx_orders_user ON orders (user_id, status);
+  CREATE INDEX idx_notifications_user ON notifications (user_id, id);
+  CREATE INDEX idx_ai_usage_user ON ai_usage (user_id, created_at);
+  CREATE INDEX idx_chat_conversations_user ON chat_conversations (user_id);
+  CREATE INDEX idx_news_reports_user ON news_reports (user_id, id);
+  CREATE INDEX idx_push_subscriptions_user ON push_subscriptions (user_id);
+  CREATE INDEX idx_alarms_user ON alarms (user_id);
+  CREATE INDEX idx_alarm_events_user ON alarm_events (user_id, fired_at);
+  CREATE INDEX idx_oauth_tokens_user ON oauth_tokens (user_id);
+  CREATE INDEX idx_mcp_calls_user ON mcp_calls (user_id, created_at);
+  DROP INDEX idx_accounts_name;
+  CREATE UNIQUE INDEX idx_accounts_name ON accounts (user_id, name COLLATE NOCASE);
+
+  -- Birincil anahtarı / tekilliği kullanıcıyı içermesi gereken tablolar yeniden kurulur.
+  CREATE TABLE settings_u (
+    user_id     INTEGER NOT NULL DEFAULT 0,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, key)
+  );
+  INSERT INTO settings_u (user_id, key, value, updated_at)
+    SELECT CASE WHEN key IN ('vapid_public_key', 'vapid_private_key', 'kap_last_ok') THEN 0 ELSE 1 END, key, value, updated_at FROM settings;
+  DROP TABLE settings;
+  ALTER TABLE settings_u RENAME TO settings;
+
+  CREATE TABLE watchlist_u (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL DEFAULT 0,
+    asset_type  TEXT    NOT NULL,
+    symbol      TEXT    NOT NULL,
+    name        TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, asset_type, symbol)
+  );
+  INSERT INTO watchlist_u (id, user_id, asset_type, symbol, name, created_at) SELECT id, 1, asset_type, symbol, name, created_at FROM watchlist;
+  DROP TABLE watchlist;
+  ALTER TABLE watchlist_u RENAME TO watchlist;
+
+  CREATE TABLE portfolio_snapshots_u (
+    user_id     INTEGER NOT NULL DEFAULT 0,
+    date        TEXT    NOT NULL,
+    mode        TEXT    NOT NULL CHECK (mode IN ('real','virtual')),
+    value_try   REAL    NOT NULL,
+    cost_try    REAL    NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (user_id, date, mode)
+  );
+  INSERT INTO portfolio_snapshots_u SELECT 1, date, mode, value_try, cost_try, updated_at FROM portfolio_snapshots;
+  DROP TABLE portfolio_snapshots;
+  ALTER TABLE portfolio_snapshots_u RENAME TO portfolio_snapshots;
+
+  CREATE TABLE technical_signals_u (
+    user_id       INTEGER NOT NULL DEFAULT 0,
+    instrument    TEXT    NOT NULL,
+    label         TEXT    NOT NULL,
+    score         INTEGER NOT NULL,
+    checked_date  TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, instrument)
+  );
+  INSERT INTO technical_signals_u SELECT 1, instrument, label, score, checked_date, updated_at FROM technical_signals;
+  DROP TABLE technical_signals;
+  ALTER TABLE technical_signals_u RENAME TO technical_signals;
+
+  CREATE TABLE daily_summaries_u (
+    user_id     INTEGER NOT NULL DEFAULT 0,
+    date        TEXT    NOT NULL,
+    text        TEXT    NOT NULL,
+    ai          INTEGER NOT NULL DEFAULT 0,
+    model       TEXT,
+    cost_usd    REAL    NOT NULL DEFAULT 0,
+    data        TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, date)
+  );
+  INSERT INTO daily_summaries_u SELECT 1, date, text, ai, model, cost_usd, data, created_at FROM daily_summaries;
+  DROP TABLE daily_summaries;
+  ALTER TABLE daily_summaries_u RENAME TO daily_summaries;
+
+  CREATE TABLE position_notes_u (
+    user_id       INTEGER NOT NULL DEFAULT 0,
+    mode          TEXT NOT NULL CHECK (mode IN ('real','virtual')),
+    asset_type    TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    why           TEXT,
+    exit_plan     TEXT,
+    target_price  REAL CHECK (target_price IS NULL OR target_price > 0),
+    stop_price    REAL CHECK (stop_price IS NULL OR stop_price > 0),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, mode, asset_type, symbol)
+  );
+  INSERT INTO position_notes_u SELECT 1, mode, asset_type, symbol, why, exit_plan, target_price, stop_price, updated_at FROM position_notes;
+  DROP TABLE position_notes;
+  ALTER TABLE position_notes_u RENAME TO position_notes;
+
+  CREATE TABLE dividends_u (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL DEFAULT 0,
+    mode             TEXT    NOT NULL CHECK (mode IN ('real','virtual')),
+    account_id       INTEGER NOT NULL DEFAULT 0,
+    asset_type       TEXT    NOT NULL,
+    symbol           TEXT    NOT NULL,
+    ex_date          TEXT    NOT NULL,
+    per_share        REAL    NOT NULL CHECK (per_share >= 0),
+    quantity         REAL    NOT NULL CHECK (quantity >= 0),
+    amount           REAL    NOT NULL CHECK (amount >= 0),
+    currency         TEXT    NOT NULL,
+    fx_try           REAL,
+    status           TEXT    NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed','dismissed')),
+    source           TEXT    NOT NULL DEFAULT 'otomatik',
+    note             TEXT,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    gross_amount     REAL,
+    withholding_pct  REAL,
+    UNIQUE (user_id, mode, account_id, asset_type, symbol, ex_date)
+  );
+  INSERT INTO dividends_u (id, user_id, mode, account_id, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try,
+      status, source, note, created_at, gross_amount, withholding_pct)
+    SELECT id, 1, mode, account_id, asset_type, symbol, ex_date, per_share, quantity, amount, currency, fx_try,
+      status, source, note, created_at, gross_amount, withholding_pct FROM dividends;
+  DROP TABLE dividends;
+  ALTER TABLE dividends_u RENAME TO dividends;
+  CREATE INDEX idx_dividends_user ON dividends (user_id);
+  `,
 ];

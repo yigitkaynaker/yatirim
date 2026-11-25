@@ -22,6 +22,8 @@ const io = await import("../src/lib/importExport");
 const backup = await import("../src/lib/backup");
 const { maxDrawdown } = await import("../src/lib/perfMath");
 const { PG, resetDatabase } = await import("./test-db");
+// Çok kullanıcılı mod: betik sahibin (kullanıcı 1) bağlamında çalışır.
+(await import("../src/lib/userContext")).enterUserForScripts(1);
 if (PG) console.log("(Postgres modu: SQLite dosya geçişi ve dosya yedeği testleri atlanır)");
 
 let passed = 0;
@@ -457,9 +459,11 @@ await test("JSON veri dökümü: indir → sıfırla → geri yükle → aynı p
 await test("JSON veri dökümü: gizli anahtarlar varsayılan olarak dahil değil; geri yüklemede mevcutlar korunur", async () => {
   const dx = await import("../src/lib/dataExport");
   const conn = await db.getDb();
+  // VAPID anahtarları sunucu genelidir (user_id 0): kullanıcı dökümüne hiç girmez, geri yüklemede değişmez.
+  const uidOf = (k: string) => (k.startsWith("vapid_") ? 0 : 1);
   const setKey = (k: string, v: string) =>
-    conn.run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [k, v]);
-  const val = async (k: string) => (await conn.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", [k]))?.value;
+    conn.run("INSERT INTO settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value", [uidOf(k), k, v]);
+  const val = async (k: string) => (await conn.get<{ value: string }>("SELECT value FROM settings WHERE user_id = ? AND key = ?", [uidOf(k), k]))?.value;
   await setKey("anthropic_api_key", "sk-ant-eski");
   await setKey("vapid_private_key", "gizli-eski");
   await setKey("vapid_public_key", "acik-eski");

@@ -12,7 +12,7 @@ export default function LoginPage() {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/icons/icon-192.png" alt="" width={64} height={64} className="rounded-2xl" />
           <h1 className="text-2xl font-semibold tracking-tight">Yatırım</h1>
-          <p className="text-sm text-slate-400">Devam etmek için şifrenizi girin.</p>
+          <p className="text-sm text-slate-400">Devam etmek için giriş yapın.</p>
         </div>
         <Suspense>
           <LoginForm />

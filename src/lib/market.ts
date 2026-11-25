@@ -11,6 +11,7 @@ import {
   type AssetType,
 } from "./assets";
 import { ValidationError } from "./portfolio";
+import { getCurrentUserId } from "./userContext";
 import { fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
 
 // Piyasa sayfası: izleme listesi, sembol arama ve fiyat grafiği verisi.
@@ -48,7 +49,7 @@ const fromRow = (r: WatchRow): WatchItem => ({
 });
 
 export async function listWatchlist(): Promise<WatchItem[]> {
-  const rows = await (await getDb()).all("SELECT * FROM watchlist ORDER BY id") as unknown as WatchRow[];
+  const rows = await (await getDb()).all("SELECT * FROM watchlist WHERE user_id = ? ORDER BY id", [await getCurrentUserId()]) as unknown as WatchRow[];
   return rows.map(fromRow);
 }
 
@@ -64,14 +65,15 @@ export async function addWatch(assetType: unknown, symbol: unknown, name?: unkno
   const ref = parseRef(assetType, symbol);
   const nm = typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : null;
   const db = await getDb();
-  await db.run("INSERT INTO watchlist (asset_type, symbol, name) VALUES (?, ?, ?) ON CONFLICT(asset_type, symbol) DO NOTHING", [ref.assetType, ref.symbol, nm]);
-  const row = await db.get("SELECT * FROM watchlist WHERE asset_type = ? AND symbol = ?", [ref.assetType, ref.symbol]) as unknown as WatchRow;
+  const uid = await getCurrentUserId();
+  await db.run("INSERT INTO watchlist (user_id, asset_type, symbol, name) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, asset_type, symbol) DO NOTHING", [uid, ref.assetType, ref.symbol, nm]);
+  const row = await db.get("SELECT * FROM watchlist WHERE user_id = ? AND asset_type = ? AND symbol = ?", [uid, ref.assetType, ref.symbol]) as unknown as WatchRow;
   return fromRow(row);
 }
 
 /** İzleme listesinden çıkarır. Bulunamazsa false. */
 export async function removeWatch(id: number): Promise<boolean> {
-  return (await (await getDb()).run("DELETE FROM watchlist WHERE id = ?", [id])).changes > 0;
+  return (await (await getDb()).run("DELETE FROM watchlist WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()])).changes > 0;
 }
 
 // ---- Sembol arama ------------------------------------------------------------

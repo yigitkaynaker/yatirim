@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const instrument = req.nextUrl.searchParams.get("instrument");
   return handle(async () => {
-    const base = { configured: await isAiConfigured(), running: isScanRunning(), budget: await getBudgetStatus(), settings: await getAiSettings() };
+    const base = { configured: await isAiConfigured(), running: await isScanRunning(), budget: await getBudgetStatus(), settings: await getAiSettings() };
     if (instrument) return { ...base, latest: await getLatestReport(instrument) };
     return { ...base, reports: await listReports(30) };
   });

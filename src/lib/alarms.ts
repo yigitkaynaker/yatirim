@@ -10,6 +10,7 @@ import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
 import { accountNames, resolveAccount } from "./accounts";
 import { noteReminder } from "./notes";
+import { getCurrentUserId } from "./userContext";
 import {
   describeRule,
   evaluateAlarm,
@@ -133,24 +134,25 @@ function fromRow(r: AlarmRow, names: Map<number, string>): Alarm {
   };
 }
 
-async function rows(where = "", ...args: (string | number)[]): Promise<AlarmRow[]> {
-  return await (await getDb()).all(`SELECT * FROM alarms ${where} ORDER BY id DESC`, [...args]) as unknown as AlarmRow[];
+/** Geçerli kullanıcının alarmları; extra: "AND …" koşulu */
+async function rows(extra = "", ...args: (string | number)[]): Promise<AlarmRow[]> {
+  return await (await getDb()).all(`SELECT * FROM alarms WHERE user_id = ? ${extra} ORDER BY id DESC`, [await getCurrentUserId(), ...args]) as unknown as AlarmRow[];
 }
 
 export async function listAlarms(opts: { instrument?: string; activeOnly?: boolean } = {}): Promise<Alarm[]> {
   const names = await accountNames();
-  let list = (await rows(opts.activeOnly ? "WHERE active = 1" : "")).map((r) => fromRow(r, names));
+  let list = (await rows(opts.activeOnly ? "AND active = 1" : "")).map((r) => fromRow(r, names));
   if (opts.instrument) list = list.filter((a) => a.instrument === opts.instrument);
   return list;
 }
 
 export async function getAlarm(id: number): Promise<Alarm | null> {
-  const r = (await rows("WHERE id = ?", id))[0];
+  const r = (await rows("AND id = ?", id))[0];
   return r ? fromRow(r, await accountNames()) : null;
 }
 
 export async function listAlarmEvents(limit = 30): Promise<AlarmEvent[]> {
-  const list = await (await getDb()).all("SELECT * FROM alarm_events ORDER BY fired_at DESC, id DESC LIMIT ?", [limit]) as {
+  const list = await (await getDb()).all("SELECT * FROM alarm_events WHERE user_id = ? ORDER BY fired_at DESC, id DESC LIMIT ?", [await getCurrentUserId(), limit]) as {
     id: number;
     alarm_id: number | null;
     instrument: string;
@@ -227,25 +229,28 @@ export async function createAlarm(body: Record<string, unknown>, source = "manue
   if (!Number.isFinite(cooldownRaw) || cooldownRaw < 0 || cooldownRaw > 7 * 24 * 60) throw new ValidationError("Bekleme süresi 0 ile 10080 dakika arasında olmalı.");
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, 300) : null;
 
-  const res = await (await getDb()).run(`INSERT INTO alarms (kind, scope, asset_type, symbol, mode, direction, threshold, repeat, cooldown_min, note, source, account_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [kind, scope, assetType, symbol, mode, direction, threshold, repeat, Math.round(cooldownRaw), note, source, accountId]);
+  const res = await (await getDb()).run(`INSERT INTO alarms (user_id, kind, scope, asset_type, symbol, mode, direction, threshold, repeat, cooldown_min, note, source, account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [await getCurrentUserId(), kind, scope, assetType, symbol, mode, direction, threshold, repeat, Math.round(cooldownRaw), note, source, accountId]);
   return (await getAlarm(res.lastId!))!;
 }
 
 export async function deleteAlarm(id: number): Promise<boolean> {
-  return Number((await (await getDb()).run("DELETE FROM alarms WHERE id = ?", [id])).changes) > 0;
+  return Number((await (await getDb()).run("DELETE FROM alarms WHERE id = ? AND user_id = ?", [id, await getCurrentUserId()])).changes) > 0;
 }
 
 /** Alarmı açar / kapatır. Yeniden açılan alarmın durumu sıfırlanır (koşul sağlanıyorsa bir kez çalar). */
 export async function setAlarmActive(id: number, active: boolean): Promise<Alarm | null> {
-  await (await getDb()).run("UPDATE alarms SET active = ?, state = CASE WHEN ? = 1 THEN NULL ELSE state END WHERE id = ?", [active ? 1 : 0, active ? 1 : 0, id]);
+  await (await getDb()).run("UPDATE alarms SET active = ?, state = CASE WHEN ? = 1 THEN NULL ELSE state END WHERE id = ? AND user_id = ?", [active ? 1 : 0, active ? 1 : 0, id, await getCurrentUserId()]);
   return await getAlarm(id);
 }
 
 // ---- Kontrol ------------------------------------------------------------------------
 
 const SLOW_EVERY_MS = 15 * 60_000;
-const g = globalThis as unknown as { __yatirimAlarmSlowAt?: number; __yatirimAlarmRunning?: boolean };
+/** Kullanıcı başına: son yavaş kontrol zamanı ve çalışan kontrol */
+const g = globalThis as unknown as { __yatirimAlarmSlowAt?: Map<number, number>; __yatirimAlarmRunning?: Set<number> };
+const slowAt = () => (g.__yatirimAlarmSlowAt ??= new Map());
+const running = () => (g.__yatirimAlarmRunning ??= new Set());
 
 interface Target {
   type: AssetType;
@@ -293,27 +298,28 @@ async function fireMessage(r: AlarmRow, t: Target, obs: Observation, q: Quote | 
  * Dönüş: çalan alarm sayısı.
  */
 export async function checkAlarms(opts: { now?: number; forceSlow?: boolean; skipSlow?: boolean } = {}): Promise<{ checked: number; fired: number }> {
-  if (g.__yatirimAlarmRunning) return { checked: 0, fired: 0 };
-  const active = await rows("WHERE active = 1");
+  const uid = await getCurrentUserId();
+  if (running().has(uid)) return { checked: 0, fired: 0 };
+  const active = await rows("AND active = 1");
   if (active.length === 0) return { checked: 0, fired: 0 };
-  g.__yatirimAlarmRunning = true;
+  running().add(uid);
   try {
-    return await runCheck(active, opts.now ?? Date.now(), opts.forceSlow ? "force" : opts.skipSlow ? "skip" : "auto");
+    return await runCheck(uid, active, opts.now ?? Date.now(), opts.forceSlow ? "force" : opts.skipSlow ? "skip" : "auto");
   } finally {
-    g.__yatirimAlarmRunning = false;
+    running().delete(uid);
   }
 }
 
 /** slow: "auto" = hacim/sinyal 15 dk'da bir (bellek), "force" = şimdi, "skip" = hiç (bulut nöbeti ayrı görevle çalıştırır) */
-async function runCheck(active: AlarmRow[], now: number, slow: "auto" | "force" | "skip") {
-  const slowDue = slow === "force" || (slow === "auto" && now - (g.__yatirimAlarmSlowAt ?? 0) >= SLOW_EVERY_MS);
+async function runCheck(uid: number, active: AlarmRow[], now: number, slow: "auto" | "force" | "skip") {
+  const slowDue = slow === "force" || (slow === "auto" && now - (slowAt().get(uid) ?? 0) >= SLOW_EVERY_MS);
   const watch: Target[] = active.some((a) => a.scope === "watchlist")
     ? (await listWatchlist()).map((w) => ({ type: w.assetType, symbol: w.symbol, id: instrumentId(w.assetType, w.symbol) }))
     : [];
 
   const isSlow = (k: AlarmKind) => k === "volume_spike" || k === "signal_change";
   const todo = active.filter((a) => !isSlow(a.kind) || slowDue);
-  if (todo.some((a) => isSlow(a.kind))) g.__yatirimAlarmSlowAt = now;
+  if (todo.some((a) => isSlow(a.kind))) slowAt().set(uid, now);
 
   // Fiyatlar (tek seferde)
   const quoteTargets = new Map<string, Target>();
@@ -381,13 +387,13 @@ async function runCheck(active: AlarmRow[], now: number, slow: "auto" | "force" 
       anyFired = true;
       fired++;
       const msg = await fireMessage(a, t, obs, q, ev.fromLabel);
-      await db.run("INSERT INTO alarm_events (alarm_id, instrument, message, value, fired_at) VALUES (?, ?, ?, ?, ?)", [a.id, t.id, `${msg.title}. ${msg.body}`, obs.value ?? null, now]);
+      await db.run("INSERT INTO alarm_events (user_id, alarm_id, instrument, message, value, fired_at) VALUES (?, ?, ?, ?, ?, ?)", [uid, a.id, t.id, `${msg.title}. ${msg.body}`, obs.value ?? null, now]);
       await addNotification({ kind: "alarm", title: msg.title, body: msg.body, data: { alarmId: a.id, instrument: t.id } });
       background(() => sendPushToAll({ title: msg.title, body: msg.body, url: `/piyasa/detay?id=${encodeURIComponent(t.id)}`, tag: `alarm-${a.id}-${t.id}` }));
       if (a.repeat === "once") break; // tek sefer: ilk çalan varlıktan sonra kapanır
     }
     await db.run(`UPDATE alarms SET state = ?, fire_count = fire_count + ?, last_fired_at = CASE WHEN ? > 0 THEN ? ELSE last_fired_at END,
-         active = CASE WHEN ? > 0 AND repeat = 'once' THEN 0 ELSE active END WHERE id = ?`, [JSON.stringify(state), anyFired ? 1 : 0, anyFired ? 1 : 0, now, anyFired ? 1 : 0, a.id]);
+         active = CASE WHEN ? > 0 AND repeat = 'once' THEN 0 ELSE active END WHERE id = ? AND user_id = ?`, [JSON.stringify(state), anyFired ? 1 : 0, anyFired ? 1 : 0, now, anyFired ? 1 : 0, a.id, uid]);
   }
   return { checked: todo.length, fired };
 }

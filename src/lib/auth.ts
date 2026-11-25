@@ -9,7 +9,12 @@ interface SessionPayload {
   exp: number;
   /** oluşturulma zamanı (unix sn) */
   iat: number;
+  /** kullanıcı kimliği (çok kullanıcılı dönemden önceki çerezlerde yok → sahip, 1) */
+  uid?: number;
 }
+
+/** Çerezde uid olmayan (eski, tek kullanıcılı dönem) oturumlar sahibe aittir */
+const LEGACY_SESSION_UID = 1;
 
 const enc = new TextEncoder();
 
@@ -46,32 +51,41 @@ function hmacKey(): Promise<CryptoKey> {
   return keyPromise;
 }
 
-export async function createSessionToken(): Promise<string> {
+export async function createSessionToken(uid: number): Promise<string> {
+  if (!Number.isInteger(uid) || uid <= 0) throw new Error("Geçersiz kullanıcı kimliği.");
   const now = Math.floor(Date.now() / 1000);
-  const payload: SessionPayload = { iat: now, exp: now + SESSION_MAX_AGE_S };
+  const payload: SessionPayload = { iat: now, exp: now + SESSION_MAX_AGE_S, uid };
   const body = b64url(enc.encode(JSON.stringify(payload)));
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", await hmacKey(), enc.encode(body)));
   return `${body}.${b64url(sig)}`;
 }
 
 export async function verifySessionToken(token: string | undefined | null): Promise<boolean> {
-  if (!token) return false;
+  return (await readSessionToken(token)) != null;
+}
+
+/** İmzası ve süresi geçerli oturumun içeriği (kullanıcı kimliği); geçersizse null. */
+export async function readSessionToken(token: string | undefined | null): Promise<{ uid: number } | null> {
+  if (!token) return null;
   const [body, sig] = token.split(".");
-  if (!body || !sig) return false;
+  if (!body || !sig) return null;
   try {
     const ok = await crypto.subtle.verify("HMAC", await hmacKey(), fromB64url(sig), enc.encode(body));
-    if (!ok) return false;
+    if (!ok) return null;
     const payload = JSON.parse(new TextDecoder().decode(fromB64url(body))) as SessionPayload;
-    return typeof payload.exp === "number" && payload.exp > Date.now() / 1000;
+    if (typeof payload.exp !== "number" || payload.exp <= Date.now() / 1000) return null;
+    const uid = payload.uid ?? LEGACY_SESSION_UID;
+    return Number.isInteger(uid) && uid > 0 ? { uid } : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /** Zamanlamaya dayanıklı şifre karşılaştırması (iki tarafın HMAC'ini karşılaştırır). */
 export async function checkPassword(input: string): Promise<boolean> {
   const expected = process.env.APP_PASSWORD;
-  if (!expected) throw new Error("APP_PASSWORD tanımlı değil (.env dosyasını kontrol edin).");
+  // Tanımlı değilse sahip şifreyle giremez (e-posta + şifre ile girer).
+  if (!expected) return false;
   const key = await hmacKey();
   const [a, b] = await Promise.all([
     crypto.subtle.sign("HMAC", key, enc.encode(input)),

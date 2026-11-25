@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Card } from "@/components/ui";
 import type { Lesson, LessonSummary } from "@/content/egitim/types";
 import { ChartExamples } from "./ChartExamples";
+import { LessonDiagram } from "./LessonDiagram";
 import { CheckIcon, Disclaimer, LevelBadge } from "./common";
 import { PositionCalculator } from "./PositionCalculator";
 import { setLessonDone, useCompletedLessons } from "./progress";
@@ -70,9 +71,18 @@ export function LessonView({
         </div>
       </Section>
 
-      <Section id="grafikte" title="Grafikte nasıl görünür?">
-        <ChartExamples examples={lesson.examples} />
-      </Section>
+      {lesson.examples.length > 0 && (
+        <Section id="grafikte" title="Grafikte nasıl görünür?">
+          <ChartExamples examples={lesson.examples} />
+        </Section>
+      )}
+
+      {lesson.diagram && (
+        <Section id="sekil" title={lesson.diagram.title}>
+          <LessonDiagram id={lesson.diagram.id} />
+          <p className="mt-3 text-sm leading-relaxed text-slate-300">{lesson.diagram.caption}</p>
+        </Section>
+      )}
 
       <Section id="yorum" title="Nasıl yorumlanır?">
         <ol className="space-y-2.5">

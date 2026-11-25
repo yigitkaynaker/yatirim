@@ -511,7 +511,7 @@ export function NobetSection() {
   if (!s) return null;
   return (
     <Card className="space-y-2 p-4 md:p-6">
-      <h2 className="font-semibold">Nöbet (otomatik kontroller)</h2>
+      <h2 id="nobet" className="scroll-mt-20 font-semibold">Nöbet (otomatik kontroller)</h2>
       <p className={`text-sm ${s.late ? "text-amber-300" : "text-emerald-300"}`}>
         Son nöbet: {s.lastTickAt ? ago(now - s.lastTickAt) : "hiç çalışmadı"}
         {s.lastSource ? ` · ${s.lastSource}` : ""}

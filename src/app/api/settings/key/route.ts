@@ -1,22 +1,31 @@
 import { handle, readJson } from "@/lib/api";
-import { deleteApiKey, getApiKey, maskKey, saveApiKey } from "@/lib/settings";
+import { deleteApiKey, isAiProviderId, publicKeyState, saveApiKey, type AiProviderId } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
-/** POST /api/settings/key — { apiKey } Ayarlar'dan yapıştırılan anahtarı kaydeder. */
+const providerOf = (v: unknown): AiProviderId => (isAiProviderId(v) ? v : "anthropic");
+
+// Anahtarlar kullanıcı başınadır: her kullanıcı yalnızca kendi anahtarını kaydeder / siler / (maskeli) görür.
+// Sahibin anahtarı diğer kullanıcılara hiçbir biçimde dönmez (bkz. publicKeyState).
+async function keyState(provider: AiProviderId) {
+  return { provider, key: await publicKeyState(provider) };
+}
+
+/** POST /api/settings/key — { apiKey, provider? } Ayarlar'dan yapıştırılan anahtarı kaydeder (varsayılan: Claude). */
 export async function POST(req: Request) {
   return handle(async () => {
-    await saveApiKey((await readJson(req)).apiKey);
-    const { key, source } = await getApiKey();
-    return { key: { source, masked: maskKey(key) } };
+    const body = await readJson(req);
+    const provider = providerOf(body.provider);
+    await saveApiKey(body.apiKey, provider);
+    return keyState(provider);
   });
 }
 
-/** DELETE /api/settings/key — kayıtlı anahtarı siler (.env'deki anahtara dokunmaz). */
-export async function DELETE() {
+/** DELETE /api/settings/key?provider=openai — kayıtlı anahtarı siler (.env'deki anahtara dokunmaz). */
+export async function DELETE(req: Request) {
   return handle(async () => {
-    await deleteApiKey();
-    const { key, source } = await getApiKey();
-    return { key: { source, masked: maskKey(key) } };
+    const provider = providerOf(new URL(req.url).searchParams.get("provider"));
+    await deleteApiKey(provider);
+    return keyState(provider);
   });
 }

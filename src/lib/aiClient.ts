@@ -1,38 +1,76 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { getDb } from "./db";
-import { AI_MODELS, getAiSettings, getApiKey, WEB_SEARCH_USD, type AiModelKey } from "./settings";
+import { getCurrentUserId } from "./userContext";
+import {
+  AI_MODELS,
+  AiDailyLimitError,
+  AiGlobalLimitError,
+  consumeSharedAiQuota,
+  getAiSettings,
+  getApiKey,
+  knownPrice,
+  OPENAI_MODELS,
+  WEB_SEARCH_USD,
+  type AiModelKey,
+  type AiProviderId,
+  type ModelPrice,
+} from "./settings";
 
-// Claude API istemcisi, kullanım/maliyet kaydı, aylık bütçe ve Türkçe hata mesajları.
+// Yapay zeka istemcileri (Claude ve OpenAI), kullanım/maliyet kaydı, aylık bütçe ve Türkçe
+// hata mesajları. Sağlayıcıdan bağımsız arayüz: aiProvider.ts.
 
 /** Testlerde sahte istemci vermek için. Yalnızca messages.stream / messages.create kullanılır. */
 export type AiClient = Pick<Anthropic, "messages">;
+/** OpenAI istemcisi: yalnızca responses.create kullanılır (Responses API). */
+export type OpenAiClient = Pick<OpenAI, "responses">;
 
-const g = globalThis as unknown as { __yatirimAiClientOverride?: AiClient | null };
+const g = globalThis as unknown as { __yatirimAiClientOverride?: AiClient | null; __yatirimOpenAiClientOverride?: OpenAiClient | null };
 
-/** Testler için: sahte istemci ayarla (null: gerçek istemciye dön). */
+/** Testler için: sahte Claude istemcisi ayarla (null: gerçek istemciye dön). */
 export function setAiClientOverride(client: AiClient | null) {
   g.__yatirimAiClientOverride = client;
 }
 
+/** Testler için: sahte OpenAI istemcisi ayarla (null: gerçek istemciye dön). */
+export function setOpenAiClientOverride(client: OpenAiClient | null) {
+  g.__yatirimOpenAiClientOverride = client;
+}
+
 export class NoApiKeyError extends Error {
-  constructor() {
-    super("Yapay zeka anahtarı eklenmedi — Ayarlar'dan ekleyin.");
+  constructor(provider: AiProviderId = "anthropic") {
+    super(provider === "openai" ? "OpenAI anahtarı eklenmedi — Ayarlar'dan ekleyin." : "Yapay zeka anahtarı eklenmedi — Ayarlar'dan ekleyin.");
   }
 }
 
-/** Anahtar yoksa NoApiKeyError. */
+/** Claude istemcisi. Anahtar yoksa NoApiKeyError. */
 export async function getAiClient(): Promise<AiClient> {
+  const { key, source } = await getApiKey("anthropic");
+  // Sahibin anahtarını paylaşan kullanıcı: her işlem günlük sınırdan düşer
+  if (source === "owner") await consumeSharedAiQuota();
   if (g.__yatirimAiClientOverride) return g.__yatirimAiClientOverride;
-  const { key } = await getApiKey();
-  if (!key) throw new NoApiKeyError();
+  if (!key) throw new NoApiKeyError("anthropic");
   return new Anthropic({ apiKey: key, maxRetries: 2, timeout: 5 * 60_000 });
 }
 
-export async function isAiConfigured(): Promise<boolean> {
-  return !!g.__yatirimAiClientOverride || (await getApiKey()).key != null;
+/** OpenAI istemcisi. Anahtar yoksa NoApiKeyError. */
+export async function getOpenAiClient(): Promise<OpenAiClient> {
+  const { key, source } = await getApiKey("openai");
+  if (source === "owner") await consumeSharedAiQuota();
+  if (g.__yatirimOpenAiClientOverride) return g.__yatirimOpenAiClientOverride;
+  if (!key) throw new NoApiKeyError("openai");
+  return new OpenAI({ apiKey: key, maxRetries: 2, timeout: 5 * 60_000 });
 }
 
+/** Etkin sağlayıcının (ya da verilen sağlayıcının) anahtarı / sahte istemcisi var mı */
+export async function isAiConfigured(provider?: AiProviderId): Promise<boolean> {
+  const p = provider ?? (await getAiSettings()).provider;
+  if (p === "openai") return !!g.__yatirimOpenAiClientOverride || (await getApiKey("openai")).key != null;
+  return !!g.__yatirimAiClientOverride || (await getApiKey("anthropic")).key != null;
+}
+
+/** Seçili Claude modeli */
 export async function currentModel(): Promise<{ key: AiModelKey; id: string }> {
   const key = (await getAiSettings()).model;
   return { key, id: AI_MODELS[key].id };
@@ -60,13 +98,21 @@ export const emptyUsage = (): UsageTotals => ({
   costUsd: 0,
 });
 
-function priceFor(modelId: string) {
-  return Object.values(AI_MODELS).find((m) => m.id === modelId) ?? AI_MODELS.gelismis;
+/** Fiyatı bilinmeyen model: Claude için Gelişmiş, OpenAI için listedeki en pahalı model (temkinli tahmin). */
+function priceFor(modelId: string, override?: ModelPrice | null): ModelPrice {
+  if (override) return override;
+  const known = knownPrice(modelId);
+  if (known) return known;
+  if (modelId.startsWith("claude")) return AI_MODELS.gelismis;
+  return OPENAI_MODELS.reduce((a, b) => (b.outputPerMTok > a.outputPerMTok ? b : a));
 }
 
-/** Tahmini maliyet: girdi, çıktı, önbellek yazma (1,25×), önbellek okuma (0,1×), web araması. */
-export function estimateCost(modelId: string, u: Omit<UsageTotals, "costUsd">): number {
-  const p = priceFor(modelId);
+/**
+ * Tahmini maliyet: girdi, çıktı, önbellek yazma (1,25×), önbellek okuma (0,1×), web araması.
+ * OpenAI'de önbellekten okunan girdi de yaklaşık 0,1× fiyatlıdır; yazma ücretsizdir (0 gelir).
+ */
+export function estimateCost(modelId: string, u: Omit<UsageTotals, "costUsd">, price?: ModelPrice | null): number {
+  const p = priceFor(modelId, price);
   return (
     (u.inputTokens * p.inputPerMTok +
       u.cacheWriteTokens * p.inputPerMTok * 1.25 +
@@ -77,19 +123,29 @@ export function estimateCost(modelId: string, u: Omit<UsageTotals, "costUsd">): 
   );
 }
 
-/** API yanıtındaki usage alanını kaydeder; tahmini maliyeti döndürür. */
+/** Sağlayıcıdan bağımsız kullanım kaydı; tahmini maliyeti döndürür. */
+export async function recordUsageTotals(
+  kind: UsageKind,
+  provider: AiProviderId,
+  modelId: string,
+  u: Omit<UsageTotals, "costUsd">,
+  price?: ModelPrice | null,
+): Promise<UsageTotals> {
+  const costUsd = estimateCost(modelId, u, price);
+  await (await getDb()).run(`INSERT INTO ai_usage (user_id, kind, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, web_searches, cost_usd, provider)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [await getCurrentUserId(), kind, modelId, u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheWriteTokens, u.webSearches, costUsd, provider]);
+  return { ...u, costUsd };
+}
+
+/** Claude API yanıtındaki usage alanını kaydeder; tahmini maliyeti döndürür. */
 export async function recordUsage(kind: UsageKind, modelId: string, usage: Anthropic.Usage | null | undefined): Promise<UsageTotals> {
-  const u = {
+  return recordUsageTotals(kind, "anthropic", modelId, {
     inputTokens: usage?.input_tokens ?? 0,
     outputTokens: usage?.output_tokens ?? 0,
     cacheReadTokens: usage?.cache_read_input_tokens ?? 0,
     cacheWriteTokens: usage?.cache_creation_input_tokens ?? 0,
     webSearches: usage?.server_tool_use?.web_search_requests ?? 0,
-  };
-  const costUsd = estimateCost(modelId, u);
-  await (await getDb()).run(`INSERT INTO ai_usage (kind, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, web_searches, cost_usd)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [kind, modelId, u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheWriteTokens, u.webSearches, costUsd]);
-  return { ...u, costUsd };
+  });
 }
 
 export function addUsage(a: UsageTotals, b: UsageTotals): UsageTotals {
@@ -124,20 +180,59 @@ export interface BudgetStatus {
   overBudget: boolean;
   searches: number;
   calls: number;
+  /** Bu ayın sağlayıcı ve model başına harcaması */
+  byModel: { provider: AiProviderId; model: string; costUsd: number; calls: number }[];
 }
 
 export async function getBudgetStatus(now = new Date()): Promise<BudgetStatus> {
   const { start, end } = monthRangeUtc(now);
-  const row = await (await getDb()).get("SELECT COALESCE(SUM(cost_usd),0) AS c, COALESCE(SUM(web_searches),0) AS s, COUNT(*) AS n FROM ai_usage WHERE created_at >= ? AND created_at < ?", [start, end]) as { c: number; s: number; n: number };
+  const db = await getDb();
+  const uid = await getCurrentUserId();
+  const row = await db.get("SELECT COALESCE(SUM(cost_usd),0) AS c, COALESCE(SUM(web_searches),0) AS s, COUNT(*) AS n FROM ai_usage WHERE user_id = ? AND created_at >= ? AND created_at < ?", [uid, start, end]) as { c: number; s: number; n: number };
+  const models = await db.all<{ provider: AiProviderId; model: string; c: number; n: number }>(
+    "SELECT provider, model, COALESCE(SUM(cost_usd),0) AS c, COUNT(*) AS n FROM ai_usage WHERE user_id = ? AND created_at >= ? AND created_at < ? GROUP BY provider, model ORDER BY c DESC",
+    [uid, start, end],
+  );
   const budgetUsd = (await getAiSettings()).budgetUsd;
-  return { spentUsd: row.c, budgetUsd, overBudget: row.c >= budgetUsd, searches: row.s, calls: row.n };
+  return {
+    spentUsd: row.c,
+    budgetUsd,
+    overBudget: row.c >= budgetUsd,
+    searches: row.s,
+    calls: row.n,
+    byModel: models.map((m) => ({ provider: m.provider, model: m.model, costUsd: m.c, calls: m.n })),
+  };
 }
 
 // ---- Hata mesajları ---------------------------------------------------------
 
+/** OpenAI SDK hatası → Türkçe mesaj (OpenAI hatası değilse null) */
+function openAiErrorMessage(err: unknown): string | null {
+  if (err instanceof OpenAI.APIConnectionTimeoutError) return "OpenAI API zaman aşımına uğradı. Biraz sonra tekrar deneyin.";
+  if (err instanceof OpenAI.APIConnectionError) return "OpenAI API'ye bağlanılamadı. İnternet bağlantınızı kontrol edin.";
+  if (!(err instanceof OpenAI.APIError)) return null;
+  const code = err.code ?? "";
+  const type = err.type ?? "";
+  const msg = (err.error as { message?: string } | undefined)?.message ?? err.message;
+  if (code === "insufficient_quota" || type === "insufficient_quota" || /quota|billing/i.test(msg)) {
+    return "OpenAI hesabınızda kredi yok ya da kota doldu. platform.openai.com › Billing bölümünden ön ödemeli kredi yükleyin.";
+  }
+  if (err instanceof OpenAI.AuthenticationError || code === "invalid_api_key" || err.status === 401) {
+    return "OpenAI API anahtarı geçersiz. Anahtarı platform.openai.com › API keys bölümünden kopyalayıp yeniden yapıştırın.";
+  }
+  if (err instanceof OpenAI.RateLimitError || err.status === 429) return "OpenAI'ye çok fazla istek gönderildi (hız sınırı). Bir dakika sonra tekrar deneyin.";
+  if (err instanceof OpenAI.PermissionDeniedError || err.status === 403) return "Bu OpenAI anahtarının bu işleme ya da modele erişim izni yok (kuruluş doğrulaması gerekebilir).";
+  if (err instanceof OpenAI.NotFoundError || code === "model_not_found") return "Seçilen OpenAI modeli bu hesapta bulunamadı. Ayarlar'dan başka bir model seçin.";
+  if (err instanceof OpenAI.BadRequestError) return `OpenAI isteği reddetti: ${msg}`;
+  if (err.status && err.status >= 500) return "OpenAI API'de geçici bir sorun var. Biraz sonra tekrar deneyin.";
+  return `OpenAI API hatası (${err.status ?? "?"}): ${msg}`;
+}
+
 /** SDK hatasını kullanıcıya gösterilecek Türkçe mesaja çevirir. */
 export function aiErrorMessage(err: unknown): string {
-  if (err instanceof NoApiKeyError) return err.message;
+  if (err instanceof NoApiKeyError || err instanceof AiDailyLimitError || err instanceof AiGlobalLimitError) return err.message;
+  const oa = openAiErrorMessage(err);
+  if (oa) return oa;
   if (err instanceof Anthropic.APIConnectionTimeoutError) return "Claude API zaman aşımına uğradı. Biraz sonra tekrar deneyin.";
   if (err instanceof Anthropic.APIConnectionError) return "Claude API'ye bağlanılamadı. İnternet bağlantınızı kontrol edin.";
   if (err instanceof Anthropic.APIError) {
@@ -165,27 +260,4 @@ export function aiErrorMessage(err: unknown): string {
     return `Claude API hatası (${err.status ?? "?"}): ${msg || err.message}`;
   }
   return "Beklenmeyen bir hata oluştu.";
-}
-
-/** "Bağlantıyı test et": çok küçük bir istek gönderir. */
-export async function testConnection(): Promise<{ ok: boolean; message: string }> {
-  let client: AiClient;
-  try {
-    client = await getAiClient();
-  } catch (err) {
-    return { ok: false, message: aiErrorMessage(err) };
-  }
-  const model = await currentModel();
-  try {
-    const res = await client.messages.create({
-      model: model.id,
-      max_tokens: 64,
-      output_config: { effort: "low" },
-      messages: [{ role: "user", content: "Sadece \"tamam\" yaz." }],
-    });
-    await recordUsage("test", model.id, res.usage);
-    return { ok: true, message: `Bağlantı başarılı. Model: ${AI_MODELS[model.key].label}.` };
-  } catch (err) {
-    return { ok: false, message: aiErrorMessage(err) };
-  }
 }

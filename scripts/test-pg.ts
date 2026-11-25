@@ -18,6 +18,8 @@ const db = await import("../src/lib/db");
 const { MIGRATIONS } = await import("../src/lib/db/migrationsSqlite");
 const { toPgPlaceholders } = await import("../src/lib/db/placeholders");
 const { tickGate } = await import("../src/lib/cron/schedule");
+// Çok kullanıcılı mod: betik sahibin (kullanıcı 1) bağlamında çalışır.
+(await import("../src/lib/userContext")).enterUserForScripts(1);
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>) {

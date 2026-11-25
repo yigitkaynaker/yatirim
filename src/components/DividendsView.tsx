@@ -8,6 +8,7 @@ import { goToLogin, usePolling } from "@/lib/usePolling";
 import { DIVIDEND_EXPLAIN, DividendSuggestionRow } from "./AssetPanels";
 import { detailHref } from "./MarketView";
 import { Card, Explain } from "./ui";
+import { EmptyState, InfoTip, Term } from "./help";
 
 const modeLabel = (m: string) => (m === "real" ? "Gerçek" : "Sanal");
 
@@ -35,7 +36,9 @@ export function DividendsView() {
     <div className="space-y-4 md:space-y-6">
       <div className="flex items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Temettü</h1>
+          <h1 className="text-xl font-semibold tracking-tight">
+            <Term term="temettu">Temettü</Term>
+          </h1>
           <p className="text-sm text-slate-500">Hisselerinizden aldığınız kâr payları</p>
         </div>
         <span className="shrink-0 text-xs text-slate-500">{loading ? "Güncelleniyor…" : lastSuccess ? formatTime(lastSuccess) : ""}</span>
@@ -51,7 +54,7 @@ export function DividendsView() {
           <Card className="p-4 md:p-6">
             <div className="text-sm text-slate-400">Alınan temettü (gerçek portföy, toplam)</div>
             <div className="num mt-1 text-3xl font-semibold tracking-tight text-emerald-300">{formatMoney(data.receivedTotalTry)}</div>
-            <p className="mt-1 text-xs text-slate-500">Onayladığınız temettüler gerçekleşen K/Z’ye eklenir. Döviz cinsinden temettüler hak kullanım günündeki kurla TL’ye çevrilir.</p>
+            <p className="mt-1 text-xs text-slate-500">Tutarlar stopaj <InfoTip term="stopaj" /> sonrası nettir. Onayladığınız temettüler gerçekleşen K/Z’ye eklenir. Döviz cinsinden temettüler hak kullanım günündeki kurla TL’ye çevrilir.</p>
           </Card>
 
           {data.suggestions.length > 0 && (
@@ -74,7 +77,15 @@ export function DividendsView() {
           <section className="space-y-2">
             <h2 className="text-sm font-medium text-slate-300">Yıllara göre alınanlar</h2>
             {data.received.length === 0 ? (
-              <Card className="p-6 text-center text-sm text-slate-500">Henüz kaydedilmiş temettü yok.</Card>
+              <EmptyState
+                compact
+                title="Henüz kaydedilmiş temettü yok"
+                action={{ label: "Piyasada temettü veren hisse ara", href: "/piyasa" }}
+                guide={{ href: "/kilavuz#turkiye", label: "Kılavuz: Temettü ve stopaj" }}
+              >
+                Temettü, şirketin kârından hissedarlarına dağıttığı paydır. Elindeki bir hisse temettü dağıtınca burada bir öneri belirir; onaylarsan stopaj
+                sonrası net tutar gerçekleşen K/Z’ye eklenir.
+              </EmptyState>
             ) : (
               <Card className="divide-y divide-line/70">
                 {data.received.map((y) => {

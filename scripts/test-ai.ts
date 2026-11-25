@@ -15,6 +15,10 @@ import { getVapidKeys, listSubscriptions, removeSubscription, saveSubscription }
 import * as actions from "../src/lib/actions";
 import { checkAlarms } from "../src/lib/alarms";
 import { generateDailySummary, maybeRunDailySummary, whyMoving } from "../src/lib/dailySummary";
+import { enterUserForScripts } from "../src/lib/userContext";
+
+// Çok kullanıcılı mod: betik sahibin (kullanıcı 1) bağlamında çalışır.
+enterUserForScripts(1);
 
 if (!process.env.YATIRIM_DATA_DIR) {
   console.error("YATIRIM_DATA_DIR ayarlanmalı (test, gerçek veritabanını değiştirmesin).");
@@ -236,7 +240,7 @@ while (new Date(`${ym}-${String(wedDay).padStart(2, "0")}T12:00:00Z`).getUTCDay(
 const WED = `${ym}-${String(wedDay).padStart(2, "0")}`;
 const sat = `${ym}-${String(wedDay + 3).padStart(2, "0")}`;
 const at = (date: string, utc: string) => new Date(`${date}T${utc}:00Z`);
-await db.run("DELETE FROM scheduled_runs WHERE slot LIKE ?", [`${WED}%`]);
+await db.run("DELETE FROM scheduled_runs WHERE slot LIKE ?", [`%${WED}%`]);
 const wed = at(WED, "06:50"); // 09:50 İstanbul
 await updateAiSettings({ budgetUsd: 0.000001 });
 assert.ok((await getBudgetStatus()).overBudget);
@@ -269,7 +273,7 @@ ok("hata veren dilim 10 dk sonra bir kez yeniden denendi, sonra çift çalışma
 
 // ---- 6b) Günlük teknik sinyal değişimi uyarısı ----------------------------------------------
 console.log("Teknik sinyal uyarıları");
-await db.run("DELETE FROM scheduled_runs WHERE slot LIKE 'teknik %'");
+await db.run("DELETE FROM scheduled_runs WHERE slot LIKE '%teknik %'");
 await db.run("DELETE FROM technical_signals");
 const day1 = new Date("2026-11-18T17:00:00Z"); // 20:00 İstanbul
 await setSignalAlertsEnabled(false);
@@ -389,7 +393,7 @@ const det = await generateDailySummary();
 assert.equal(det.ai, false);
 assert.match(det.text, /yatırım tavsiyesi değildir/);
 ok(`anahtarsız kurallı özet: "${det.text.split("\n")[0]}"`);
-await db.run("DELETE FROM scheduled_runs WHERE slot LIKE 'ozet %'");
+await db.run("DELETE FROM scheduled_runs WHERE slot LIKE '%ozet %'");
 script = [{ content: [text("- Portföyünüz bugün sakin.\n- Yatırım tavsiyesi değildir.")], stop_reason: "end_turn" }];
 assert.deepEqual(await maybeRunDailySummary(at(WED, "15:00"), fake as AiClient), { ran: false, reason: "zamani_degil" }); // 18:00 İstanbul
 assert.deepEqual(await maybeRunDailySummary(at(sat, "16:00"), fake as AiClient), { ran: false, reason: "hafta_sonu" });

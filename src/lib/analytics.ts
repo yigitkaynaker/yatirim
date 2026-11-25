@@ -6,7 +6,7 @@ import { listSnapshots } from "./snapshots";
 import { listAccounts } from "./accounts";
 import { getDailyCandles } from "./technical";
 import { politeFetch } from "./http";
-import { getSetting, setSetting } from "./settings";
+import { deleteSetting, getSetting, setSetting } from "./settings";
 import { parseDecimal } from "./format";
 import { dailyReturns, rebalance, rebase, returnSince, riskMetrics, twrIndex, type DriftRow, type RiskMetrics } from "./perfMath";
 
@@ -145,7 +145,7 @@ export async function getTargetAllocation(): Promise<Partial<Record<AssetType, n
 /** Hedef dağılımı kaydeder: { bist: 40, gold: 20, … } toplam 100. null/boş → siler. */
 export async function setTargetAllocation(body: unknown) {
   if (body == null || (typeof body === "object" && Object.keys(body as object).length === 0)) {
-    await (await getDb()).run("DELETE FROM settings WHERE key = ?", [TARGET_KEY]);
+    await deleteSetting(TARGET_KEY);
     return null;
   }
   if (typeof body !== "object") throw new ValidationError("Hedef dağılım geçersiz.");

@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 /** GET /api/backups — yedek listesi (en yeni önce). cloud: bulut modunda dosya yedeği yok (JSON kullanılır). */
 export async function GET() {
-  return handle(() => ({ backups: actions.listBackups(), cloud: isCloud() }));
+  return handle(async () => ({ backups: await actions.listBackups(), cloud: isCloud() }));
 }
 
 /** POST /api/backups — şimdi yedekle */
