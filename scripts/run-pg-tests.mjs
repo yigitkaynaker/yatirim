@@ -19,6 +19,7 @@ const SUITES = [
   ["test-ai.ts", true],
   ["test-help.ts", true],
   ["test-users.ts", true],
+  ["test-gemini.ts", true],
 ];
 
 /** Alt süreci çalıştırır; çıkış kodu */

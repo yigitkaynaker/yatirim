@@ -1,15 +1,17 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
-import { aiErrorMessage, getAiClient, getOpenAiClient, type AiClient, type UsageKind, type UsageTotals } from "./aiClient";
+import { aiErrorMessage, getAiClient, getGeminiClient, getOpenAiClient, type AiClient, type UsageKind, type UsageTotals } from "./aiClient";
 import { getAiSettings, PROVIDER_LABELS, type AiProviderId } from "./settings";
 import { anthropicProvider } from "./aiAnthropic";
 import { openAiProvider } from "./aiOpenAi";
+import { geminiProvider } from "./aiGemini";
 
 // YAPAY ZEKA SAĞLAYICI ARAYÜZÜ
 // Sohbet, haber analizi, günlük özet ve "neden hareket ediyor" bu arayüzü kullanır; Claude
-// (aiAnthropic.ts) ve OpenAI (aiOpenAi.ts, Responses API) aynı araç tanımlarıyla çalışır.
-// Sohbet geçmişi veritabanında Claude içerik blokları biçiminde saklanır (text, tool_use,
-// tool_result); OpenAI sağlayıcısı bunları her çağrıda kendi biçimine çevirir.
+// (aiAnthropic.ts), OpenAI (aiOpenAi.ts, Responses API) ve Gemini (aiGemini.ts, generateContent)
+// aynı araç tanımlarıyla çalışır. Sohbet geçmişi veritabanında Claude içerik blokları biçiminde
+// saklanır (text, tool_use, tool_result); OpenAI ve Gemini sağlayıcıları bunları her çağrıda kendi
+// biçimine çevirir (Gemini'nin ham parçaları ve düşünce imzaları bloklarda ek alan olarak saklanır).
 
 /** Saklanan sohbet mesajı (Claude biçimi; sağlayıcıdan bağımsız ortak biçim olarak kullanılır) */
 export type CanonMessage = Anthropic.MessageParam;
@@ -100,7 +102,9 @@ export function isProvider(x: unknown): x is AiProvider {
 export async function getProvider(backend?: AiBackend | null, which?: AiProviderId): Promise<AiProvider> {
   if (backend) return isProvider(backend) ? backend : anthropicProvider(backend);
   const id = which ?? (await getAiSettings()).provider;
-  return id === "openai" ? openAiProvider(await getOpenAiClient()) : anthropicProvider(await getAiClient());
+  if (id === "openai") return openAiProvider(await getOpenAiClient());
+  if (id === "gemini") return geminiProvider(await getGeminiClient());
+  return anthropicProvider(await getAiClient());
 }
 
 /** "Bağlantıyı test et": çok küçük bir istek gönderir. which verilmezse etkin sağlayıcı. */

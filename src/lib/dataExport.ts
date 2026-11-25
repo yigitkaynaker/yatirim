@@ -18,6 +18,7 @@ export const USER_RESTORABLE_SETTINGS: readonly string[] = [
   "target_allocation",
   "anthropic_api_key",
   "openai_api_key",
+  "gemini_api_key",
 ];
 const USER_SKIPPED_TABLES: ReadonlySet<string> = new Set(["ai_usage"]);
 

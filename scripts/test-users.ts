@@ -13,6 +13,7 @@ if (!process.env.YATIRIM_DATA_DIR) process.env.YATIRIM_DATA_DIR = DIR;
 process.env.SESSION_SECRET ??= "test-oturum-gizli-anahtari-0123456789";
 delete process.env.ANTHROPIC_API_KEY;
 delete process.env.OPENAI_API_KEY;
+delete process.env.GEMINI_API_KEY;
 
 const { resetDatabase } = await import("./test-db");
 const db = await import("../src/lib/db");
@@ -253,6 +254,70 @@ await test("sahibin anahtarı diğer kullanıcılarca kullanılır ama hiçbir b
   }
 });
 
+await test("sağlayıcı: paylaşımda sahibin seçimi; kendi OpenAI anahtarını giren kullanıcıda kendi sağlayıcısı", async () => {
+  const E = (await users.createUser("ece@ornek.com", "ece-sifresi-1")).id;
+  await asOwner(() => settings.updateAiSettings({ provider: "anthropic" }));
+  assert.equal((await ctx.runAsUser(E, () => settings.getAiSettings())).provider, "anthropic");
+  // E kendi OpenAI anahtarını girer → paylaşım biter, etkin sağlayıcı OpenAI, anahtar kendisininki
+  const eKey = "sk-proj-ece-kendi-openai-anahtari-0123456789";
+  await ctx.runAsUser(E, () => settings.saveApiKey(eKey, "openai"));
+  assert.equal(await ctx.runAsUser(E, () => settings.usesSharedAi()), false);
+  assert.equal((await ctx.runAsUser(E, () => settings.getAiSettings())).provider, "openai");
+  assert.deepEqual(await ctx.runAsUser(E, () => settings.getApiKey("openai")), { key: eKey, source: "db" });
+  // Sahibin seçimi değişmez; sahip OpenAI'ye geçse de E'nin anahtarını görmez
+  assert.equal((await asOwner(() => settings.getAiSettings())).provider, "anthropic");
+  await asOwner(() => settings.updateAiSettings({ provider: "openai" }));
+  assert.equal((await asOwner(() => settings.getApiKey("openai"))).key, null);
+  await asOwner(() => settings.updateAiSettings({ provider: "anthropic" }));
+  // Seçili sağlayıcının kendi anahtarı varken başka sağlayıcıya anahtar eklemek seçimi değiştirmez
+  await asOwner(() => settings.saveApiKey("sk-proj-sahip-openai-anahtari-0123456789", "openai"));
+  assert.equal((await asOwner(() => settings.getAiSettings())).provider, "anthropic");
+  await asOwner(() => settings.deleteApiKey("openai"));
+});
+
+await test("Gemini: sahibin anahtarı ve modeli paylaşılır ama hiçbir biçimde görünmez; kendi anahtarı öncelikli", async () => {
+  const { getProvider } = await import("../src/lib/aiProvider");
+  const { setGeminiClientOverride } = await import("../src/lib/aiClient");
+  const ownerKey = "AIzaSySahibinGizliGeminiAnahtari0123456";
+  await asOwner(() => settings.saveApiKey(ownerKey, "gemini"));
+  await asOwner(() => settings.updateAiSettings({ provider: "gemini", geminiModel: "gemini-3.8-flash" }));
+  // A (kendi anahtarı yok): sahibin sağlayıcısı ve modeli, anahtar yalnızca sunucu tarafında
+  const s = await ctx.runAsUser(A, () => settings.getAiSettings());
+  assert.equal(s.provider, "gemini");
+  assert.equal(s.geminiModel, "gemini-3.8-flash");
+  assert.deepEqual(await ctx.runAsUser(A, () => settings.getApiKey("gemini")), { key: ownerKey, source: "owner" });
+  const shown = await ctx.runAsUser(A, () => settings.publicKeyState("gemini"));
+  assert.deepEqual(shown, { source: "owner", masked: null });
+  assert.ok(!JSON.stringify(shown).includes(ownerKey.slice(0, 10)));
+  // Paylaşımlı Gemini kullanımı günlük sınırdan düşer
+  setGeminiClientOverride({ apiKey: "sahte", fetch: async () => new Response("{}") });
+  try {
+    const before = await ctx.runAsUser(A, () => settings.sharedAiUsedToday());
+    assert.equal((await ctx.runAsUser(A, () => getProvider())).id, "gemini");
+    assert.equal(await ctx.runAsUser(A, () => settings.sharedAiUsedToday()), before + 1);
+    // A'nın model değiştirmesi sahibin seçimini değiştirmez
+    await ctx.runAsUser(A, () => settings.updateAiSettings({ geminiModel: "gemini-3.1-flash-lite" }));
+    assert.equal((await asOwner(() => settings.getAiSettings())).geminiModel, "gemini-3.8-flash");
+  } finally {
+    setGeminiClientOverride(null);
+  }
+  // A silmeye çalışırsa sahibin anahtarı etkilenmez
+  await ctx.runAsUser(A, () => settings.deleteApiKey("gemini"));
+  assert.equal((await asOwner(() => settings.getApiKey("gemini"))).key, ownerKey);
+  // B (kendi Claude anahtarı var) kendi Gemini anahtarını girer: yalnızca kendisininki, maskeli; seçimi değişmez
+  const bKey = "AQ.Ab8RN6Kbora-kendi-gemini-anahtari_0123";
+  await ctx.runAsUser(B, () => settings.saveApiKey(bKey, "gemini"));
+  assert.deepEqual(await ctx.runAsUser(B, () => settings.getApiKey("gemini")), { key: bKey, source: "db" });
+  assert.equal((await ctx.runAsUser(B, () => settings.publicKeyState("gemini"))).masked, settings.maskKey(bKey));
+  assert.equal((await ctx.runAsUser(B, () => settings.getAiSettings())).provider, "anthropic");
+  assert.equal((await asOwner(() => settings.getApiKey("gemini"))).key, ownerKey, "sahip B'nin anahtarını kullanmaz");
+  await ctx.runAsUser(B, () => settings.deleteApiKey("gemini"));
+  // Gemini anahtarı JSON dökümünde gizli sayılır
+  assert.ok((await import("../src/lib/db/transfer")).SECRET_SETTINGS.includes("gemini_api_key"));
+  await asOwner(() => settings.updateAiSettings({ provider: "anthropic" }));
+  await asOwner(() => settings.deleteApiKey("gemini"));
+});
+
 await test("paylaşılan anahtarda kullanıcı başına günlük sınır; sahip ve kendi anahtarı olan sınırsız", async () => {
   await assert.rejects(() => ctx.runAsUser(A, () => settings.setSharedAiDailyLimit(1)), /yalnızca uygulama sahibi/);
   await asOwner(() => settings.setSharedAiDailyLimit(2));
@@ -391,8 +456,8 @@ await test("arka plan: forEachUser her kullanıcıyı kendi bağlamında çalı�
     return (await portfolio.listTransactions()).length;
   });
   assert.deepEqual(seen.slice(0, 3), [OWNER, A, B]);
-  assert.equal(seen.length, 5, "sahip, A, B, C, D");
-  assert.deepEqual(out, [1, 0, 0, 0]);
+  assert.equal(seen.length, 6, "sahip, A, B, E, C, D");
+  assert.deepEqual(out, [1, 0, 0, 0, 0]);
 });
 
 await db.closeDb();

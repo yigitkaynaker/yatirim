@@ -59,14 +59,14 @@ export function isAiModelKey(v: unknown): v is AiModelKey {
   return v === "ekonomik" || v === "gelismis";
 }
 
-// ---- Sağlayıcı (Claude / OpenAI) ------------------------------------------------------
+// ---- Sağlayıcı (Claude / OpenAI / Gemini) ---------------------------------------------
 
-export const AI_PROVIDERS = ["anthropic", "openai"] as const;
+export const AI_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
 export type AiProviderId = (typeof AI_PROVIDERS)[number];
-export const PROVIDER_LABELS: Record<AiProviderId, string> = { anthropic: "Claude", openai: "OpenAI (ChatGPT)" };
+export const PROVIDER_LABELS: Record<AiProviderId, string> = { anthropic: "Claude", openai: "OpenAI (ChatGPT)", gemini: "Google Gemini" };
 
 export function isAiProviderId(v: unknown): v is AiProviderId {
-  return v === "anthropic" || v === "openai";
+  return (AI_PROVIDERS as readonly unknown[]).includes(v);
 }
 
 /**
@@ -83,6 +83,23 @@ export const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
 /** Günlük özet ve "neden hareket ediyor" için ucuz OpenAI modeli */
 export const OPENAI_CHEAP_MODEL = "gpt-5-nano";
 
+/**
+ * Google Gemini modelleri ve ücretli katman fiyatları ($ / milyon token, metin; çıktıya düşünme
+ * token'ları dahil). Kaynak: aistudio.google.com/docs/pricing (Kasım 2026). 2.5 modelleri
+ * kullanımdan kalkıyor; listede yok. 3.8 Flash fiyatı 1 Ocak 2027'de artacak.
+ */
+export const GEMINI_MODELS = [
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite (en ucuz)", inputPerMTok: 0.25, outputPerMTok: 1.5 },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (önerilen)", inputPerMTok: 0.3, outputPerMTok: 2.5 },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", inputPerMTok: 0.75, outputPerMTok: 3.75 },
+  { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (gelişmiş)", inputPerMTok: 1.5, outputPerMTok: 7.5 },
+] as const;
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
+/** Günlük özet ve "neden hareket ediyor" için ucuz Gemini modeli */
+export const GEMINI_CHEAP_MODEL = "gemini-3.1-flash-lite";
+/** Google Search grounding (Gemini 3+): arama sorgusu başına $14 / 1000 (aylık ilk 5.000 ücretsiz; temkinli tahminde sayılmaz) */
+export const GEMINI_SEARCH_USD = 0.014;
+
 export interface ModelPrice {
   inputPerMTok: number;
   outputPerMTok: number;
@@ -90,7 +107,12 @@ export interface ModelPrice {
 
 /** Bilinen modelin fiyatı (yoksa null) */
 export function knownPrice(modelId: string): ModelPrice | null {
-  return Object.values(AI_MODELS).find((m) => m.id === modelId) ?? OPENAI_MODELS.find((m) => m.id === modelId) ?? null;
+  return (
+    Object.values(AI_MODELS).find((m) => m.id === modelId) ??
+    OPENAI_MODELS.find((m) => m.id === modelId) ??
+    GEMINI_MODELS.find((m) => m.id === modelId) ??
+    null
+  );
 }
 
 function isModelId(v: unknown): v is string {
@@ -102,12 +124,13 @@ function isModelId(v: unknown): v is string {
 const KEY_SETTINGS: Record<AiProviderId, { setting: string; env: string }> = {
   anthropic: { setting: "anthropic_api_key", env: "ANTHROPIC_API_KEY" },
   openai: { setting: "openai_api_key", env: "OPENAI_API_KEY" },
+  gemini: { setting: "gemini_api_key", env: "GEMINI_API_KEY" },
 };
 
 /** env: .env (sahibin), db: kullanıcının kendi kaydettiği, owner: sahibin anahtarı paylaşımlı kullanılıyor */
 export type KeySource = "env" | "db" | "owner" | null;
 
-/** Sahibin anahtarı: .env'deki ANTHROPIC_API_KEY / OPENAI_API_KEY önceliklidir; yoksa sahibin Ayarlar'dan kaydettiği. */
+/** Sahibin anahtarı: .env'deki ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY önceliklidir; yoksa sahibin Ayarlar'dan kaydettiği. */
 async function ownerKey(provider: AiProviderId): Promise<{ key: string; source: "env" | "db" } | null> {
   const k = KEY_SETTINGS[provider];
   const env = process.env[k.env]?.trim();
@@ -289,7 +312,22 @@ export async function saveApiKey(raw: unknown, provider: AiProviderId = "anthrop
       throw new ValidationError("Bu bir OpenAI API anahtarına benzemiyor. Anahtar \"sk-\" (çoğunlukla \"sk-proj-\") ile başlar.");
     }
   }
+  if (provider === "gemini") {
+    if (key.startsWith("sk-")) throw new ValidationError("Bu bir Claude ya da OpenAI anahtarı. Gemini anahtarı aistudio.google.com/apikey adresinden alınır.");
+    if (!isGeminiKey(key)) {
+      throw new ValidationError("Bu bir Gemini API anahtarına benzemiyor. Anahtar \"AIza\" ya da \"AQ.\" ile başlar (aistudio.google.com/apikey).");
+    }
+  }
   await setSetting(KEY_SETTINGS[provider].setting, key);
+  // Kullanıcının seçili sağlayıcısının kendi anahtarı yoksa yeni anahtarın sağlayıcısına geçilir
+  // (sahip-dışı kullanıcı kendi anahtarını girince sahibin değil kendi sağlayıcısı geçerli olsun).
+  const cur = await readAiSettings(await getCurrentUserId());
+  if (cur.provider !== provider && !(await getOwnApiKey(cur.provider)).key) await updateAiSettings({ provider });
+}
+
+/** Gemini anahtar biçimi: klasik "AIza…" (39 karakter) ya da yeni "AQ.…" biçimi */
+export function isGeminiKey(key: string): boolean {
+  return /^AIza[0-9A-Za-z_\-]{30,}$/.test(key) || /^AQ\.[0-9A-Za-z_\-.]{20,}$/.test(key);
 }
 
 export async function deleteApiKey(provider: AiProviderId = "anthropic") {
@@ -312,6 +350,10 @@ export interface AiSettings {
   openaiModel: string;
   /** Listede olmayan OpenAI modeli için elle girilen fiyat (yoksa null: tahmin en pahalı bilinen modelle) */
   openaiPrice: ModelPrice | null;
+  /** Gemini model kimliği (listeden ya da elle) */
+  geminiModel: string;
+  /** Listede olmayan Gemini modeli için elle girilen fiyat */
+  geminiPrice: ModelPrice | null;
   /** Otomatik haber taraması açık mı */
   scheduleEnabled: boolean;
   /** "HH:MM" listesi, Europe/Istanbul saatiyle, yalnızca hafta içi */
@@ -327,6 +369,8 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   model: "ekonomik",
   openaiModel: DEFAULT_OPENAI_MODEL,
   openaiPrice: null,
+  geminiModel: DEFAULT_GEMINI_MODEL,
+  geminiPrice: null,
   scheduleEnabled: true,
   scheduleTimes: ["09:45", "13:00", "18:30"],
   // Ücretsiz RSS + KAP bağlamı önce kullanıldığından varsayılan 2 arama yeterli.
@@ -354,7 +398,15 @@ export async function getAiSettings(): Promise<AiSettings> {
   const own = await readAiSettings(await getCurrentUserId());
   if (!(await usesSharedAi())) return own;
   const o = await readAiSettings(OWNER_USER_ID);
-  return { ...own, provider: o.provider, model: o.model, openaiModel: o.openaiModel, openaiPrice: o.openaiPrice };
+  return {
+    ...own,
+    provider: o.provider,
+    model: o.model,
+    openaiModel: o.openaiModel,
+    openaiPrice: o.openaiPrice,
+    geminiModel: o.geminiModel,
+    geminiPrice: o.geminiPrice,
+  };
 }
 
 function parseTimes(v: unknown): string[] {
@@ -371,16 +423,33 @@ function parseTimes(v: unknown): string[] {
   return [...out].sort();
 }
 
+function normPrice(v: unknown): ModelPrice | null {
+  const price = v && typeof v === "object" ? (v as ModelPrice) : null;
+  return price && Number.isFinite(Number(price.inputPerMTok)) && Number.isFinite(Number(price.outputPerMTok))
+    ? { inputPerMTok: Number(price.inputPerMTok), outputPerMTok: Number(price.outputPerMTok) }
+    : null;
+}
+
+/** Elle girilen model fiyatı (boşsa null) */
+function parsePrice(v: unknown): ModelPrice | null {
+  const p = v as Record<string, unknown> | null;
+  if (p == null || ((p.inputPerMTok ?? "") === "" && (p.outputPerMTok ?? "") === "")) return null;
+  const i = parseDecimal(p.inputPerMTok as string | number);
+  const o = parseDecimal(p.outputPerMTok as string | number);
+  if (!Number.isFinite(i) || !Number.isFinite(o) || i < 0 || o < 0 || i > 1000 || o > 1000) {
+    throw new ValidationError("Model fiyatı geçersiz (milyon token başına $, 0–1000).");
+  }
+  return { inputPerMTok: i, outputPerMTok: o };
+}
+
 function normalizeAiSettings(s: AiSettings): AiSettings {
-  const price = s.openaiPrice && typeof s.openaiPrice === "object" ? s.openaiPrice : null;
   return {
     provider: isAiProviderId(s.provider) ? s.provider : DEFAULT_AI_SETTINGS.provider,
     model: isAiModelKey(s.model) ? s.model : DEFAULT_AI_SETTINGS.model,
     openaiModel: isModelId(s.openaiModel) ? s.openaiModel : DEFAULT_OPENAI_MODEL,
-    openaiPrice:
-      price && Number.isFinite(Number(price.inputPerMTok)) && Number.isFinite(Number(price.outputPerMTok))
-        ? { inputPerMTok: Number(price.inputPerMTok), outputPerMTok: Number(price.outputPerMTok) }
-        : null,
+    openaiPrice: normPrice(s.openaiPrice),
+    geminiModel: isModelId(s.geminiModel) ? s.geminiModel : DEFAULT_GEMINI_MODEL,
+    geminiPrice: normPrice(s.geminiPrice),
     scheduleEnabled: !!s.scheduleEnabled,
     scheduleTimes: parseTimes(s.scheduleTimes),
     maxSearches: Math.min(10, Math.max(0, Math.round(Number(s.maxSearches) || 0))),
@@ -405,18 +474,13 @@ export async function updateAiSettings(body: Record<string, unknown>): Promise<A
     if (!isModelId(id)) throw new ValidationError("OpenAI model adı geçersiz. Örnek: gpt-5-mini");
     next.openaiModel = id;
   }
-  if (body.openaiPrice !== undefined) {
-    const p = body.openaiPrice as Record<string, unknown> | null;
-    if (p == null || ((p.inputPerMTok ?? "") === "" && (p.outputPerMTok ?? "") === "")) next.openaiPrice = null;
-    else {
-      const i = parseDecimal(p.inputPerMTok as string | number);
-      const o = parseDecimal(p.outputPerMTok as string | number);
-      if (!Number.isFinite(i) || !Number.isFinite(o) || i < 0 || o < 0 || i > 1000 || o > 1000) {
-        throw new ValidationError("Model fiyatı geçersiz (milyon token başına $, 0–1000).");
-      }
-      next.openaiPrice = { inputPerMTok: i, outputPerMTok: o };
-    }
+  if (body.openaiPrice !== undefined) next.openaiPrice = parsePrice(body.openaiPrice);
+  if (body.geminiModel !== undefined) {
+    const id = typeof body.geminiModel === "string" ? body.geminiModel.trim() : "";
+    if (!isModelId(id) || !id.startsWith("gemini")) throw new ValidationError("Gemini model adı geçersiz. Örnek: gemini-3.5-flash-lite");
+    next.geminiModel = id;
   }
+  if (body.geminiPrice !== undefined) next.geminiPrice = parsePrice(body.geminiPrice);
   if (body.scheduleEnabled !== undefined) next.scheduleEnabled = !!body.scheduleEnabled;
   if (body.scheduleTimes !== undefined) next.scheduleTimes = parseTimes(body.scheduleTimes);
   if (body.maxSearches !== undefined) {

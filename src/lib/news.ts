@@ -18,7 +18,7 @@ import { getCurrentUserId } from "./userContext";
 
 // HABER ANALİZİ
 // Gerçek + sanal pozisyonlar, izleme listesi ve bekleyen emirlerdeki varlıklar
-// için yapay zeka (Claude ya da OpenAI) web aramasıyla güncel haberleri arar ve varlık başına yapılandırılmış
+// için yapay zeka (Claude, OpenAI ya da Gemini) web aramasıyla güncel haberleri arar ve varlık başına yapılandırılmış
 // bir değerlendirme döndürür (submit_news_report aracı). Raporlar news_reports
 // tablosunda saklanır; önem derecesi 4+ olan maddeler bildirim + push üretir.
 

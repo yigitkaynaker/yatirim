@@ -64,7 +64,7 @@ export const ID_TABLES = new Set<string>([
  * Gizli ayarlar (settings anahtarları): JSON dökümüne varsayılan olarak girmez. Bildirim anahtar
  * çifti birlikte ele alınır (açık anahtar tek başına geri yüklenirse gizli anahtarla uyuşmaz).
  */
-export const SECRET_SETTINGS: readonly string[] = ["anthropic_api_key", "openai_api_key", "vapid_private_key", "vapid_public_key"];
+export const SECRET_SETTINGS: readonly string[] = ["anthropic_api_key", "openai_api_key", "gemini_api_key", "vapid_private_key", "vapid_public_key"];
 // Not: OAuth / MCP bağlantı tabloları (oauth_clients, oauth_codes, oauth_tokens) dökümlere hiç girmez;
 // geri yüklemeden sonra ChatGPT / Claude.ai bağlantısı gerekirse yeniden kurulur.
 

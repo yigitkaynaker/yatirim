@@ -7,12 +7,21 @@ import { AccountsSection, BackupSection, NobetSection } from "./DataSettings";
 import { Card, Field, inputCls, PrimaryButton, Segmented } from "./ui";
 import { useHashScroll } from "./help";
 
+type ProviderId = "anthropic" | "openai" | "gemini";
+const PROVIDER_NAMES: Record<ProviderId, string> = { anthropic: "Claude (Anthropic)", openai: "OpenAI (ChatGPT)", gemini: "Google Gemini" };
+type ModelOption = { id: string; label: string; inputPerMTok: number; outputPerMTok: number };
+type KeyState = { source: "env" | "db" | "owner" | null; masked: string | null };
+
 interface SettingsData {
   /** owner: sahibin anahtarı paylaşımlı kullanılıyor (anahtarın kendisi gösterilmez) */
-  key: { source: "env" | "db" | "owner" | null; masked: string | null };
+  key: KeyState;
+  /** Sağlayıcı başına anahtar durumu (yalnızca kullanıcının kendi anahtarı maskeli) */
+  keys?: Record<ProviderId, KeyState>;
+  openaiModels?: ModelOption[];
+  geminiModels?: ModelOption[];
   isOwner?: boolean;
   sharedAi?: { active: boolean; dailyLimit: number; usedToday: number; globalLimit?: number; totalToday?: number };
-  settings: { model: "ekonomik" | "gelismis"; scheduleEnabled: boolean; scheduleTimes: string[]; maxSearches: number; budgetUsd: number };
+  settings: { provider?: ProviderId; openaiModel?: string; geminiModel?: string; model: "ekonomik" | "gelismis"; scheduleEnabled: boolean; scheduleTimes: string[]; maxSearches: number; budgetUsd: number };
   models: { key: string; id: string; label: string; inputPerMTok: number; outputPerMTok: number }[];
   budget: { spentUsd: number; budgetUsd: number; overBudget: boolean; searches: number; calls: number };
   savings?: { searches: number; usd: number };
@@ -95,62 +104,127 @@ export function SettingsView() {
 // ---- API anahtarı -------------------------------------------------------------------
 
 function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: SettingsData) => void }) {
+  const shared = !!data.sharedAi?.active;
+  // Paylaşımlı kullanıcıda etkin sağlayıcı sahibin seçimidir; buradaki seçim yalnızca hangi anahtarın girileceğini belirler
+  const [provider, setProvider] = useState<ProviderId>(data.settings.provider ?? "anthropic");
   const [value, setValue] = useState("");
-  const [busy, setBusy] = useState<"save" | "delete" | "test" | null>(null);
+  const [busy, setBusy] = useState<"save" | "delete" | "test" | "provider" | "model" | null>(null);
   const [msg, setMsg] = useState<Msg>(null);
+  const isOpenAi = provider === "openai";
+  const isGemini = provider === "gemini";
+  const keyState = data.keys?.[provider] ?? (provider !== "anthropic" ? { source: null, masked: null } : data.key);
+  const { source, masked } = keyState;
+  const activeProvider = data.settings.provider ?? "anthropic";
 
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy("save");
+  async function run(kind: NonNullable<typeof busy>, fn: () => Promise<void>) {
+    setBusy(kind);
     setMsg(null);
     try {
-      const r = (await send("/api/settings/key", "POST", { apiKey: value })) as Pick<SettingsData, "key">;
-      onChange({ ...data, key: r.key });
+      await fn();
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function chooseProvider(p: ProviderId) {
+    setProvider(p);
+    setValue("");
+    setMsg(null);
+    if (shared || p === activeProvider) return;
+    void run("provider", async () => {
+      onChange((await send("/api/settings", "PUT", { provider: p })) as SettingsData);
+      setMsg({ ok: true, text: `Sohbet, haber analizi ve günlük özet artık ${PROVIDER_NAMES[p]} ile çalışır.` });
+    });
+  }
+
+  function chooseOpenAiModel(id: string) {
+    void run("model", async () => {
+      onChange((await send("/api/settings", "PUT", { openaiModel: id })) as SettingsData);
+      setMsg({ ok: true, text: "OpenAI modeli kaydedildi." });
+    });
+  }
+
+  function chooseGeminiModel(id: string) {
+    void run("model", async () => {
+      onChange((await send("/api/settings", "PUT", { geminiModel: id })) as SettingsData);
+      setMsg({ ok: true, text: "Gemini modeli kaydedildi." });
+    });
+  }
+
+  function save(e: React.FormEvent) {
+    e.preventDefault();
+    void run("save", async () => {
+      await send("/api/settings/key", "POST", { apiKey: value, provider });
+      // Anahtar kaydı etkin sağlayıcıyı da değiştirebilir (kendi anahtarı olmayan sağlayıcıdan geçiş): hepsini yenile
+      onChange(await fetchJson<SettingsData>("/api/settings"));
       setValue("");
       setMsg({ ok: true, text: "Anahtar kaydedildi. Şimdi \"Bağlantıyı test et\" ile deneyebilirsiniz." });
-    } catch (err) {
-      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
-    } finally {
-      setBusy(null);
-    }
+    });
   }
 
-  async function remove() {
+  function remove() {
     if (!confirm("Kayıtlı anahtar silinsin mi?")) return;
-    setBusy("delete");
-    setMsg(null);
-    try {
-      const r = (await send("/api/settings/key", "DELETE")) as Pick<SettingsData, "key">;
-      onChange({ ...data, key: r.key });
+    void run("delete", async () => {
+      await send(`/api/settings/key?provider=${provider}`, "DELETE");
+      onChange(await fetchJson<SettingsData>("/api/settings"));
       setMsg({ ok: true, text: "Anahtar silindi." });
-    } catch (err) {
-      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
-    } finally {
-      setBusy(null);
-    }
+    });
   }
 
-  async function test() {
-    setBusy("test");
-    setMsg(null);
-    try {
-      const r = (await send("/api/ai/test", "POST")) as { ok: boolean; message: string };
+  function test() {
+    void run("test", async () => {
+      const r = (await send("/api/ai/test", "POST", { provider })) as { ok: boolean; message: string };
       setMsg({ ok: r.ok, text: r.message });
-    } catch (err) {
-      if (!(err instanceof UnauthorizedError)) setMsg({ ok: false, text: (err as Error).message });
-    } finally {
-      setBusy(null);
-    }
+    });
   }
 
-  const { source, masked } = data.key;
+  const openaiModel = data.settings.openaiModel ?? "gpt-5-mini";
+  const openaiModels = data.openaiModels ?? [];
+  const customModel = openaiModels.some((m) => m.id === openaiModel) ? null : openaiModel;
+  const geminiModel = data.settings.geminiModel ?? "gemini-3.5-flash-lite";
+  const geminiModels = data.geminiModels ?? [];
+  const customGemini = geminiModels.some((m) => m.id === geminiModel) ? null : geminiModel;
+  const keyName = isOpenAi ? "OpenAI anahtarı" : isGemini ? "Gemini anahtarı" : "Anahtar";
 
   return (
     <Card className="space-y-4 p-4 md:p-6">
       <div id="anahtar" className="scroll-mt-20">
         <h2 className="font-semibold">Yapay zeka anahtarı</h2>
-        <p className="mt-1 text-sm text-slate-500">Sohbet ve haber analizi Claude yapay zekasını kullanır. Bunun için bir API anahtarı gerekir.</p>
+        <p className="mt-1 text-sm text-slate-500">Sohbet, haber analizi ve günlük özet seçtiğiniz yapay zekayı kullanır. Bunun için bir API anahtarı gerekir.</p>
       </div>
+
+      <Field
+        label="Yapay zeka sağlayıcısı"
+        hint={
+          shared
+            ? `Şu an uygulama sahibinin seçimi (${PROVIDER_NAMES[activeProvider]}) kullanılıyor. Kendi anahtarınızı eklerseniz o sağlayıcı geçerli olur.`
+            : `Etkin: ${PROVIDER_NAMES[activeProvider]}.`
+        }
+      >
+        <Segmented<ProviderId>
+          value={provider}
+          onChange={chooseProvider}
+          options={[
+            { value: "anthropic", label: "Claude (Anthropic)", activeCls: "bg-violet-500/20 text-violet-200" },
+            { value: "openai", label: "OpenAI (ChatGPT)", activeCls: "bg-violet-500/20 text-violet-200" },
+            { value: "gemini", label: "Google Gemini", activeCls: "bg-violet-500/20 text-violet-200" },
+          ]}
+        />
+      </Field>
+
+      {isOpenAi && (
+        <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+          ChatGPT Plus aboneliği burada kullanılamaz; platform.openai.com&apos;dan alınan API anahtarı gerekir (kullandıkça ödenir).
+        </p>
+      )}
+
+      {isGemini && (
+        <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+          Ücretsiz katmanda Google gönderilen verileri ürün geliştirmede kullanabilir; portföy verisi için AI Studio&apos;da faturalandırmayı açın.
+        </p>
+      )}
 
       {source === "owner" && data.sharedAi && (
         <p className="rounded-xl bg-sky-500/10 px-3 py-2 text-sm text-sky-200">
@@ -175,25 +249,28 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
         ) : (
           <>
             <span className="h-2 w-2 rounded-full bg-slate-500" />
-            <span className="text-slate-400">Anahtar eklenmedi</span>
+            <span className="text-slate-400">{keyName} eklenmedi</span>
           </>
         )}
       </div>
 
       {source === "env" ? (
         <p className="text-sm text-slate-500">
-          Anahtar <code>.env</code> dosyasındaki <code>ANTHROPIC_API_KEY</code> değerinden geliyor ve önceliklidir. Değiştirmek için .env dosyasını düzenleyip sunucuyu yeniden başlatın.
+          Anahtar <code>.env</code> dosyasındaki <code>{isOpenAi ? "OPENAI_API_KEY" : isGemini ? "GEMINI_API_KEY" : "ANTHROPIC_API_KEY"}</code> değerinden geliyor ve önceliklidir. Değiştirmek için .env dosyasını düzenleyip sunucuyu yeniden başlatın.
         </p>
       ) : (
         <form onSubmit={save} className="space-y-2">
-          <Field label={source && source !== "owner" ? "Anahtarı değiştir" : "Kendi anahtarınızı yapıştırın"} hint="Anahtar bu bilgisayardaki veritabanında saklanır ve ekranda yalnızca maskeli gösterilir.">
+          <Field
+            label={source && source !== "owner" ? "Anahtarı değiştir" : isOpenAi ? "OpenAI API anahtarınızı yapıştırın" : isGemini ? "Gemini API anahtarınızı yapıştırın" : "Kendi anahtarınızı yapıştırın"}
+            hint="Anahtar veritabanında saklanır ve ekranda yalnızca maskeli gösterilir."
+          >
             <input
               type="password"
               autoComplete="off"
               spellCheck={false}
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder="sk-ant-..."
+              placeholder={isOpenAi ? "sk-proj-..." : isGemini ? "AIza... ya da AQ...." : "sk-ant-..."}
               className={`${inputCls} font-mono`}
             />
           </Field>
@@ -208,6 +285,38 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
             )}
           </div>
         </form>
+      )}
+
+      {isOpenAi && (
+        <Field
+          label="OpenAI modeli"
+          hint={shared ? "Paylaşımlı kullanımda model uygulama sahibinin seçimidir." : "Günlük özet ve kısa açıklamalarda maliyet için her zaman GPT-5 nano kullanılır."}
+        >
+          <select value={openaiModel} onChange={(e) => chooseOpenAiModel(e.target.value)} disabled={shared || busy !== null} className={inputCls}>
+            {openaiModels.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} — giriş {m.inputPerMTok} $ / çıkış {m.outputPerMTok} $ (milyon token)
+              </option>
+            ))}
+            {customModel && <option value={customModel}>{customModel}</option>}
+          </select>
+        </Field>
+      )}
+
+      {isGemini && (
+        <Field
+          label="Gemini modeli"
+          hint={shared ? "Paylaşımlı kullanımda model uygulama sahibinin seçimidir." : "Günlük özet ve kısa açıklamalarda maliyet için her zaman Gemini 3.1 Flash-Lite kullanılır."}
+        >
+          <select value={geminiModel} onChange={(e) => chooseGeminiModel(e.target.value)} disabled={shared || busy !== null} className={inputCls}>
+            {geminiModels.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} — giriş {m.inputPerMTok} $ / çıkış {m.outputPerMTok} $ (milyon token)
+              </option>
+            ))}
+            {customGemini && <option value={customGemini}>{customGemini}</option>}
+          </select>
+        </Field>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
@@ -225,22 +334,57 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
 
       <details className="rounded-xl border border-line bg-bg px-3 py-2.5 text-sm">
         <summary className="cursor-pointer font-medium text-slate-200">Anahtarı nasıl alırım?</summary>
-        <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-slate-400">
-          <li>
-            <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" className="text-accent">
-              console.anthropic.com
-            </a>{" "}
-            adresinde ücretsiz hesap açın.
-          </li>
-          <li>
-            <b>Billing</b> bölümünden kredi yükleyin (başlangıç için 5 $ yeterli). Kredi olmadan anahtar çalışmaz.
-          </li>
-          <li>
-            <b>API Keys</b> › <b>Create Key</b> ile bir anahtar oluşturun ve kopyalayın (yalnızca bir kez gösterilir).
-          </li>
-          <li>Buraya yapıştırıp Kaydet&apos;e, sonra &quot;Bağlantıyı test et&quot;e basın.</li>
-        </ol>
-        <p className="mt-2 text-xs text-slate-500">Harcamayı aşağıdaki aylık bütçeyle sınırlayabilirsiniz. Console&apos;da da harcama limiti koymanız önerilir.</p>
+        {isOpenAi ? (
+          <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-slate-400">
+            <li>
+              <a href="https://platform.openai.com" target="_blank" rel="noreferrer" className="text-accent">
+                platform.openai.com
+              </a>{" "}
+              adresinde oturum açın (ChatGPT hesabınızla girebilirsiniz, ama abonelik ayrıdır).
+            </li>
+            <li>
+              <b>Billing</b> bölümünden kredi yükleyin (başlangıç için 5 $ yeterli). Kredi olmadan anahtar çalışmaz.
+            </li>
+            <li>
+              <b>API keys</b> › <b>Create new secret key</b> ile bir anahtar oluşturun ve kopyalayın (yalnızca bir kez gösterilir).
+            </li>
+            <li>Buraya yapıştırıp Kaydet&apos;e, sonra &quot;Bağlantıyı test et&quot;e basın.</li>
+          </ol>
+        ) : isGemini ? (
+          <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-slate-400">
+            <li>
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-accent">
+                aistudio.google.com/apikey
+              </a>{" "}
+              adresinde Google hesabınızla oturum açın.
+            </li>
+            <li>
+              <b>Create API key</b> ile bir anahtar oluşturun ve kopyalayın (&quot;AIza&quot; ya da &quot;AQ.&quot; ile başlar).
+            </li>
+            <li>
+              Portföy verinizin ürün geliştirmede kullanılmaması için AI Studio&apos;da <b>Billing</b> bölümünden faturalandırmayı açın (ücretli katman). Google Search
+              aramalarında ayda ilk 5.000 arama ücretsizdir, sonrası 1000 arama başına 14 $.
+            </li>
+            <li>Buraya yapıştırıp Kaydet&apos;e, sonra &quot;Bağlantıyı test et&quot;e basın.</li>
+          </ol>
+        ) : (
+          <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-slate-400">
+            <li>
+              <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" className="text-accent">
+                console.anthropic.com
+              </a>{" "}
+              adresinde ücretsiz hesap açın.
+            </li>
+            <li>
+              <b>Billing</b> bölümünden kredi yükleyin (başlangıç için 5 $ yeterli). Kredi olmadan anahtar çalışmaz.
+            </li>
+            <li>
+              <b>API Keys</b> › <b>Create Key</b> ile bir anahtar oluşturun ve kopyalayın (yalnızca bir kez gösterilir).
+            </li>
+            <li>Buraya yapıştırıp Kaydet&apos;e, sonra &quot;Bağlantıyı test et&quot;e basın.</li>
+          </ol>
+        )}
+        <p className="mt-2 text-xs text-slate-500">Harcamayı aşağıdaki aylık bütçeyle sınırlayabilirsiniz. Sağlayıcının sitesinde de harcama limiti koymanız önerilir.</p>
       </details>
     </Card>
   );
@@ -463,10 +607,15 @@ function AiSettingsSection({ data, onChange }: { data: SettingsData; onChange: (
       <form onSubmit={save} className="space-y-5">
         <div>
           <h2 className="font-semibold">Yapay zeka ayarları</h2>
-          <p className="mt-1 text-sm text-slate-500">Tüm tutarlar tahminidir; asıl fatura Claude Console&apos;dadır.</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Tüm tutarlar tahminidir; asıl fatura {s.provider === "openai" ? "OpenAI platformundadır" : s.provider === "gemini" ? "Google AI Studio'dadır" : "Claude Console'dadır"}.
+          </p>
         </div>
 
-        <Field label="Model" hint={model === "ekonomik" ? "Hızlı ve çok ucuz. Günlük kullanım için önerilir." : "Daha derin analiz, yaklaşık 20 kat pahalı."}>
+        {s.provider === "openai" || s.provider === "gemini" ? (
+          <p className="text-sm text-slate-500">{s.provider === "gemini" ? "Gemini" : "OpenAI"} modeli yukarıdaki &quot;Yapay zeka anahtarı&quot; kartından seçilir.</p>
+        ) : (
+        <Field label="Claude modeli" hint={model === "ekonomik" ? "Hızlı ve çok ucuz. Günlük kullanım için önerilir." : "Daha derin analiz, yaklaşık 20 kat pahalı."}>
           <Segmented<"ekonomik" | "gelismis">
             value={model}
             onChange={setModel}
@@ -476,6 +625,7 @@ function AiSettingsSection({ data, onChange }: { data: SettingsData; onChange: (
             ]}
           />
         </Field>
+        )}
 
         <div className="space-y-3 rounded-xl border border-line bg-bg p-3">
           <label className="flex items-center justify-between gap-3">
@@ -494,8 +644,8 @@ function AiSettingsSection({ data, onChange }: { data: SettingsData; onChange: (
 
         <Field
           label="Tarama başına en fazla web araması"
-          hint={`Her arama ~0,01 $ tutar ve maliyetin çoğunu oluşturur. 0: web araması kapalı.${
-            scansPerMonth ? ` Otomatik taramalarla ayda en fazla ~${scansPerMonth * n} arama (~${(scansPerMonth * n * 0.01).toFixed(2).replace(".", ",")} $).` : ""
+          hint={`Her arama ~${s.provider === "gemini" ? "0,014 $ (Gemini: ayda ilk 5.000 arama ücretsiz; Gemini arama sayısını kendisi seçer, bu sınır yalnızca aramayı açıp kapatır)" : "0,01 $"} tutar ve maliyetin çoğunu oluşturur. 0: web araması kapalı.${
+            scansPerMonth ? ` Otomatik taramalarla ayda en fazla ~${scansPerMonth * n} arama (~${(scansPerMonth * n * (s.provider === "gemini" ? 0.014 : 0.01)).toFixed(2).replace(".", ",")} $).` : ""
           }`}
         >
           <input value={maxSearches} onChange={(e) => setMaxSearches(e.target.value)} className={inputCls} inputMode="numeric" />

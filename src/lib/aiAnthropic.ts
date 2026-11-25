@@ -9,7 +9,10 @@ import type { AiProvider, CanonMessage, ChatStepResult } from "./aiProvider";
 
 const CHEAP_MODEL = AI_MODELS.ekonomik.id;
 
-/** OpenAI'den gelen (url_citation) alıntılar Claude'a geri gönderilemez: metin bloğu sadeleştirilir. */
+/**
+ * OpenAI / Gemini'den gelen (url_citation) alıntılar Claude'a geri gönderilemez: metin bloğu
+ * sadeleştirilir. Gemini'nin ek alanları (gemini_parts, gemini_signature) atılır.
+ */
 function sanitize(messages: CanonMessage[]): Anthropic.MessageParam[] {
   return messages.map((m) => {
     if (typeof m.content === "string") return m;
@@ -17,7 +20,14 @@ function sanitize(messages: CanonMessage[]): Anthropic.MessageParam[] {
       ...m,
       content: m.content.map((b) => {
         const cits = (b as { citations?: { type: string }[] | null }).citations;
-        return b.type === "text" && Array.isArray(cits) && cits.some((c) => c.type === "url_citation") ? { type: "text" as const, text: b.text } : b;
+        if (b.type === "text" && Array.isArray(cits) && cits.some((c) => c.type === "url_citation")) return { type: "text" as const, text: b.text };
+        if ("gemini_parts" in b || "gemini_signature" in b) {
+          const rest: Record<string, unknown> = { ...b };
+          delete rest.gemini_parts;
+          delete rest.gemini_signature;
+          return rest;
+        }
+        return b;
       }),
     } as Anthropic.MessageParam;
   });
