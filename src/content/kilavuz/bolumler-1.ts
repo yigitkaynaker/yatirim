@@ -224,6 +224,8 @@ export const SECTIONS_1: GuideSection[] = [
           "**Sembol yazımı:** **BTC** = Binance BTC/USDT (fiyat dolar), **BTC-TRY** = Binance BTC/TL, **BTC@BTCTURK** = BtcTurk BTC/TL. TL paritelerinde fiyat, kâr/zarar ve işlem para birimi TL'dir.",
           "**Emtia:** altın (GC=F), gümüş (SI=F), petrol (CL=F, Brent BZ=F), doğalgaz (NG=F), bakır (HG=F) gibi vadeli fiyatlar, dolar cinsinden. Aramada \"gümüş\", \"petrol\" yazman yeterli.",
           "**Endeksler:** BIST 100, BIST 30, S&P 500, Nasdaq, DAX gibi endeksler puan olarak gösterilir.",
+          "**BIST · ABD Hisseleri · ETF:** Borsa İstanbul'daki tüm hisseler ile Nasdaq ve NYSE'deki tüm ABD hisseleri ve ETF'ler; en bilinenler listenin başındadır. Midas gibi aracı kurum uygulamalarında gördüğün hisseler de buradadır, her biri tek satır.",
+          "**Fonlar:** TEFAS'taki tüm fonlar. Üstteki düğmelerle **Yatırım fonları**, **Emeklilik (BES)** ya da **Borsa yatırım fonları** olarak süzebilir, fon kodu ya da şirket adıyla (örn. \"ak portföy\") arayabilirsin.",
         ],
       },
       { type: "h", text: "İzleme listesine eklemek" },

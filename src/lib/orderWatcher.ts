@@ -116,9 +116,9 @@ async function runCatalogRefresh() {
   if (Date.now() - (gk.__yatirimCatalogCheck ?? 0) < 3600_000) return;
   gk.__yatirimCatalogCheck = Date.now();
   try {
-    const { maybeRefreshCatalog } = await import("./catalog");
+    const { maybeRefreshCatalog, refreshSummary } = await import("./catalog");
     const r = await maybeRefreshCatalog();
-    if (r) console.log(`[katalog] yenilendi: Binance ${r.binance}, BtcTurk ${r.btcturk}, toplam ${r.total}`);
+    if (r) console.log(`[katalog] yenilendi: ${refreshSummary(r)}`);
   } catch (err) {
     console.error("[katalog] zamanlayıcı hatası", err);
   }

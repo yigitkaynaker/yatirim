@@ -1,7 +1,9 @@
 // Sembol kataloğu ve kripto parite testleri: sembol biçimi ve geri uyumluluk (crypto:BTC aynen
 // Binance USDT), TRY / USD para birimi, kataloğun sahte HTTP ile doldurulması (Binance + BtcTurk;
 // listeden çıkanların silinmesi, kaynak hatasında eski satırların korunması), liste süzgeçleri,
-// arama gruplama, TL paritelerinde portföy değerlemesi ve BtcTurk toplu fiyat isteği.
+// arama gruplama, TL paritelerinde portföy değerlemesi ve BtcTurk toplu fiyat isteği; TEFAS fon listesi,
+// Nasdaq sembol dizini ve BIST hisse listesi ayrıştırma, tekillik (her sembol tek satır), fon türü süzgeci
+// ve katalogdan eklenen fonun fiyatı / portföyü.
 // Ağ kullanmaz (fetch sahte); geçici bir veri klasörü kullanır. İki modda da çalışır (npm run test:pg).
 //   npm run test:catalog
 // Gerçek uçlara küçük bir deneme (ağ gerekir): npm run test:catalog -- --canli
@@ -35,12 +37,15 @@ const near = (a: number | null | undefined, b: number, eps = 1e-6) => assert.ok(
 const realFetch = globalThis.fetch;
 const calls: string[] = [];
 let routes: Record<string, unknown> = {};
-function fakeFetch(input: string | URL | Request): Promise<Response> {
+function fakeFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
   const url = String(input instanceof Request ? input.url : input);
   calls.push(url);
-  for (const [prefix, body] of Object.entries(routes)) {
+  for (const [prefix, route] of Object.entries(routes)) {
     if (url.startsWith(prefix)) {
+      // İstek gövdesine göre yanıt (aynı URL, farklı POST gövdesi: TEFAS fon türleri)
+      const body = typeof route === "function" ? (route as (b: unknown) => unknown)(init?.body ? JSON.parse(String(init.body)) : null) : route;
       if (body instanceof Error) return Promise.reject(body);
+      if (typeof body === "string") return Promise.resolve(new Response(body, { status: 200, headers: { "Content-Type": "text/plain" } }));
       if (typeof body === "number") return Promise.resolve(new Response("{}", { status: body }));
       return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
     }
@@ -80,11 +85,72 @@ const BTCTURK_INFO = {
     ],
   },
 };
+// TEFAS fon listesi (tür başına)
+const fund = (fonKodu: string, fonUnvan: string, fonTurAciklama: string) => ({ fonKodu, fonUnvan, fonTurAciklama, tefasDurum: true, getiri1a: 1 });
+const TEFAS_LIST: Record<string, unknown[]> = {
+  YAT: [
+    fund("AFT", "AK PORTFÖY YENİ TEKNOLOJİLER YABANCI HİSSE SENEDİ FONU", "Hisse Senedi Şemsiye Fonu"),
+    fund("TTE", "İŞ PORTFÖY BIST TEKNOLOJİ AĞIRLIK SINIRLAMALI ENDEKSİ HİSSE SENEDİ FONU", "Hisse Senedi Şemsiye Fonu"),
+    fund("MAC", "MARMARA CAPITAL PORTFÖY HİSSE SENEDİ FONU", "Hisse Senedi Şemsiye Fonu"),
+    fund("AFT", "TEKRAR", "Hisse Senedi Şemsiye Fonu"), // aynı kod ikinci kez: tek satır
+    fund("IPB", "İŞ PORTFÖY PARA PİYASASI FONU", "Para Piyasası Şemsiye Fonu"),
+    fund("YAS", "YAPI KREDİ PORTFÖY KOÇ HOLDİNG İŞTİRAK VE HİSSE SENEDİ FONU", "Hisse Senedi Şemsiye Fonu"),
+    fund("TOOLONG", "Geçersiz kod", "x"),
+    { fonUnvan: "kodsuz" },
+  ],
+  EMK: ["AEA", "AEH", "AH1", "AH2", "AH3"].map((c) => fund(c, `AGESA HAYAT VE EMEKLİLİK ${c} FONU`, "Hisse Senedi Fonu")),
+  BYF: ["LTK", "BOE", "MDL", "BND", "BLH"].map((c) => fund(c, `AK PORTFÖY ${c} BORSA YATIRIM FONU`, "Endeks Fon")),
+};
+
+// Nasdaq Trader sembol dizini: gerçek biçimde özel satırlar + eşiği (3000) aşacak kadar sentetik hisse
+const letters = (n: number) => Array.from({ length: 4 }, (_, i) => String.fromCharCode(65 + (Math.floor(n / 26 ** i) % 26))).join("");
+const NASDAQ_LISTED = [
+  "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares",
+  "AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N",
+  "ZZTT|Nasdaq Test Issue - Common Stock|Q|Y|N|100|N|N",
+  "ABCDW|Abcd Corp - Warrant|S|N|N|100|N|N",
+  "ABCDU|Abcd Corp - Units|S|N|N|100|N|N",
+  "ABCDR|Abcd Corp - Rights|S|N|N|100|N|N",
+  "ETFZ|Zeta Nasdaq 100 ETF|G|N|N|100|Y|N",
+  "ADRZ|Adrz Ltd - American Depositary Shares|S|N|N|100|N|N",
+  "RIVN|Rivian Automotive, Inc. - Class A Common Stock|Q|N|N|100|N|N",
+  ...Array.from({ length: 3100 }, (_, i) => `Q${letters(i)}|Sentetik Şirket ${i} - Common Stock|${"QGS"[i % 3]}|N|N|100|${i % 10 === 0 ? "Y" : "N"}|N`),
+  "File Creation Time: 1125202621:32|||||||",
+].join("\r\n");
+const OTHER_LISTED = [
+  "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol",
+  "BRK.B|Berkshire Hathaway Inc. Class B|N|BRK.B|N|100|N|BRK.B",
+  "BF.B|Brown-Forman Corporation Class B Common Stock|N|BF.B|N|100|N|BF.B",
+  "BAC$K|Bank of America Corporation Depositary Shares Preferred Series K|N|BACpK|N|100|N|BAC-K",
+  "XYZ.U|Xyz Acquisition Corp Units|N|XYZ.U|N|100|N|XYZ=",
+  "CBZZ|Cboe Only ETF|Z|CBZZ|Y|100|N|CBZZ",
+  "RIVN|Rivian (yinelenen)|N|RIVN|N|100|N|RIVN",
+  "PBT|Permian Basin Royalty Trust Units of Beneficial Interest|N|PBT|N|100|N|PBT",
+  "SPYZ|Spyz S&P 500 ETF Trust|P|SPYZ|Y|100|N|SPYZ",
+  "PFDX|Pfdx Corp 6.5% Fixed Rate Preferred Stock|N|PFDX|N|100|N|PFDX",
+  "File Creation Time: 1125202621:32||||||",
+].join("\r\n");
+
+// İş Yatırım "Temel Değerler ve Oranlar" tablosu (en az 300 hisse gerekir)
+const isyRow = (code: string, name: string, cap: string) =>
+  `<tr><td><a href="/tr-tr/analiz/hisse/Sayfalar/sirket-karti.aspx?hisse=${code}">${code}</a></td><td>${name}</td><td>Sektör</td><td class="text-right">1,00</td><td class="text-right">${cap}</td><td class="text-right">1</td></tr>`;
+const ISYATIRIM_HTML = `<html><body><table><tbody>${[
+  isyRow("THYAO", "Türk Hava Yolları (başka ad)", "400.000,0"),
+  isyRow("A1CAP", "A1 Capital ", "1.633,5"),
+  isyRow("BUYUK", "Büyük &amp; Değerli A.Ş.", "900.000,0"),
+  isyRow("A1CAP", "A1 Capital (yinelenen)", "1,0"),
+  ...Array.from({ length: 320 }, (_, i) => isyRow(`S${letters(i)}`, `Sentetik ${i}`, `${i},0`)),
+].join("")}</tbody></table></body></html>`;
+
 function catalogRoutes() {
   return {
     "https://api.binance.com/api/v3/exchangeInfo": BINANCE_INFO,
     "https://api.binance.com/api/v3/ticker/24hr?type=MINI": BINANCE_MINI,
     "https://api.btcturk.com/api/v2/server/exchangeinfo": BTCTURK_INFO,
+    "https://www.tefas.gov.tr/api/funds/fonGetiriBazliBilgiGetir": (b: { fonTipi?: string } | null) => ({ errorCode: null, resultList: TEFAS_LIST[b?.fonTipi ?? ""] ?? [] }),
+    "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt": NASDAQ_LISTED,
+    "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt": OTHER_LISTED,
+    "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/Temel-Degerler-Ve-Oranlar.aspx": ISYATIRIM_HTML,
   } as Record<string, unknown>;
 }
 
@@ -149,6 +215,9 @@ await test("sahte HTTP ile doldurma: Binance USDT+TRY, BtcTurk TRY+USDT, statik 
   assert.equal(r.binance, 4); // BTC, ETH, S (USDT) + BTC (TRY); BREAK, BTC kotasyonu ve geçersiz taban elenir
   assert.equal(r.btcturk, 3);
   assert.ok(r.static > 300, `statik: ${r.static}`);
+  assert.deepEqual(r.tefas, { YAT: 5, EMK: 5, BYF: 5 });
+  assert.equal(typeof r.nasdaq, "number");
+  assert.equal(typeof r.bist, "number");
   const conn = await db.getDb();
   const btc = await conn.get<{ name: string; currency: string; category: string; exchange: string }>(
     "SELECT name, currency, category, exchange FROM symbol_catalog WHERE asset_type = 'crypto' AND symbol = 'BTC'",
@@ -173,6 +242,7 @@ await test("kripto listesi: hacim sırası ve borsa süzgeçleri, sayfalama", as
   assert.equal(p1.items.length, 10);
   assert.equal(p1.page, 1);
   assert.ok(p1.total > 100);
+  assert.deepEqual((await catalog.listCatalog("bist", { pageSize: 5 })).items.map((i) => i.symbol), ["THYAO", "ASELS", "GARAN", "AKBNK", "ISCTR"], "statik sıra korunur");
   const q = await catalog.listCatalog("kripto", { q: "bitcoin" });
   assert.ok(q.items.every((i) => i.symbol.startsWith("BTC")) && q.total === 4, JSON.stringify(q.items.map((i) => i.symbol)));
   const tr = await catalog.listCatalog("bist", { q: "türk hava" });
@@ -228,6 +298,120 @@ await test("Yahoo'da bulunan sembol kataloğa eklenir (statik kayıt ezilmez)", 
   const hisse = await catalog.listCatalog("hisse", { q: "rivian" });
   assert.equal(hisse.items[0]?.symbol, "RIVN");
   assert.equal((await catalog.catalogEntry("foreign", "AAPL"))?.name, "Apple");
+});
+
+// ---- Tam listeler: TEFAS, ABD, BIST ---------------------------------------------------------------
+console.log("Tam listeler ve tekillik");
+
+await test("TEFAS fon listesi ayrıştırma: geçersiz kod atlanır, kod başına tek satır, tür etiketi", () => {
+  const rows = catalog.parseTefasFundList("YAT", { resultList: TEFAS_LIST.YAT });
+  assert.deepEqual(rows.map((r) => r.symbol), ["AFT", "IPB", "MAC", "TTE", "YAS"]);
+  const aft = rows.find((r) => r.symbol === "AFT")!;
+  assert.equal(aft.name, "AK PORTFÖY YENİ TEKNOLOJİLER YABANCI HİSSE SENEDİ FONU"); // ilk geçiş
+  assert.equal(aft.exchange, "Yatırım fonu · Hisse Senedi Şemsiye Fonu");
+  assert.deepEqual([aft.asset_type, aft.category, aft.currency, aft.source], ["fund", "fon", "TRY", "tefas-yat"]);
+  assert.equal(catalog.parseTefasFundList("EMK", { resultList: TEFAS_LIST.EMK })[0].exchange, "Emeklilik fonu (BES) · Hisse Senedi Fonu");
+  assert.deepEqual(catalog.parseTefasFundList("BYF", null), []);
+  assert.deepEqual(catalog.parseTefasFundList("BYF", { resultList: "bozuk" }), []);
+});
+
+await test("Nasdaq sembol dizini: deneme, varant, birim, hak, imtiyazlı ve Cboe elenir; BRK.B → BRK-B; yinelenen tek", () => {
+  const rows = catalog.parseUsSymbolDirectory(NASDAQ_LISTED, OTHER_LISTED, new Set(["AAPL", "BRK-B"]));
+  const by = new Map(rows.map((r) => [r.symbol, r]));
+  for (const s of ["AAPL", "BRK-B", "ZZTT", "ABCDW", "ABCDU", "ABCDR", "BAC$K", "BAC-K", "XYZ-U", "CBZZ", "PFDX"]) assert.ok(!by.has(s), `${s} alınmamalı`);
+  assert.equal(rows.filter((r) => r.symbol === "RIVN").length, 1);
+  assert.deepEqual({ ...by.get("RIVN") }, { ...by.get("RIVN"), name: "Rivian Automotive, Inc. Class A", exchange: "Nasdaq", category: "hisse" });
+  assert.equal(by.get("BF-B")?.exchange, "NYSE");
+  assert.equal(by.get("BF-B")?.name, "Brown-Forman Corporation Class B");
+  assert.equal(by.get("ETFZ")?.category, "etf");
+  assert.deepEqual([by.get("SPYZ")?.category, by.get("SPYZ")?.exchange], ["etf", "NYSE Arca"]);
+  assert.ok(by.has("ADRZ"), "ADR alınır");
+  assert.ok(by.has("PBT"), "royalty trust birimleri alınır");
+  assert.ok(rows.length > 3000);
+  assert.throws(() => catalog.parseUsSymbolDirectory("bozuk|başlık\nA|B", OTHER_LISTED), /biçimi/);
+});
+
+await test("BIST hisse listesi: piyasa değerine göre sıra, statik semboller atlanır, HTML karakterleri çözülür", () => {
+  const rows = catalog.parseIsYatirimStocks(ISYATIRIM_HTML, new Set(["THYAO"]));
+  assert.deepEqual(rows.slice(0, 2).map((r) => [r.symbol, r.name]), [["BUYUK", "Büyük & Değerli A.Ş."], ["A1CAP", "A1 Capital"]]);
+  assert.equal(rows.filter((r) => r.symbol === "A1CAP").length, 1);
+  assert.ok(!rows.some((r) => r.symbol === "THYAO"));
+  assert.deepEqual(catalog.parseIsYatirimStocks("<html>sayfa değişti</html>"), []);
+});
+
+await test("katalog: fonlar, ABD ve BIST tam listeleri; her sembol tek satır, statik ad ve sıra korunur", async () => {
+  const conn = await db.getDb();
+  const dup = await conn.all("SELECT asset_type, symbol, COUNT(*) AS c FROM symbol_catalog GROUP BY asset_type, symbol HAVING COUNT(*) > 1");
+  assert.deepEqual(dup, []);
+  assert.equal((await catalog.catalogEntry("foreign", "AAPL"))?.name, "Apple"); // statik ad ezilmez
+  assert.equal((await catalog.catalogEntry("foreign", "BRK-B"))?.name, "Berkshire Hathaway B");
+  assert.equal((await catalog.catalogEntry("bist", "THYAO"))?.name, "Türk Hava Yolları");
+  assert.equal((await catalog.catalogEntry("foreign", "SPYZ"))?.category, "etf");
+  assert.equal((await catalog.catalogEntry("bist", "A1CAP"))?.exchange, "Borsa İstanbul");
+  const etf = await catalog.listCatalog("etf", { pageSize: 5 });
+  assert.ok(etf.total > 300, `etf: ${etf.total}`);
+  assert.equal(etf.items[0].symbol, "SPY"); // statik (popüler) liste önce
+  assert.equal((await catalog.listCatalog("hisse", { q: "rivian" })).items[0]?.symbol, "RIVN");
+});
+
+await test("Fonlar listesi: tüm TEFAS fonları, tür süzgeci, arama; aramada fon görünür", async () => {
+  const all = await catalog.listCatalog("fon", { pageSize: 50 });
+  assert.equal(all.total, 15);
+  assert.ok(all.items.every((i) => i.assetType === "fund" && i.instrument === `fund:${i.symbol}`));
+  assert.deepEqual((await catalog.listCatalog("fon", { fundKind: "emk" })).items.map((i) => i.symbol), ["AEA", "AEH", "AH1", "AH2", "AH3"]);
+  assert.equal((await catalog.listCatalog("fon", { fundKind: "byf" })).total, 5);
+  assert.equal((await catalog.listCatalog("fon", { fundKind: "bilinmeyen" })).total, 15); // geçersiz süzgeç yok sayılır
+  assert.equal((await catalog.listCatalog("fon", { q: "is portfoy" })).total, 2); // Türkçe harfler ASCII ile
+  assert.equal((await catalog.listCatalog("fon", { q: "aft" })).items[0]?.symbol, "AFT");
+  const s = await catalog.searchCatalog("marmara");
+  assert.ok(s.some((x) => x.instrument === "fund:MAC"));
+});
+
+await test("yenileme: fon kaynağı hata verirse eski fonlar korunur; az satır gelen liste budanmaz; bilinen fon eklenir", async () => {
+  await new Promise((r) => setTimeout(r, 1100));
+  const conn = await db.getDb();
+  await conn.run("INSERT INTO funds (code, name, last_price, last_date) VALUES ('ZZZ', 'ESKİ BİR FON', 1.5, '2026-01-02')");
+  routes = catalogRoutes();
+  routes["https://www.tefas.gov.tr/api/funds/fonGetiriBazliBilgiGetir"] = (b: { fonTipi?: string } | null) =>
+    b?.fonTipi === "EMK" ? new Error("TEFAS kapalı") : { resultList: (TEFAS_LIST[b?.fonTipi ?? ""] ?? []).filter((f) => (f as { fonKodu?: string }).fonKodu !== "YAS") };
+  routes["https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"] = "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\n";
+  const r = await catalog.refreshCatalog();
+  assert.equal(r.tefas.YAT, 4);
+  assert.match(String(r.tefas.EMK), /hata/);
+  assert.equal(typeof r.nasdaq, "number"); // yalnızca nasdaqlisted yine de 3000'i aşar
+  assert.equal(await catalog.catalogEntry("foreign", "SPYZ"), null, "otherlisted.txt.den çıkan ETF silinir");
+  assert.equal(await conn.get("SELECT 1 FROM symbol_catalog WHERE asset_type = 'fund' AND symbol = 'YAS'"), undefined, "listeden çıkan fon silinir");
+  assert.equal((await catalog.listCatalog("fon", { fundKind: "emk" })).total, 5, "EMK satırları korunmalı");
+  assert.equal((await catalog.catalogEntry("fund", "ZZZ"))?.name, "ESKİ BİR FON");
+  assert.equal((await catalog.catalogEntry("fund", "AFT"))?.exchange, "Yatırım fonu · Hisse Senedi Şemsiye Fonu");
+  // ABD listesi şüpheli derecede kısa gelirse (eşik altı) eski satırlar korunur
+  routes["https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"] = NASDAQ_LISTED.split("\r\n").slice(0, 20).join("\r\n");
+  const r2 = await catalog.refreshCatalog();
+  assert.match(String(r2.nasdaq), /eksik/);
+  assert.ok(await catalog.catalogEntry("foreign", "ETFZ"), "ABD satırları korunmalı");
+  routes = catalogRoutes();
+  await catalog.refreshCatalog();
+});
+
+await test("katalogdan seçilen fon: fiyatı TEFAS'tan gelir, portföye eklenir", async () => {
+  routes = {
+    "https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir": (b: { fonKodu?: string } | null) => ({
+      resultList: [
+        { fonKodu: b?.fonKodu, fonUnvan: "AGESA HAYAT VE EMEKLİLİK AH1 FONU", tarih: "2026-11-24", fiyat: 2 },
+        { fonKodu: b?.fonKodu, fonUnvan: "AGESA HAYAT VE EMEKLİLİK AH1 FONU", tarih: "2026-11-25", fiyat: 2.1 },
+      ],
+    }),
+  };
+  const item = (await catalog.listCatalog("fon", { q: "ah1" })).items[0];
+  assert.equal(item.instrument, "fund:AH1");
+  const [q] = await prices.getQuotes([{ type: item.assetType, symbol: item.symbol }]);
+  assert.deepEqual([q.price, q.currency, q.source], [2.1, "TRY", "TEFAS"]);
+  near(q.changePct, 5);
+  await portfolio.recordTransaction(
+    await portfolio.parseTransactionInput({ mode: "virtual", assetType: item.assetType, symbol: item.symbol, side: "buy", quantity: "100", price: "2", currency: "TRY", date: "2026-11-20" }),
+  );
+  const h = (await portfolio.getPortfolio("virtual")).holdings.find((x) => x.symbol === "AH1");
+  near(h?.valueTry, 210);
 });
 
 // ---- Fiyat ve portföy ---------------------------------------------------------------------------

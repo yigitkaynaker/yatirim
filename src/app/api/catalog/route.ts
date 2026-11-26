@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
  * (fiyatlar ayrıca /api/prices ile yalnızca görünen satırlar için alınır).
  * kategori: kripto, bist, hisse, etf, endeks, emtia, doviz, altin, fon
  * borsa (yalnızca kripto): binance-usdt, binance-try, btcturk
+ * tur (yalnızca fon): yat (yatırım fonu), emk (emeklilik fonu, BES), byf (borsa yatırım fonu)
  */
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
@@ -20,6 +21,7 @@ export async function GET(req: NextRequest) {
     return await listCatalog(category, {
       q: (sp.get("q") ?? "").slice(0, 40),
       venue: sp.get("borsa") ?? undefined,
+      fundKind: sp.get("tur") ?? undefined,
       page: Number(sp.get("sayfa") ?? 0) || 0,
       pageSize: Number(sp.get("adet") ?? 30) || 30,
     });

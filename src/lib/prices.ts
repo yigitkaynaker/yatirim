@@ -27,6 +27,8 @@ import {
 export const CACHE_TTL_MS = 30_000;
 const GOLD_TTL_MS = 2 * 60_000;
 const FUND_TTL_MS = 30 * 60_000;
+/** TEFAS'a aynı anda en fazla bu kadar fon fiyatı isteği */
+const FUND_CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 8_000;
 const TROY_OUNCE_GRAMS = 31.1035;
 
@@ -366,26 +368,32 @@ export function fundDateMs(date: string): number {
 async function fetchFunds(codes: string[]): Promise<Map<string, RawQuote>> {
   const out = new Map<string, RawQuote>();
   const miss = (gg.__yatirimFundMiss ??= new Map());
-  // Kibar olmak için sırayla (genelde birkaç fon vardır).
-  for (const code of codes) {
-    // Geçerli fiyatı olmayan (yanlış kod ya da hep 0 dönen) fon 30 dk yeniden sorulmaz.
-    if (Date.now() - (miss.get(code) ?? 0) < FUND_TTL_MS) continue;
-    const f = await fetchFundPrices(code, 1);
-    if (!f.last) {
-      miss.set(code, Date.now());
-      continue; // geçerli fiyat yok: önbellekteki son geçerli fiyat kalır
+  // Kibar olmak için en fazla FUND_CONCURRENCY istek aynı anda (Fonlar listesinde bir sayfa ~30 fon).
+  const queue = [...codes];
+  const worker = async () => {
+    for (let code = queue.shift(); code !== undefined; code = queue.shift()) {
+      // Geçerli fiyatı olmayan (yanlış kod ya da hep 0 dönen) fon 30 dk yeniden sorulmaz.
+      if (Date.now() - (miss.get(code) ?? 0) < FUND_TTL_MS) continue;
+      const f = await fetchFundPrices(code, 1);
+      if (!f.last) {
+        miss.set(code, Date.now());
+        continue; // geçerli fiyat yok: önbellekteki son geçerli fiyat kalır
+      }
+      miss.delete(code);
+      const prev = f.prev?.price ?? null;
+      out.set(code, {
+        price: f.last.price,
+        currency: "TRY",
+        changePct: prev ? ((f.last.price - prev) / prev) * 100 : null,
+        sourceTime: fundDateMs(f.last.date),
+        prevClose: prev,
+        extra: { name: f.name },
+      });
     }
-    miss.delete(code);
-    const prev = f.prev?.price ?? null;
-    out.set(code, {
-      price: f.last.price,
-      currency: "TRY",
-      changePct: prev ? ((f.last.price - prev) / prev) * 100 : null,
-      sourceTime: fundDateMs(f.last.date),
-      prevClose: prev,
-      extra: { name: f.name },
-    });
-  }
+  };
+  // Bir istek hata verirse (geri çekilme dahil) kalan fonlar yine de denenir; alınanlar döner.
+  const results = await Promise.allSettled(Array.from({ length: Math.min(FUND_CONCURRENCY, codes.length) }, worker));
+  if (out.size === 0 && results.some((r) => r.status === "rejected")) throw (results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason;
   return out;
 }
 

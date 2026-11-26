@@ -24,21 +24,29 @@ const VENUES: { value: string; label: string }[] = [
   { value: "btcturk", label: "BtcTurk" },
 ];
 
+const FUND_KINDS: { value: string; label: string }[] = [
+  { value: "", label: "Tümü" },
+  { value: "yat", label: "Yatırım fonları" },
+  { value: "emk", label: "Emeklilik (BES)" },
+  { value: "byf", label: "Borsa yatırım fonları" },
+];
+
 const HINTS: Partial<Record<CatalogCategory, string>> = {
   kripto: "Binance (USDT ve TL pariteleri) ve BtcTurk (TL pariteleri). Aynı coin farklı borsada ayrı satırdır; TL paritelerinin fiyatı TL'dir.",
-  bist: "Borsa İstanbul'un büyük hisseleri (derlenmiş liste). Listede olmayan hisseyi yukarıdaki + Ekle aramasıyla bulabilirsiniz. Fiyatlar ~15 dk gecikmelidir.",
-  hisse: "Popüler ABD hisseleri. Aramada bulduğunuz diğer hisseler de buraya eklenir.",
-  etf: "Borsa yatırım fonları (ETF): tek alımla bir endeksi ya da sepeti takip eder.",
+  bist: "Borsa İstanbul'daki tüm hisseler (büyükler önce). Fiyatlar ~15 dk gecikmelidir.",
+  hisse: "Nasdaq ve NYSE'deki tüm ABD hisseleri (popülerler önce). Fiyatlar USD'dir.",
+  etf: "ABD borsa yatırım fonları (ETF): tek alımla bir endeksi ya da sepeti takip eder. Popülerler önce.",
   endeks: "Borsa endeksleri: fiyat yerine puan gösterilir; doğrudan alınamaz, piyasanın genel yönünü gösterir.",
   emtia: "Vadeli işlem fiyatları (USD): altın, gümüş, petrol, doğalgaz, bakır, tarım ürünleri.",
   doviz: "Dövizlerin TL karşılığı.",
   altin: "Gram altın ve kuyumcu altınları (TL).",
-  fon: "Daha önce aradığınız ya da işlem yaptığınız TEFAS fonları. Yeni bir fon için + Ekle'de 3 harfli fon kodunu yazın.",
+  fon: "TEFAS'taki tüm fonlar: yatırım fonları, emeklilik (BES) fonları ve borsa yatırım fonları. Fon kodu ya da adıyla (örn. kurucu şirket) arayın; fiyat günde bir açıklanır.",
 };
 
 export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, number>; onToggleWatch: (item: CatalogItem) => void }) {
   const [category, setCategory] = useState<CatalogCategory>("kripto");
   const [venue, setVenue] = useState("");
+  const [fundKind, setFundKind] = useState("");
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
@@ -53,12 +61,13 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
     return () => clearTimeout(t);
   }, [q]);
 
-  const key = `${category}|${category === "kripto" ? venue : ""}|${query}|${page}`;
+  const key = `${category}|${category === "kripto" ? venue : category === "fon" ? fundKind : ""}|${query}|${page}`;
   useEffect(() => {
     let alive = true;
     const p = new URLSearchParams({ kategori: category, sayfa: String(page), adet: String(PAGE_SIZE) });
     if (query) p.set("q", query);
     if (category === "kripto" && venue) p.set("borsa", venue);
+    if (category === "fon" && fundKind) p.set("tur", fundKind);
     fetchJson<CatalogPage>(`/api/catalog?${p.toString()}`)
       .then((data) => alive && setState({ key, data }))
       .catch((err: unknown) => {
@@ -68,7 +77,7 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
     return () => {
       alive = false;
     };
-  }, [key, category, venue, query, page]);
+  }, [key, category, venue, fundKind, query, page]);
 
   const current = state?.key === key ? state : null;
   const items = current?.data?.items ?? [];
@@ -113,20 +122,24 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
             aria-label="Listede ara"
           />
           {category === "kripto" && (
-            <div className="flex flex-wrap gap-1">
-              {VENUES.map((v) => (
-                <button
-                  key={v.value}
-                  onClick={() => {
-                    setVenue(v.value);
-                    setPage(0);
-                  }}
-                  className={`rounded-md px-2 py-1 text-xs ${venue === v.value ? "bg-surface-2 text-white" : "text-slate-400 hover:text-white"}`}
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
+            <FilterButtons
+              options={VENUES}
+              value={venue}
+              onChange={(v) => {
+                setVenue(v);
+                setPage(0);
+              }}
+            />
+          )}
+          {category === "fon" && (
+            <FilterButtons
+              options={FUND_KINDS}
+              value={fundKind}
+              onChange={(v) => {
+                setFundKind(v);
+                setPage(0);
+              }}
+            />
           )}
           {HINTS[category] && <p className="text-xs text-slate-500">{HINTS[category]}</p>}
         </div>
@@ -137,7 +150,7 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
           <p className="p-6 text-center text-sm text-rose-400">{current.error}</p>
         ) : items.length === 0 ? (
           <p className="p-6 text-center text-sm text-slate-500">
-            {query ? "Bu listede eşleşen sembol yok. Yukarıdaki + Ekle aramasını deneyin." : category === "fon" ? "Henüz kayıtlı fon yok." : "Liste henüz hazırlanıyor; birazdan yeniden deneyin."}
+            {query ? "Bu listede eşleşen sembol yok. Yukarıdaki + Ekle aramasını deneyin." : "Liste henüz hazırlanıyor; birazdan yeniden deneyin."}
           </p>
         ) : (
           <ListRows items={items} watched={watched} onToggleWatch={onToggleWatch} />
@@ -162,6 +175,24 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
         )}
       </Card>
     </section>
+  );
+}
+
+/** Liste süzgeci düğmeleri (kripto borsası, fon türü) */
+function FilterButtons({ options, value, onChange }: { options: { value: string; label: string }[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          aria-pressed={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={`rounded-md px-2 py-1 text-xs ${value === o.value ? "bg-surface-2 text-white" : "text-slate-400 hover:text-white"}`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
   );
 }
 

@@ -13,6 +13,7 @@ import {
   type CryptoQuote,
 } from "./assets";
 import { BIST_INDEX_NAMES, BIST_STOCKS, COMMODITIES, FX_CURRENCIES, US_ETFS, US_STOCKS, WORLD_INDICES } from "./catalogData";
+import { BROWSER_UA } from "./http";
 
 // Sembol kataloğu (symbol_catalog tablosu; paylaşımlı, kullanıcıya özel değil). Piyasa sayfasındaki
 // ayrı listeler (Kripto, BIST, ABD Hisseleri, ETF, Endeksler, Emtia, Döviz, Altın, Fonlar) ve arama
@@ -21,13 +22,38 @@ import { BIST_INDEX_NAMES, BIST_STOCKS, COMMODITIES, FX_CURRENCIES, US_ETFS, US_
 //     sıralama için /api/v3/ticker/24hr?type=MINI (sembolsüz; ağırlık 80) — günde bir kez.
 //   - BtcTurk: /api/v2/server/exchangeinfo (TRY ve USDT çiftleri ve coin adları; tek istek).
 //   - Derlenmiş statik liste (catalogData.ts) + altın türleri; Yahoo aramasında bulunan yabancı
-//     semboller de (kategori etiketiyle) eklenir. Fonlar funds tablosundan okunur.
+//     semboller de (kategori etiketiyle) eklenir.
+//   - TEFAS: /api/funds/fonGetiriBazliBilgiGetir (fon türü başına bir istek: YAT yatırım, EMK
+//     emeklilik (BES), BYF borsa yatırım fonu) — TEFAS'taki tüm fonlar. Daha önce doğrulanmış ama
+//     listede olmayan fonlar (funds tablosu) da eklenir.
+//   - Nasdaq Trader sembol dizini (nasdaqlisted.txt + otherlisted.txt): Nasdaq, NYSE, NYSE Arca ve
+//     NYSE American'daki tüm hisse ve ETF'ler (deneme kağıtları, varant, birim, hak, imtiyazlı pay hariç).
+//   - İş Yatırım "Temel Değerler ve Oranlar" sayfası: Borsa İstanbul'daki tüm hisseler (piyasa
+//     değerine göre sıralı). Midas'taki BIST / ABD hisseleri, ETF ve TEFAS fonları bu tam listelerin
+//     alt kümesidir; ayrı satır açılmaz.
+// Tekillik: (asset_type, symbol) birincil anahtardır; her enstrüman tek satırdır. Tam listeler statik
+// listedeki sembolleri atlar (derlenmiş ad ve sıra korunur), aynı sembol iki dosyada geçerse bir kez yazılır.
 // Yenileme: yavaş nöbet görevi ("katalog", günde bir) ve yerel zamanlayıcı; katalog boşsa ilk
-// listede tembel doldurma. Bir kaynak hata verirse o kaynağın eski satırları korunur.
+// listede tembel doldurma. Bir kaynak hata verirse (ya da şüpheli derecede az satır dönerse) o
+// kaynağın eski satırları korunur.
 
 const FETCH_TIMEOUT_MS = 20_000;
 const BINANCE_BASES = ["https://api.binance.com", "https://data-api.binance.vision"];
 const BTCTURK_EXCHANGEINFO = "https://api.btcturk.com/api/v2/server/exchangeinfo";
+const TEFAS_FUND_LIST = "https://www.tefas.gov.tr/api/funds/fonGetiriBazliBilgiGetir";
+const NASDAQ_LISTED = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt";
+const OTHER_LISTED = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt";
+const ISYATIRIM_STOCKS = "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/Temel-Degerler-Ve-Oranlar.aspx";
+
+/** TEFAS fon türleri ve katalog kaynağı adları (fon türü süzgeci kaynağa göre çalışır) */
+export const FUND_KINDS = ["YAT", "EMK", "BYF"] as const;
+export type FundKind = (typeof FUND_KINDS)[number];
+export const FUND_KIND_LABEL: Record<FundKind, string> = { YAT: "Yatırım fonu", EMK: "Emeklilik fonu (BES)", BYF: "Borsa yatırım fonu" };
+const fundSource = (k: FundKind) => `tefas-${k.toLowerCase()}`;
+/** funds tablosundaki (daha önce doğrulanmış) ama TEFAS listesinde olmayan fonlar; budanmaz */
+const KNOWN_FUND_SOURCE = "tefas-bilinen";
+/** Tam listeler: bu sayının altında satır gelirse kaynak bozuk sayılır (eski satırlar korunur) */
+const MIN_ROWS = { tefas: 1, nasdaq: 3000, isyatirim: 300 } as const;
 /** Katalog bu süreden eskiyse yeniden doldurulur */
 export const CATALOG_MAX_AGE_MS = 24 * 3600_000;
 
@@ -98,12 +124,30 @@ export function staticRows(): CatalogRow[] {
 
 // ---- Kripto borsaları -------------------------------------------------------------------
 
-type FetchJson = (url: string) => Promise<unknown>;
+type FetchJson = (url: string, init?: { json?: unknown }) => Promise<unknown>;
+type FetchText = (url: string) => Promise<string>;
 
-async function defaultFetchJson(url: string): Promise<unknown> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
+async function defaultFetchJson(url: string, init: { json?: unknown } = {}): Promise<unknown> {
+  const res = await fetch(url, {
+    method: init.json !== undefined ? "POST" : "GET",
+    headers: init.json !== undefined ? { "Content-Type": "application/json", Accept: "application/json, text/plain, */*", "User-Agent": BROWSER_UA } : undefined,
+    body: init.json !== undefined ? JSON.stringify(init.json) : undefined,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    cache: "no-store",
+  });
   if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
   return await res.json();
+}
+
+/** Metin / HTML kaynakları (tarayıcı benzeri başlıklarla; büyük dosyalar için daha uzun süre) */
+async function defaultFetchText(url: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: { "User-Agent": BROWSER_UA, Accept: "text/html, text/plain, */*", "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS * 2),
+    cache: "no-store",
+  });
+  if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+  return await res.text();
 }
 
 /** Binance ana uç noktası, engellenirse (451/403) herkese açık piyasa verisi aynası */
@@ -206,6 +250,191 @@ export async function fetchBtcTurkCatalog(fetchJson: FetchJson = defaultFetchJso
   return { rows, names };
 }
 
+// ---- TEFAS fonları ----------------------------------------------------------------------
+
+/** fonGetiriBazliBilgiGetir isteği (getiri sütunları istenmese de uç nokta bu alanları bekler) */
+function tefasListPayload(kind: FundKind) {
+  return {
+    dil: "TR",
+    fonTipi: kind,
+    kurucuKodu: null,
+    sfonTurKod: null,
+    fonTurAciklama: null,
+    islem: 1,
+    fonTurKod: null,
+    fonGrubu: null,
+    donemGetiri1a: "1",
+    donemGetiri3a: "1",
+    donemGetiri6a: "1",
+    donemGetiri1y: "1",
+    donemGetiriyb: "1",
+    donemGetiri3y: "1",
+    donemGetiri5y: "1",
+    basTarih: null,
+    bitTarih: null,
+    calismaTipi: 2,
+    getiriOrani: "1",
+  };
+}
+
+/** TEFAS fon listesi yanıtı → katalog satırları (geçersiz kodlar atlanır, kod başına tek satır). Saf fonksiyon. */
+export function parseTefasFundList(kind: FundKind, body: unknown): CatalogRow[] {
+  const list = (body as { resultList?: unknown } | null)?.resultList;
+  const byCode = new Map<string, { name: string; group: string }>();
+  for (const r of Array.isArray(list) ? (list as Record<string, unknown>[]) : []) {
+    if (!r || typeof r !== "object") continue;
+    const code = typeof r.fonKodu === "string" ? r.fonKodu.trim().toUpperCase() : "";
+    if (!/^[A-Z0-9]{3}$/.test(code) || byCode.has(code)) continue;
+    const name = typeof r.fonUnvan === "string" && r.fonUnvan.trim() ? r.fonUnvan.replace(/\s+/g, " ").trim() : code;
+    const group = typeof r.fonTurAciklama === "string" ? r.fonTurAciklama.replace(/\s+/g, " ").trim() : "";
+    byCode.set(code, { name, group });
+  }
+  const base = FUND_KINDS.indexOf(kind) * 10_000;
+  return [...byCode.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([code, f], i) => ({
+      asset_type: "fund" as const,
+      symbol: code,
+      name: f.name.slice(0, 160),
+      exchange: [FUND_KIND_LABEL[kind], f.group].filter(Boolean).join(" · ").slice(0, 100),
+      currency: "TRY",
+      category: "fon" as const,
+      source: fundSource(kind),
+      sort_rank: base + i,
+    }));
+}
+
+export async function fetchTefasCatalog(kind: FundKind, fetchJson: FetchJson = defaultFetchJson): Promise<CatalogRow[]> {
+  const rows = parseTefasFundList(kind, await fetchJson(TEFAS_FUND_LIST, { json: tefasListPayload(kind) }));
+  if (rows.length < MIN_ROWS.tefas) throw new Error(`TEFAS ${kind} listesi boş geldi`);
+  return rows;
+}
+
+// ---- ABD hisseleri ve ETF'ler (Nasdaq Trader sembol dizini) ------------------------------------
+
+const US_EXCHANGES: Record<string, { label: string; tier: number }> = {
+  // nasdaqlisted.txt "Market Category": Q Global Select, G Global Market, S Capital Market
+  "NASDAQ:Q": { label: "Nasdaq", tier: 0 },
+  "NASDAQ:G": { label: "Nasdaq", tier: 1 },
+  "NASDAQ:S": { label: "Nasdaq", tier: 2 },
+  // otherlisted.txt "Exchange": N NYSE, P NYSE Arca, A NYSE American (Z Cboe, V IEX alınmaz)
+  N: { label: "NYSE", tier: 0 },
+  P: { label: "NYSE Arca", tier: 1 },
+  A: { label: "NYSE American", tier: 2 },
+};
+
+/** Varant, birim, hak, imtiyazlı pay, tahvil / not: alınmaz ("American Depositary Shares" alınır) */
+const US_EXCLUDE = /\b(warrants?|units?(?! of beneficial)|rights?|preferred|preference|notes?|bonds?|debentures?|subordinated|when[- ]issued|strats)\b|\d\s?%/i;
+
+function cleanUsName(name: string): string {
+  return name
+    .replace(/\s+-\s+/g, " ")
+    .replace(/[,(]?\s*each represent.*$/i, "")
+    .replace(/\b(common stock|ordinary shares|common shares|shares of beneficial interest)\b\.?/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/[\s,-]+$/, "")
+    .trim();
+}
+
+/**
+ * nasdaqlisted.txt + otherlisted.txt (| ayrılmış) → ABD hisse / ETF satırları. Yahoo biçimi: BRK.B → BRK-B.
+ * Statik listede olan semboller (`skip`) atlanır; aynı sembol iki dosyada geçerse ilk geçiş alınır. Saf fonksiyon.
+ */
+export function parseUsSymbolDirectory(nasdaqListed: string, otherListed: string, skip: ReadonlySet<string> = new Set()): CatalogRow[] {
+  const out = new Map<string, { name: string; etf: boolean; exchange: string; tier: number }>();
+  const read = (text: string, nasdaq: boolean) => {
+    const lines = text.split(/\r?\n/);
+    const header = (lines[0] ?? "").split("|").map((h) => h.trim());
+    const col = (n: string) => header.indexOf(n);
+    const iSym = col(nasdaq ? "Symbol" : "ACT Symbol");
+    const iName = col("Security Name");
+    const iTest = col("Test Issue");
+    const iEtf = col("ETF");
+    const iEx = col(nasdaq ? "Market Category" : "Exchange");
+    if (iSym < 0 || iName < 0 || iTest < 0 || iEtf < 0 || iEx < 0) throw new Error("Nasdaq sembol dizini biçimi değişmiş");
+    for (const line of lines.slice(1)) {
+      if (!line || line.startsWith("File Creation Time")) continue;
+      const f = line.split("|");
+      const raw = (f[iSym] ?? "").trim();
+      const name = (f[iName] ?? "").trim();
+      if (f[iTest] === "Y" || !name) continue;
+      const ex = US_EXCHANGES[nasdaq ? `NASDAQ:${f[iEx]}` : (f[iEx] ?? "")];
+      if (!ex) continue;
+      // Yalnızca sade semboller ve tek harfli pay sınıfı (BRK.B); $ (imtiyazlı), .U/.W/.R/.WS vb. alınmaz
+      if (!/^[A-Z]{1,6}(\.[A-Z])?$/.test(raw) || /\.[UWR]$/.test(raw)) continue;
+      const etf = f[iEtf] === "Y";
+      if (!etf && US_EXCLUDE.test(name)) continue;
+      const symbol = raw.replace(".", "-");
+      if (skip.has(symbol) || out.has(symbol)) continue;
+      out.set(symbol, { name: cleanUsName(name) || symbol, etf, exchange: ex.label, tier: ex.tier });
+    }
+  };
+  read(nasdaqListed, true);
+  read(otherListed, false);
+  return [...out.entries()]
+    .sort((a, b) => a[1].tier - b[1].tier || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([symbol, r], i) => ({
+      asset_type: "foreign" as const,
+      symbol,
+      name: r.name.slice(0, 120),
+      exchange: r.exchange,
+      currency: "USD",
+      category: r.etf ? ("etf" as const) : ("hisse" as const),
+      source: "nasdaq",
+      // Statik (popüler) liste önce gelir
+      sort_rank: 10_000 + i,
+    }));
+}
+
+export async function fetchUsCatalog(skip: ReadonlySet<string>, fetchText: FetchText = defaultFetchText): Promise<CatalogRow[]> {
+  const [a, b] = await Promise.all([fetchText(NASDAQ_LISTED), fetchText(OTHER_LISTED)]);
+  const rows = parseUsSymbolDirectory(a, b, skip);
+  if (rows.length < MIN_ROWS.nasdaq) throw new Error(`Nasdaq sembol dizini eksik geldi (${rows.length})`);
+  return rows;
+}
+
+// ---- Borsa İstanbul tüm hisseler (İş Yatırım) ----------------------------------------------------
+
+const HTML_ENTITIES: Record<string, string> = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " " };
+function decodeHtml(s: string): string {
+  return s.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, e: string) =>
+    e[0] === "#" ? String.fromCodePoint(e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : (HTML_ENTITIES[e.toLowerCase()] ?? m),
+  );
+}
+
+/**
+ * "Temel Değerler ve Oranlar" sayfasındaki tablo → BIST hisse satırları (piyasa değerine göre sıralı).
+ * Satır: kod | ad | sektör | kapanış | piyasa değeri (mn TL) | … Statik listedekiler (`skip`) atlanır. Saf fonksiyon.
+ */
+export function parseIsYatirimStocks(html: string, skip: ReadonlySet<string> = new Set()): CatalogRow[] {
+  const re = /<tr><td><a href="[^"]*sirket-karti\.aspx\?hisse=([A-Z0-9]{2,10})">[^<]*<\/a><\/td><td>([^<]*)<\/td><td>([^<]*)<\/td><td[^>]*>[^<]*<\/td><td[^>]*>([^<]*)<\/td>/g;
+  const out = new Map<string, { name: string; cap: number }>();
+  for (const m of html.matchAll(re)) {
+    const symbol = m[1];
+    if (out.has(symbol) || skip.has(symbol)) continue;
+    const cap = Number(m[4].trim().replace(/\./g, "").replace(",", "."));
+    out.set(symbol, { name: decodeHtml(m[2]).replace(/\s+/g, " ").trim() || symbol, cap: Number.isFinite(cap) ? cap : 0 });
+  }
+  return [...out.entries()]
+    .sort((a, b) => b[1].cap - a[1].cap || (a[0] < b[0] ? -1 : 1))
+    .map(([symbol, r], i) => ({
+      asset_type: "bist" as const,
+      symbol,
+      name: r.name.slice(0, 120),
+      exchange: "Borsa İstanbul",
+      currency: "TRY",
+      category: "bist" as const,
+      source: "isyatirim",
+      sort_rank: 10_000 + i,
+    }));
+}
+
+export async function fetchBistCatalog(skip: ReadonlySet<string>, fetchText: FetchText = defaultFetchText): Promise<CatalogRow[]> {
+  const rows = parseIsYatirimStocks(await fetchText(ISYATIRIM_STOCKS), skip);
+  if (rows.length < MIN_ROWS.isyatirim) throw new Error(`BIST hisse listesi eksik geldi (${rows.length})`);
+  return rows;
+}
+
 // ---- Yazma ------------------------------------------------------------------------------
 
 const COLS = "asset_type, symbol, name, exchange, currency, category, source, sort_rank, search, updated_at";
@@ -234,16 +463,57 @@ async function pruneSource(source: string, now: string) {
 export interface CatalogRefreshResult {
   binance: number | string;
   btcturk: number | string;
+  /** TEFAS fon türü başına satır sayısı ya da hata metni */
+  tefas: Record<FundKind, number | string>;
+  nasdaq: number | string;
+  bist: number | string;
   static: number;
   total: number;
 }
 
+/** Bir kaynağı çekip yazar ve listeden çıkanları budar; hata verirse eski satırlar korunur (hata metni döner). */
+async function refreshSource(label: string, source: string, load: () => Promise<CatalogRow[]>, now: string): Promise<number | string> {
+  try {
+    const rows = await load();
+    await (await getDb()).tx(async () => {
+      await upsertRows(rows, now);
+      await pruneSource(source, now);
+    });
+    return rows.length;
+  } catch (err) {
+    console.warn(`[katalog] ${label}:`, (err as Error).message);
+    return `hata: ${(err as Error).message}`;
+  }
+}
+
+/** funds tablosundaki (daha önce doğrulanmış) fonlardan katalogda olmayanlar: TEFAS listesi satırlarını ezmez */
+async function addKnownFunds(now: string) {
+  const db = await getDb();
+  const rows = await db.all<{ code: string; name: string | null }>(
+    "SELECT code, name FROM funds WHERE code NOT IN (SELECT symbol FROM symbol_catalog WHERE asset_type = 'fund')",
+  );
+  for (const r of rows) {
+    if (!isValidSymbol("fund", r.code)) continue;
+    await db.run(
+      `INSERT INTO symbol_catalog (${COLS}) VALUES ('fund', ?, ?, 'TEFAS', 'TRY', 'fon', ?, 90000, ?, ?) ON CONFLICT (asset_type, symbol) DO NOTHING`,
+      [r.code, r.name ?? r.code, KNOWN_FUND_SOURCE, searchKey(`${r.code} ${r.name ?? ""}`), now],
+    );
+  }
+}
+
+/** Statik listedeki semboller (tam listeler bunları atlar: derlenmiş ad ve sıra korunur) */
+function staticSymbols(rows: CatalogRow[], assetType: AssetType): Set<string> {
+  return new Set(rows.filter((r) => r.asset_type === assetType).map((r) => r.symbol));
+}
+
 /**
- * Kataloğu yeniler: statik liste + Binance + BtcTurk. Bir kaynak hata verirse o kaynağın eski
- * satırları korunur (sonuçta hata metni döner). fetchJson testlerde sahte HTTP için verilir.
+ * Kataloğu yeniler: statik liste + Binance + BtcTurk + TEFAS fonları + ABD hisse/ETF + BIST hisseleri.
+ * Bir kaynak hata verirse o kaynağın eski satırları korunur (sonuçta hata metni döner).
+ * fetchJson / fetchText testlerde sahte HTTP için verilir.
  */
-export async function refreshCatalog(opts: { fetchJson?: FetchJson } = {}): Promise<CatalogRefreshResult> {
+export async function refreshCatalog(opts: { fetchJson?: FetchJson; fetchText?: FetchText } = {}): Promise<CatalogRefreshResult> {
   const fetchJson = opts.fetchJson ?? defaultFetchJson;
+  const fetchText = opts.fetchText ?? defaultFetchText;
   const now = sqlNow();
   const st = staticRows();
   await (await getDb()).tx(async () => {
@@ -279,9 +549,25 @@ export async function refreshCatalog(opts: { fetchJson?: FetchJson } = {}): Prom
     console.warn("[katalog] Binance:", (err as Error).message);
   }
 
+  const tefas = {} as Record<FundKind, number | string>;
+  for (const kind of FUND_KINDS) tefas[kind] = await refreshSource(`TEFAS ${kind}`, fundSource(kind), () => fetchTefasCatalog(kind, fetchJson), now);
+  try {
+    await addKnownFunds(now);
+  } catch (err) {
+    console.warn("[katalog] bilinen fonlar:", (err as Error).message);
+  }
+  const nasdaq = await refreshSource("Nasdaq", "nasdaq", () => fetchUsCatalog(staticSymbols(st, "foreign"), fetchText), now);
+  const bist = await refreshSource("BIST", "isyatirim", () => fetchBistCatalog(staticSymbols(st, "bist"), fetchText), now);
+
   const total = (await (await getDb()).get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog"))?.c ?? 0;
   gc.__yatirimCatalogAt = Date.now();
-  return { binance, btcturk, static: st.length, total: Number(total) };
+  return { binance, btcturk, tefas, nasdaq, bist, static: st.length, total: Number(total) };
+}
+
+/** Yenileme sonucunun kısa özeti (nöbet / zamanlayıcı günlüğü) */
+export function refreshSummary(r: CatalogRefreshResult): string {
+  const short = (v: number | string) => (typeof v === "number" ? String(v) : "hata");
+  return `Binance ${short(r.binance)}, BtcTurk ${short(r.btcturk)}, TEFAS ${FUND_KINDS.map((k) => `${k} ${short(r.tefas[k])}`).join("/")}, ABD ${short(r.nasdaq)}, BIST ${short(r.bist)}, toplam ${r.total}`;
 }
 
 // ---- Tembel doldurma ------------------------------------------------------------------------
@@ -294,7 +580,8 @@ export async function ensureCatalog(opts: { waitMs?: number } = {}): Promise<voi
   const db = await getDb();
   const crypto = await db.get<{ c: number; u: string | null }>("SELECT COUNT(*) AS c, MAX(updated_at) AS u FROM symbol_catalog WHERE category = 'kripto'");
   const statics = await db.get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog WHERE source = 'static'");
-  const fresh = Number(crypto?.c ?? 0) > 0 && Number(statics?.c ?? 0) > 0;
+  const funds = await db.get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog WHERE category = 'fon'");
+  const fresh = Number(crypto?.c ?? 0) > 0 && Number(statics?.c ?? 0) > 0 && Number(funds?.c ?? 0) > 0;
   if (fresh) {
     gc.__yatirimCatalogAt = Date.now();
     return;
@@ -315,11 +602,20 @@ export async function ensureCatalog(opts: { waitMs?: number } = {}): Promise<voi
   if (opts.waitMs) await Promise.race([gc.__yatirimCatalogJob, new Promise((r) => setTimeout(r, opts.waitMs))]);
 }
 
-/** Günlük yenileme (nöbet / yerel zamanlayıcı): son yenileme 24 saatten eskiyse */
+/** Düzenli yenilenen kaynaklar (biri hiç yoksa — örn. yeni eklenen kaynak — beklemeden yenilenir) */
+const REFRESHED_SOURCES = ["binance", "btcturk", "static", ...FUND_KINDS.map(fundSource), "nasdaq", "isyatirim"];
+
+/** Günlük yenileme (nöbet / yerel zamanlayıcı): son yenileme 24 saatten eskiyse ya da bir kaynağın hiç satırı yoksa */
 export async function maybeRefreshCatalog(): Promise<CatalogRefreshResult | null> {
-  const row = await (await getDb()).get<{ u: string | null }>("SELECT MIN(updated_at) AS u FROM symbol_catalog WHERE source IN ('binance', 'btcturk', 'static')");
-  const last = row?.u ? Date.parse(`${row.u.replace(" ", "T")}Z`) : 0;
-  if (last && Date.now() - last < CATALOG_MAX_AGE_MS - 5 * 60_000) return null;
+  const rows = await (await getDb()).all<{ source: string; u: string | null }>(
+    `SELECT source, MIN(updated_at) AS u FROM symbol_catalog WHERE source IN (${REFRESHED_SOURCES.map(() => "?").join(", ")}) GROUP BY source`,
+    REFRESHED_SOURCES,
+  );
+  const missing = REFRESHED_SOURCES.some((s) => !rows.some((r) => r.source === s));
+  const last = rows.reduce((min, r) => Math.min(min, r.u ? Date.parse(`${r.u.replace(" ", "T")}Z`) : 0), Infinity);
+  const recent = Number.isFinite(last) && last > 0 && Date.now() - last < CATALOG_MAX_AGE_MS - 5 * 60_000;
+  // Sürekli hata veren kaynak yüzünden her saat tam yenileme yapılmasın: bu süreçte 6 saatte en fazla bir
+  if (recent && (!missing || Date.now() - (gc.__yatirimCatalogAt ?? 0) < 6 * 3600_000)) return null;
   return await refreshCatalog();
 }
 
@@ -352,33 +648,17 @@ function likeEscape(s: string) {
 }
 
 /**
- * Bir piyasa listesinin sayfası. Kripto için borsa/kotasyon süzgeci: "binance-usdt", "binance-try",
- * "btcturk". Fonlar funds tablosundan (daha önce doğrulanmış fonlar) okunur.
+ * Bir piyasa listesinin sayfası. Kripto için borsa/kotasyon süzgeci (venue): "binance-usdt",
+ * "binance-try", "btcturk". Fonlar için tür süzgeci (fundKind): "yat", "emk", "byf".
  */
-export async function listCatalog(category: CatalogCategory, opts: { q?: string; venue?: string; page?: number; pageSize?: number } = {}): Promise<CatalogPage> {
+export async function listCatalog(
+  category: CatalogCategory,
+  opts: { q?: string; venue?: string; fundKind?: string; page?: number; pageSize?: number } = {},
+): Promise<CatalogPage> {
   const pageSize = Math.min(Math.max(opts.pageSize ?? 30, 5), 50);
   const page = Math.max(0, Math.floor(opts.page ?? 0));
   const q = searchKey((opts.q ?? "").replaceAll("/", "-")).slice(0, 40);
   const db = await getDb();
-
-  if (category === "fon") {
-    const rows = await db.all<{ code: string; name: string | null }>("SELECT code, name FROM funds ORDER BY code");
-    const filtered = rows.filter((r) => !q || searchKey(`${r.code} ${r.name ?? ""}`).includes(q));
-    return {
-      items: filtered.slice(page * pageSize, (page + 1) * pageSize).map((r) => ({
-        instrument: instrumentId("fund", r.code),
-        assetType: "fund" as const,
-        symbol: r.code,
-        name: r.name ?? r.code,
-        exchange: "TEFAS",
-        currency: "TRY",
-        category: "fon" as const,
-      })),
-      total: filtered.length,
-      page,
-      pageSize,
-    };
-  }
 
   await ensureCatalog({ waitMs: 15_000 });
   const where = ["category = ?"];
@@ -391,6 +671,11 @@ export async function listCatalog(category: CatalogCategory, opts: { q?: string;
     if (opts.venue === "binance-usdt") where.push("source = 'binance' AND currency = 'USD'");
     else if (opts.venue === "binance-try") where.push("source = 'binance' AND currency = 'TRY'");
     else if (opts.venue === "btcturk") where.push("source = 'btcturk'");
+  }
+  const kind = FUND_KINDS.find((k) => k.toLowerCase() === opts.fundKind?.toLowerCase());
+  if (category === "fon" && kind) {
+    where.push("source = ?");
+    params.push(fundSource(kind));
   }
   const w = where.join(" AND ");
   const total = Number((await db.get<{ c: number }>(`SELECT COUNT(*) AS c FROM symbol_catalog WHERE ${w}`, params))?.c ?? 0);

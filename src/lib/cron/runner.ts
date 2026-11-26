@@ -131,15 +131,15 @@ export const TASKS: TaskDef[] = [
   },
   {
     name: "katalog",
-    label: "Sembol kataloğu (kripto pariteleri, hisse listeleri)",
+    label: "Sembol kataloğu (kripto pariteleri, hisse/ETF listeleri, TEFAS fonları)",
     slow: true,
     minIntervalSec: 6 * 3600,
     leaseSec: 300,
     run: async () => {
       // Paylaşımlı (kullanıcıya özel değil); 24 saatten eskiyse yenilenir
-      const { maybeRefreshCatalog } = await import("../catalog");
+      const { maybeRefreshCatalog, refreshSummary } = await import("../catalog");
       const r = await maybeRefreshCatalog();
-      return r ? `Binance ${r.binance}, BtcTurk ${r.btcturk}, toplam ${r.total}` : "güncel";
+      return r ? refreshSummary(r) : "güncel";
     },
   },
 ];
