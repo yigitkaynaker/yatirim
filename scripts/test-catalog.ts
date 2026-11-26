@@ -3,7 +3,8 @@
 // listeden çıkanların silinmesi, kaynak hatasında eski satırların korunması), liste süzgeçleri,
 // arama gruplama, TL paritelerinde portföy değerlemesi ve BtcTurk toplu fiyat isteği; TEFAS fon listesi,
 // Nasdaq sembol dizini ve BIST hisse listesi ayrıştırma, tekillik (her sembol tek satır), fon türü süzgeci
-// ve katalogdan eklenen fonun fiyatı / portföyü.
+// ve katalogdan eklenen fonun fiyatı / portföyü; Binance Vadeli (çarpanlı kontrat, spotla tekillik) ve Alpha
+// (ayrıştırma, tekillik, hata halinde eski satırlar) satırları, fiyatı ve grafiği.
 // Ağ kullanmaz (fetch sahte); geçici bir veri klasörü kullanır. İki modda da çalışır (npm run test:pg).
 //   npm run test:catalog
 // Gerçek uçlara küçük bir deneme (ağ gerekir): npm run test:catalog -- --canli
@@ -268,6 +269,231 @@ await test("yenileme: listeden çıkan parite silinir; kaynak hata verirse eski 
   const r2 = await catalog.refreshCatalog();
   assert.equal(r2.binance, 4);
   assert.ok(calls.some((u) => u.startsWith("https://data-api.binance.vision/api/v3/exchangeInfo")));
+});
+
+// ---- Binance Vadeli ve Alpha (spotta olmayan coinler) ------------------------------------------
+console.log("Binance Vadeli ve Alpha");
+
+const extra = await import("../src/lib/binanceExtra");
+const perp = (base: string, quote = "USDT", over: Record<string, unknown> = {}) => ({
+  symbol: `${base}${quote}`,
+  status: "TRADING",
+  contractType: "PERPETUAL",
+  baseAsset: base,
+  quoteAsset: quote,
+  underlyingType: "COIN",
+  ...over,
+});
+// En az 100 kontrat gerekir: sentetik FUTA, FUTB… (spotta yok → vadeli satırı)
+const FILLER = Array.from({ length: 110 }, (_, i) => perp(`FUT${letters(i)}`));
+const FAPI_INFO = {
+  symbols: [
+    perp("BTC"), // spotta var → satır yok
+    perp("ETH", "USDC"), // spotta var → satır yok
+    perp("1000PEPE"), // PEPE spotta yok → PEPE@BINANCE-F (çarpan 1000)
+    perp("PEPE", "USDC"), // aynı coin: USDT kontrat tercih edilir
+    perp("1000000MOG"),
+    perp("1INCH"), // rakamla başlayan gerçek ad (çarpan değil)
+    perp("BTCDOM", "USDT", { underlyingType: "INDEX" }), // endeks → yok
+    perp("XYZ", "USDT", { status: "SETTLING" }), // işlemde değil → yok
+    perp("QTR", "USDT", { contractType: "CURRENT_QUARTER", symbol: "QTRUSDT_261225" }), // teslimli → yok
+    perp("龙虾"), // Latin dışı → yok
+    perp("SHARE"), // Alpha'da da var: vadeli önce gelir
+    ...FILLER,
+  ],
+};
+const FAPI_TICKERS = [
+  { symbol: "1000PEPEUSDT", lastPrice: "0.0123", priceChangePercent: "5", closeTime: Date.now(), quoteVolume: "9000000" },
+  { symbol: "PEPEUSDC", lastPrice: "0.0000124", priceChangePercent: "4", closeTime: Date.now(), quoteVolume: "10" },
+  { symbol: "1000000MOGUSDT", lastPrice: "0.35", priceChangePercent: "-2", closeTime: Date.now(), quoteVolume: "500" },
+  { symbol: "1INCHUSDT", lastPrice: "0.2", priceChangePercent: "1", closeTime: Date.now(), quoteVolume: "100" },
+  { symbol: "BTCUSDT_261225", lastPrice: "100000", priceChangePercent: "1", closeTime: Date.now(), quoteVolume: "1" },
+  { symbol: "OLDUSDT", lastPrice: "1", priceChangePercent: "0", closeTime: Date.now() - 5 * 86_400_000, quoteVolume: "1" },
+];
+const ALPHA_URL = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list";
+const alphaTok = (alphaId: string, symbol: string, over: Record<string, unknown> = {}) => ({
+  alphaId,
+  symbol,
+  name: `${symbol} Token`,
+  chainName: "BSC",
+  price: "0.05",
+  percentChange24h: "-1.5",
+  volume24h: "1000",
+  offline: false,
+  fullyDelisted: false,
+  stockState: false,
+  rwaInfo: null,
+  cexCoinName: "",
+  ...over,
+});
+const ALPHA_LIST = {
+  code: "000000",
+  data: [
+    alphaTok("ALPHA_1287", "SHARE"), // vadelide var → Alpha satırı yok
+    alphaTok("ALPHA_10", "NEWT", { price: "0.0000123", volume24h: "5000" }),
+    alphaTok("ALPHA_11", "up", { volume24h: "10" }), // küçük harf → UP; aynı sembol: hacmi büyük olan seçilir
+    alphaTok("ALPHA_12", "UP", { volume24h: "99", name: "Up Büyük" }),
+    alphaTok("ALPHA_13", "BTC"), // spotta var
+    alphaTok("ALPHA_14", "Fartcoin", { cexCoinName: "ETH" }), // spotta listeli (cexCoinName) → yok
+    alphaTok("ALPHA_15", "TSLAon", { stockState: true, rwaInfo: {} }), // tokenlaştırılmış hisse → yok
+    alphaTok("ALPHA_16", "GONE", { offline: true }),
+    alphaTok("ALPHA_17", "$PAAL"), // baştaki $ atılır
+    alphaTok("ALPHA_18", "哈基米"),
+    alphaTok("ALPHA_19", "PEPE"), // vadelide var
+    ...Array.from({ length: 60 }, (_, i) => alphaTok(`ALPHA_${100 + i}`, `ALP${letters(i)}`)),
+  ],
+};
+function extraRoutes() {
+  return {
+    ...catalogRoutes(),
+    "https://fapi.binance.com/fapi/v1/exchangeInfo": FAPI_INFO,
+    "https://fapi.binance.com/fapi/v1/ticker/24hr": FAPI_TICKERS,
+    [ALPHA_URL]: ALPHA_LIST,
+  } as Record<string, unknown>;
+}
+
+await test("sembol biçimi: @BINANCE-F ve @BINANCE-ALPHA (yalnız USDT), gidiş-dönüş", () => {
+  assert.deepEqual(assets.parseCryptoSymbol("RATS@BINANCE-F"), { base: "RATS", quote: "USDT", venue: "BINANCE-F" });
+  assert.deepEqual(assets.parseCryptoSymbol("SHARE@BINANCE-ALPHA"), { base: "SHARE", quote: "USDT", venue: "BINANCE-ALPHA" });
+  assert.equal(assets.cryptoSymbol("RATS", "USDT", "BINANCE-F"), "RATS@BINANCE-F");
+  for (const s of ["RATS@BINANCE-F", "SHARE@BINANCE-ALPHA", "BTC", "BTC-TRY", "BTC@BTCTURK", "BTC-USDT@BTCTURK"]) {
+    const c = assets.parseCryptoSymbol(s)!;
+    assert.equal(assets.cryptoSymbol(c.base, c.quote, c.venue), s);
+    assert.equal(assets.parseInstrumentId(`crypto:${s}`)?.symbol, s);
+  }
+  assert.equal(assets.normalizeSymbol("crypto", "rats@binance_f"), "RATS@BINANCE-F");
+  assert.equal(assets.normalizeSymbol("crypto", "RATSUSDT@BINANCE-F"), "RATS@BINANCE-F");
+  assert.equal(assets.normalizeSymbol("crypto", "share/usdt@binance-alpha"), "SHARE@BINANCE-ALPHA");
+  assert.equal(assets.parseInstrumentId("crypto:BTC-TRY@BINANCE-F"), null, "vadelide TL paritesi yok");
+  assert.equal(assets.parseInstrumentId("crypto:BTC@BINANCE-X"), null);
+  assert.equal(assets.cryptoCurrency("RATS@BINANCE-F"), "USD");
+  assert.equal(assets.displaySymbol("crypto", "RATS@BINANCE-F"), "RATS (Vadeli)");
+  assert.equal(assets.displaySymbol("crypto", "SHARE@BINANCE-ALPHA"), "SHARE (Alpha)");
+  assert.equal(assets.cryptoBase("SHARE@BINANCE-ALPHA"), "SHARE");
+});
+
+await test("çarpan önekleri: 1000PEPE, 1MBABYDOGE, 1000000MOG; 1INCH, 0G, 1000S değil", () => {
+  assert.deepEqual(extra.splitMultiplier("1000PEPE"), { coin: "PEPE", mult: 1000 });
+  assert.deepEqual(extra.splitMultiplier("1000SHIB"), { coin: "SHIB", mult: 1000 });
+  assert.deepEqual(extra.splitMultiplier("1MBABYDOGE"), { coin: "BABYDOGE", mult: 1_000_000 });
+  assert.deepEqual(extra.splitMultiplier("1000000MOG"), { coin: "MOG", mult: 1_000_000 });
+  for (const s of ["1INCH", "0G", "2Z", "4", "1000S", "BTC"]) assert.deepEqual(extra.splitMultiplier(s), { coin: s, mult: 1 });
+});
+
+await test("vadeli kontrat listesi ve fiyatları: süzgeç, coin başına tek kontrat, fiyat / çarpan", () => {
+  const { contracts, raw } = extra.parseFuturesExchangeInfo(FAPI_INFO);
+  assert.equal(raw, FAPI_INFO.symbols.length - 3); // endeks, SETTLING ve çeyreklik sayılmaz
+  assert.equal(contracts.get("PEPE")?.pair, "1000PEPEUSDT"); // USDT kontrat USDC'ye tercih edilir
+  assert.equal(contracts.get("MOG")?.mult, 1_000_000);
+  assert.ok(contracts.has("1INCH") && !contracts.has("BTCDOM") && !contracts.has("XYZ") && !contracts.has("QTR") && !contracts.has("龙虾"));
+  const t = extra.parseFuturesTickers(FAPI_TICKERS);
+  near(t.get("PEPE")?.price, 0.0000123, 1e-12);
+  assert.equal(t.get("PEPE")?.pair, "1000PEPEUSDT");
+  near(t.get("MOG")?.price, 0.00000035, 1e-14);
+  near(t.get("1INCH")?.price, 0.2);
+  assert.ok(!t.has("BTC") && !t.has("OLD"), "teslimli ve kapanmış kontrat yok");
+});
+
+await test("Alpha token listesi: kapanmış / hisse / Latin dışı elenir, aynı sembolde hacmi büyük olan", () => {
+  const { tokens, raw } = extra.parseAlphaTokens(ALPHA_LIST);
+  assert.equal(raw, ALPHA_LIST.data.length - 1); // offline hariç
+  assert.equal(tokens.get("UP")?.alphaId, "ALPHA_12");
+  assert.equal(tokens.get("UP")?.name, "Up Büyük");
+  assert.ok(tokens.has("PAAL") && !tokens.has("TSLAON") && !tokens.has("GONE") && !tokens.has("哈基米"));
+  assert.equal(tokens.get("FARTCOIN")?.cexCoin, "ETH");
+  near(tokens.get("NEWT")?.price, 0.0000123, 1e-12);
+});
+
+await test("katalog: vadeli ve Alpha yalnız spotta olmayan coinler, her coin bir kez; süzgeçler", async () => {
+  await new Promise((r) => setTimeout(r, 1100));
+  routes = extraRoutes();
+  const r = await catalog.refreshCatalog();
+  assert.equal(r.binanceFutures, 110 + 4); // sentetik + PEPE, MOG, 1INCH, SHARE
+  const futSyms = new Set<string>();
+  for (let p = 0; p < 3; p++) for (const i of (await catalog.listCatalog("kripto", { venue: "binance-futures", pageSize: 50, page: p })).items) futSyms.add(i.symbol);
+  assert.equal(futSyms.size, 114);
+  assert.ok(futSyms.has("PEPE@BINANCE-F") && futSyms.has("MOG@BINANCE-F") && futSyms.has("SHARE@BINANCE-F") && futSyms.has("1INCH@BINANCE-F"));
+  assert.ok(!futSyms.has("BTC@BINANCE-F") && !futSyms.has("ETH@BINANCE-F") && !futSyms.has("BTCDOM@BINANCE-F"));
+  const fut = await catalog.listCatalog("kripto", { venue: "binance-futures", pageSize: 5 });
+  assert.equal(fut.items[0].symbol, "PEPE@BINANCE-F", "hacim sırası");
+  assert.equal(fut.items[0].exchange, "Binance Vadeli · 1000PEPEUSDT kontratı");
+  assert.equal(fut.items[0].currency, "USD");
+  const alpha = await catalog.listCatalog("kripto", { venue: "binance-alpha", pageSize: 50 });
+  const alphaSyms = [...alpha.items, ...(await catalog.listCatalog("kripto", { venue: "binance-alpha", pageSize: 50, page: 1 })).items].map((i) => i.symbol);
+  assert.equal(r.binanceAlpha, 60 + 3); // sentetik + NEWT, UP, PAAL
+  assert.equal(alpha.total, 63);
+  assert.equal(alphaSyms[0], "NEWT@BINANCE-ALPHA");
+  assert.ok(alphaSyms.includes("UP@BINANCE-ALPHA") && alphaSyms.includes("PAAL@BINANCE-ALPHA"));
+  for (const s of ["SHARE", "BTC", "PEPE", "FARTCOIN", "TSLAON", "GONE"]) assert.ok(!alphaSyms.includes(`${s}@BINANCE-ALPHA`), s);
+  assert.equal(alpha.items[0].exchange, "Binance Alpha · BSC");
+  assert.equal(alpha.items[0].name, "NEWT Token");
+  // Vadeli ile Alpha kesişmez; spot coinler ikisinde de yok
+  const futBases = new Set([...futSyms].map((s) => assets.cryptoBase(s)));
+  assert.ok(alphaSyms.every((s) => !futBases.has(assets.cryptoBase(s))));
+  assert.match(catalog.refreshSummary(r), /Binance Vadeli 114, Binance Alpha 63/);
+  // Diğer süzgeçler etkilenmez
+  assert.equal((await catalog.listCatalog("kripto", { venue: "binance-usdt" })).total, 3);
+});
+
+await test("yenileme: vadeli / Alpha ucu hata verirse ya da eksik gelirse eski satırlar korunur", async () => {
+  await new Promise((r) => setTimeout(r, 1100));
+  const conn = await db.getDb();
+  const count = async (src: string) => Number((await conn.get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog WHERE source = ?", [src]))?.c);
+  const before = [await count("binance-futures"), await count("binance-alpha")];
+  routes = extraRoutes();
+  routes["https://fapi.binance.com/fapi/v1/exchangeInfo"] = { symbols: FAPI_INFO.symbols.slice(0, 20) }; // 100'den az
+  routes[ALPHA_URL] = 403; // veri merkezi engeli
+  const r = await catalog.refreshCatalog();
+  assert.match(String(r.binanceFutures), /eksik/);
+  assert.match(String(r.binanceAlpha), /hata/);
+  assert.deepEqual([await count("binance-futures"), await count("binance-alpha")], before);
+});
+
+await test("fiyat: vadeli tek toplu istek (1 coin fiyatı), Alpha listeden; grafik çarpana bölünür; portföy", async () => {
+  (globalThis as { __yatirimPrices?: unknown }).__yatirimPrices = undefined;
+  routes = {
+    "https://fapi.binance.com/fapi/v1/ticker/24hr": FAPI_TICKERS,
+    [ALPHA_URL]: ALPHA_LIST,
+    "https://fapi.binance.com/fapi/v1/klines": [
+      [Date.now() - 2 * 86_400_000, "0.011", "0.013", "0.010", "0.012", "1000", Date.now() - 86_400_000, "0"],
+      [Date.now() - 86_400_000, "0.012", "0.013", "0.011", "0.0123", "2000", Date.now() + 60_000, "0"],
+    ],
+    "https://www.binance.com/bapi/defi/v1/public/alpha-trade/klines": {
+      code: "000000",
+      success: true,
+      data: [[String(Date.now() - 86_400_000), "0.04", "0.06", "0.03", "0.05", "10", String(Date.now() + 60_000), "0"]],
+    },
+  };
+  calls.length = 0;
+  const q = await prices.getQuotes([
+    { type: "crypto", symbol: "PEPE@BINANCE-F" },
+    { type: "crypto", symbol: "MOG@BINANCE-F" },
+    { type: "crypto", symbol: "UP@BINANCE-ALPHA" },
+    { type: "crypto", symbol: "NOPE@BINANCE-F" },
+  ]);
+  near(q[0].price, 0.0000123, 1e-12);
+  assert.deepEqual([q[0].currency, q[0].source, q[0].stale], ["USD", "Binance Vadeli", false]);
+  near(q[1].price, 0.00000035, 1e-14);
+  near(q[2].price, 0.05);
+  assert.deepEqual([q[2].source, q[2].name], ["Binance Alpha", "Up Büyük"]);
+  assert.equal(q[3].price, null);
+  assert.ok(prices.quoteUsable(q[0]));
+  assert.equal(calls.filter((u) => u.startsWith("https://fapi.binance.com/fapi/v1/ticker/24hr")).length, 1, "vadeli tek istek");
+  assert.equal(calls.filter((u) => u.includes("alpha/all/token/list")).length, 1, "Alpha tek istek");
+  const ch = await market.getChart("crypto", "PEPE@BINANCE-F", "1A");
+  assert.ok(calls.some((u) => u.includes("klines?symbol=1000PEPEUSDT")));
+  near(ch.points[ch.points.length - 1].value, 0.0000123, 1e-12);
+  assert.equal(ch.currency, "USD");
+  const ca = await market.getChart("crypto", "UP@BINANCE-ALPHA", "1A");
+  assert.ok(calls.some((u) => u.includes("alpha-trade/klines?symbol=ALPHA_12USDT")));
+  near(ca.points[0].value, 0.05);
+  await portfolio.recordTransaction(
+    await portfolio.parseTransactionInput({ mode: "virtual", assetType: "crypto", symbol: "pepe@binance-f", side: "buy", quantity: "1000000", price: "0,00001", currency: "USD", date: "2026-11-20" }),
+    { fxTry: 40 },
+  );
+  const h = (await portfolio.getPortfolio("virtual")).holdings.find((x) => x.symbol === "PEPE@BINANCE-F");
+  assert.ok(h, "vadeli coin portföyde");
+  assert.equal(h.currency, "USD");
 });
 
 await test("arama: katalog eşleşmeleri kategori başına sınırlı, kripto 6 sınırı yok; gruplama", async () => {
@@ -603,7 +829,7 @@ await test("portföy: TL paritesi TL ile, USDT paritesi kurla değerlenir; K/Z d
   near(h("BTC").valueTry, 2_000_000); // 50.000 USD × 40
   near(h("BTC").costTry, 45_000 * 38);
   // Üç ayrı pozisyon (aynı coin, farklı parite/borsa)
-  assert.equal(p.holdings.filter((x) => x.assetType === "crypto").length, 3);
+  assert.equal(p.holdings.filter((x) => x.assetType === "crypto" && x.symbol.startsWith("BTC")).length, 3);
 });
 
 await test("izleme listesi, alarm ve emir yeni sembolleri kabul eder", async () => {
@@ -631,6 +857,21 @@ if (LIVE) {
     );
     console.log("    " + rows.map((x) => `${x.category}/${x.source}: ${x.c}`).join(", "));
     assert.ok(typeof r.binance === "number" || typeof r.btcturk === "number");
+  });
+  await test("canlı: vadeli ve Alpha fiyatı ve grafiği", async () => {
+    // Sahte testlerden kalan bellek önbellekleri
+    Object.assign(globalThis, { __yatirimFutures: null, __yatirimAlpha: null, __yatirimPrices: undefined });
+    for (const venue of ["binance-futures", "binance-alpha"]) {
+      const it = (await catalog.listCatalog("kripto", { venue, pageSize: 5 })).items[0];
+      if (!it) {
+        console.log(`    ${venue}: satır yok`);
+        continue;
+      }
+      const [q] = await prices.getQuotes([{ type: "crypto", symbol: it.symbol }]);
+      const ch = await market.getChart("crypto", it.symbol, "1A");
+      console.log(`    ${it.symbol} (${it.exchange}): ${q.price} ${q.currency} ${q.source}, grafik ${ch.points.length} nokta, son ${ch.points.at(-1)?.value}`);
+      assert.ok(q.price != null && q.price > 0 && ch.points.length > 0);
+    }
   });
 }
 

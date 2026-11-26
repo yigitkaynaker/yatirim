@@ -221,7 +221,8 @@ export const SECTIONS_1: GuideSection[] = [
         type: "list",
         items: [
           "**Kripto:** Binance'in USDT ve TL pariteleri ile BtcTurk'ün TL pariteleri. Aynı coin her borsada ayrı satırdır; üstteki düğmelerle borsaya göre süzebilirsin.",
-          "**Sembol yazımı:** **BTC** = Binance BTC/USDT (fiyat dolar), **BTC-TRY** = Binance BTC/TL, **BTC@BTCTURK** = BtcTurk BTC/TL. TL paritelerinde fiyat, kâr/zarar ve işlem para birimi TL'dir.",
+          "**Binance Vadeli · Binance Alpha:** spotta olmayan coinler, her biri bir kez. **Vadeli** satırlarının fiyatı [[vadeli-kontrat|vadeli kontrat]] fiyatıdır (1 coin için; spottan biraz farklı olabilir). **Alpha** satırları henüz listelenmemiş [[binance-alpha|erken aşama]] tokenlardır; çok oynak ve yüksek risklidir. Bunlar yatırım tavsiyesi değildir.",
+          "**Sembol yazımı:** **BTC** = Binance BTC/USDT (fiyat dolar), **BTC-TRY** = Binance BTC/TL, **BTC@BTCTURK** = BtcTurk BTC/TL, **RATS@BINANCE-F** = Binance vadeli, **SHARE@BINANCE-ALPHA** = Binance Alpha (ikisi de dolar). TL paritelerinde fiyat, kâr/zarar ve işlem para birimi TL'dir.",
           "**Emtia:** altın (GC=F), gümüş (SI=F), petrol (CL=F, Brent BZ=F), doğalgaz (NG=F), bakır (HG=F) gibi vadeli fiyatlar, dolar cinsinden. Aramada \"gümüş\", \"petrol\" yazman yeterli.",
           "**Endeksler:** BIST 100, BIST 30, S&P 500, Nasdaq, DAX gibi endeksler puan olarak gösterilir.",
           "**BIST · ABD Hisseleri · ETF:** Borsa İstanbul'daki tüm hisseler ile Nasdaq ve NYSE'deki tüm ABD hisseleri ve ETF'ler; en bilinenler listenin başındadır. Midas gibi aracı kurum uygulamalarında gördüğün hisseler de buradadır, her biri tek satır.",

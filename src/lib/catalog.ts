@@ -8,10 +8,12 @@ import {
   GOLD_KINDS,
   instrumentId,
   isValidSymbol,
+  parseCryptoSymbol,
   type AssetType,
   type CatalogCategory,
   type CryptoQuote,
 } from "./assets";
+import { parseAlphaTokens, parseFuturesExchangeInfo, parseFuturesTickers, type AlphaToken } from "./binanceExtra";
 import { BIST_INDEX_NAMES, BIST_STOCKS, COMMODITIES, FX_CURRENCIES, US_ETFS, US_STOCKS, WORLD_INDICES } from "./catalogData";
 import { ftpGetText } from "./ftp";
 import { BROWSER_UA } from "./http";
@@ -22,6 +24,12 @@ import { BROWSER_UA } from "./http";
 //   - Binance Spot: /api/v3/exchangeInfo (TRADING durumundaki USDT ve TRY pariteleri; ağırlık 20) ve
 //     sıralama için /api/v3/ticker/24hr?type=MINI (sembolsüz; ağırlık 80) — günde bir kez.
 //   - BtcTurk: /api/v2/server/exchangeinfo (TRY ve USDT çiftleri ve coin adları; tek istek).
+//   - Binance Vadeli: fapi.binance.com /fapi/v1/exchangeInfo (TRADING USDT/USDC sürekli kontratlar) ve
+//     sıralama için /fapi/v1/ticker/24hr. Yalnızca Binance spotta / BtcTurk'te olmayan coinler; çarpanlı
+//     kontratlar (1000PEPE) çarpansız coin adıyla eşleştirilir, coin spotta varsa satır açılmaz.
+//   - Binance Alpha: www.binance.com/bapi/defi/.../cex/alpha/all/token/list (herkese açık, kimlik
+//     doğrulamasız). Yalnızca spotta ve vadelide olmayan tokenlar. Bu uç veri merkezi IP'lerini
+//     engellerse kaynak hata verir ve eski satırlar korunur.
 //   - Derlenmiş statik liste (catalogData.ts) + altın türleri; Yahoo aramasında bulunan yabancı
 //     semboller de (kategori etiketiyle) eklenir.
 //   - TEFAS: /api/funds/fonGetiriBazliBilgiGetir (fon türü başına bir istek: YAT yatırım, EMK
@@ -66,7 +74,12 @@ const fundSource = (k: FundKind) => `tefas-${k.toLowerCase()}`;
 /** funds tablosundaki (daha önce doğrulanmış) ama TEFAS listesinde olmayan fonlar; budanmaz */
 const KNOWN_FUND_SOURCE = "tefas-bilinen";
 /** Tam listeler: bu sayının altında satır gelirse kaynak bozuk sayılır (eski satırlar korunur) */
-const MIN_ROWS = { tefas: 1, nasdaq: 3000, isyatirim: 300 } as const;
+const MIN_ROWS = { tefas: 1, nasdaq: 3000, isyatirim: 300, binanceFutures: 100, binanceAlpha: 50 } as const;
+export const BINANCE_FAPI = "https://fapi.binance.com";
+export const ALPHA_TOKEN_LIST = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list";
+/** Vadeli / Alpha satırlarının sıra tabanı: Binance spottan sonra, BtcTurk'ten (100.000) önce */
+const FUTURES_RANK = 40_000;
+const ALPHA_RANK = 60_000;
 /** Katalog bu süreden eskiyse yeniden doldurulur */
 export const CATALOG_MAX_AGE_MS = 24 * 3600_000;
 
@@ -263,6 +276,70 @@ export async function fetchBtcTurkCatalog(fetchJson: FetchJson = defaultFetchJso
     };
   });
   return { rows, names };
+}
+
+// ---- Binance Vadeli ve Alpha (spotta olmayan coinler) ---------------------------------------------
+
+/**
+ * Binance vadeli (USDⓈ-M sürekli) coinleri: yalnızca `spotBases` içinde olmayanlar (çarpanlı kontratın
+ * hem kendi adı — 1000SATS — hem çarpansız adı — SATS — denetlenir). Sıralama 24 saatlik hacim.
+ */
+export async function fetchBinanceFuturesCatalog(spotBases: Set<string>, names: Map<string, string>, fetchJson: FetchJson = defaultFetchJson): Promise<CatalogRow[]> {
+  // Spot listesi hiç yoksa her coin "yalnız vadeli" görünür (BTC dahil): tekrarlı satır açmamak için bırak
+  if (spotBases.size === 0) throw new Error("spot listesi yok, vadeli atlandı");
+  const { contracts, raw } = parseFuturesExchangeInfo(await fetchJson(`${BINANCE_FAPI}/fapi/v1/exchangeInfo`));
+  if (raw < MIN_ROWS.binanceFutures) throw new Error(`vadeli kontrat listesi eksik geldi (${raw})`);
+  let volume = new Map<string, number>();
+  try {
+    volume = new Map([...parseFuturesTickers(await fetchJson(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`)).values()].map((q) => [q.pair, q.quoteVolume]));
+  } catch (err) {
+    console.warn("[katalog] Binance vadeli hacim sıralaması alınamadı:", (err as Error).message);
+  }
+  return [...contracts.values()]
+    .filter((c) => !spotBases.has(c.coin) && !spotBases.has(c.base))
+    .sort((a, b) => (volume.get(b.pair) ?? 0) - (volume.get(a.pair) ?? 0) || a.coin.localeCompare(b.coin))
+    .map((c, i) => ({
+      asset_type: "crypto" as const,
+      symbol: cryptoSymbol(c.coin, "USDT", "BINANCE-F"),
+      name: names.get(c.coin) ?? c.coin,
+      // Çarpanlı kontratta kontrat adı da yazılır (fiyat yine 1 coin içindir)
+      exchange: c.mult > 1 ? `Binance Vadeli · ${c.pair} kontratı` : "Binance Vadeli",
+      currency: "USD",
+      category: "kripto" as const,
+      source: "binance-futures",
+      sort_rank: FUTURES_RANK + i,
+    }));
+}
+
+/** Alpha token listesi → katalog satırları: `knownBases` (spot + vadeli) içinde olmayanlar. Saf fonksiyon. */
+export function alphaCatalogRows(tokens: Map<string, AlphaToken>, knownBases: Set<string>): CatalogRow[] {
+  return [...tokens.values()]
+    .filter((t) => !knownBases.has(t.coin) && !(t.cexCoin && knownBases.has(t.cexCoin)))
+    .sort((a, b) => b.volume - a.volume || a.coin.localeCompare(b.coin))
+    .map((t, i) => ({
+      asset_type: "crypto" as const,
+      symbol: cryptoSymbol(t.coin, "USDT", "BINANCE-ALPHA"),
+      name: t.name,
+      exchange: t.chain ? `Binance Alpha · ${t.chain}` : "Binance Alpha",
+      currency: "USD",
+      category: "kripto" as const,
+      source: "binance-alpha",
+      sort_rank: ALPHA_RANK + i,
+    }));
+}
+
+/** Katalogdaki kripto satırlarının taban coinleri (kaynağa göre) */
+async function catalogBases(sources: string[]): Promise<Set<string>> {
+  const rows = await (await getDb()).all<{ symbol: string }>(
+    `SELECT symbol FROM symbol_catalog WHERE asset_type = 'crypto' AND source IN (${sources.map(() => "?").join(", ")})`,
+    sources,
+  );
+  const out = new Set<string>();
+  for (const r of rows) {
+    const c = parseCryptoSymbol(r.symbol);
+    if (c) out.add(c.base);
+  }
+  return out;
 }
 
 // ---- TEFAS fonları ----------------------------------------------------------------------
@@ -590,6 +667,10 @@ async function pruneSource(source: string, now: string) {
 export interface CatalogRefreshResult {
   binance: number | string;
   btcturk: number | string;
+  /** Yalnız vadelide olan coinler */
+  binanceFutures: number | string;
+  /** Yalnız Alpha'da olan tokenlar */
+  binanceAlpha: number | string;
   /** TEFAS fon türü başına satır sayısı ya da hata metni */
   tefas: Record<FundKind, number | string>;
   nasdaq: number | string;
@@ -681,6 +762,33 @@ export async function refreshCatalog(
     console.warn("[katalog] Binance:", (err as Error).message);
   }
 
+  // Alpha listesi önce alınır: vadeli coinlerin adları da buradan (çoğu Alpha'da da işlem görür)
+  let alpha: { tokens: Map<string, AlphaToken>; raw: number } | null = null;
+  let alphaErr: unknown = null;
+  try {
+    alpha = parseAlphaTokens(await fetchJson(ALPHA_TOKEN_LIST));
+  } catch (err) {
+    alphaErr = err;
+  }
+  const futNames = new Map(names);
+  for (const t of alpha?.tokens.values() ?? []) if (!futNames.has(t.coin)) futNames.set(t.coin, t.name);
+  // Tekillik: önce spot (Binance + BtcTurk), sonra vadeli, sonra Alpha; her coin tek satır
+  const spotBases = await catalogBases(["binance", "btcturk"]);
+  const binanceFutures = await refreshSource("Binance Vadeli", "binance-futures", () => fetchBinanceFuturesCatalog(spotBases, futNames, fetchJson), now);
+  const binanceAlpha = await refreshSource(
+    "Binance Alpha",
+    "binance-alpha",
+    async () => {
+      if (!alpha) throw alphaErr instanceof Error ? alphaErr : new Error(String(alphaErr));
+      if (alpha.raw < MIN_ROWS.binanceAlpha) throw new Error(`Alpha token listesi eksik geldi (${alpha.raw})`);
+      if (spotBases.size === 0) throw new Error("spot listesi yok, Alpha atlandı");
+      const known = await catalogBases(["binance-futures"]);
+      for (const b of spotBases) known.add(b);
+      return alphaCatalogRows(alpha.tokens, known);
+    },
+    now,
+  );
+
   const tefas = {} as Record<FundKind, number | string>;
   for (const kind of FUND_KINDS) tefas[kind] = await refreshSource(`TEFAS ${kind}`, fundSource(kind), () => fetchTefasCatalog(kind, fetchJson), now);
   try {
@@ -715,13 +823,13 @@ export async function refreshCatalog(
 
   const total = (await (await getDb()).get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog"))?.c ?? 0;
   gc.__yatirimCatalogAt = Date.now();
-  return { binance, btcturk, tefas, nasdaq, ...(usSnapshot ? { usSnapshot } : {}), bist, static: st.length, total: Number(total) };
+  return { binance, btcturk, binanceFutures, binanceAlpha, tefas, nasdaq, ...(usSnapshot ? { usSnapshot } : {}), bist, static: st.length, total: Number(total) };
 }
 
 /** Yenileme sonucunun kısa özeti (nöbet / zamanlayıcı günlüğü) */
 export function refreshSummary(r: CatalogRefreshResult): string {
   const short = (v: number | string) => (typeof v === "number" ? String(v) : "hata");
-  return `Binance ${short(r.binance)}, BtcTurk ${short(r.btcturk)}, TEFAS ${FUND_KINDS.map((k) => `${k} ${short(r.tefas[k])}`).join("/")}, ABD ${short(r.nasdaq)}${r.usSnapshot ? ` (yedek liste ${r.usSnapshot.slice(0, 10)})` : ""}, BIST ${short(r.bist)}, toplam ${r.total}`;
+  return `Binance ${short(r.binance)}, BtcTurk ${short(r.btcturk)}, Binance Vadeli ${short(r.binanceFutures)}, Binance Alpha ${short(r.binanceAlpha)}, TEFAS ${FUND_KINDS.map((k) => `${k} ${short(r.tefas[k])}`).join("/")}, ABD ${short(r.nasdaq)}${r.usSnapshot ? ` (yedek liste ${r.usSnapshot.slice(0, 10)})` : ""}, BIST ${short(r.bist)}, toplam ${r.total}`;
 }
 
 // ---- Tembel doldurma ------------------------------------------------------------------------
@@ -757,7 +865,7 @@ export async function ensureCatalog(opts: { waitMs?: number } = {}): Promise<voi
 }
 
 /** Düzenli yenilenen kaynaklar (biri hiç yoksa — örn. yeni eklenen kaynak — beklemeden yenilenir) */
-const REFRESHED_SOURCES = ["binance", "btcturk", "static", ...FUND_KINDS.map(fundSource), "nasdaq", "isyatirim"];
+const REFRESHED_SOURCES = ["binance", "btcturk", "binance-futures", "binance-alpha", "static", ...FUND_KINDS.map(fundSource), "nasdaq", "isyatirim"];
 
 /** Günlük yenileme (nöbet / yerel zamanlayıcı): son yenileme 24 saatten eskiyse ya da bir kaynağın hiç satırı yoksa */
 export async function maybeRefreshCatalog(): Promise<CatalogRefreshResult | null> {
@@ -825,6 +933,8 @@ export async function listCatalog(
     if (opts.venue === "binance-usdt") where.push("source = 'binance' AND currency = 'USD'");
     else if (opts.venue === "binance-try") where.push("source = 'binance' AND currency = 'TRY'");
     else if (opts.venue === "btcturk") where.push("source = 'btcturk'");
+    else if (opts.venue === "binance-futures") where.push("source = 'binance-futures'");
+    else if (opts.venue === "binance-alpha") where.push("source = 'binance-alpha'");
   }
   const kind = FUND_KINDS.find((k) => k.toLowerCase() === opts.fundKind?.toLowerCase());
   if (category === "fon" && kind) {

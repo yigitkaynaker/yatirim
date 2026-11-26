@@ -13,13 +13,14 @@ import {
   normalizeSymbol,
   parseCryptoSymbol,
   type AssetType,
+  type CryptoRef,
   type CatalogCategory,
 } from "./assets";
 import { rememberSearchHit, searchCatalog } from "./catalog";
 import { COMMODITIES, COMMODITY_KEYWORDS } from "./catalogData";
 import { ValidationError } from "./portfolio";
 import { getCurrentUserId } from "./userContext";
-import { fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
+import { binanceAlphaTokens, binanceFuturesQuotes, fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
 
 // Piyasa sayfası: izleme listesi, sembol arama ve fiyat grafiği verisi.
 
@@ -378,6 +379,61 @@ export async function btcturkKlines(pair: string, resolutionMin: number, fromMs:
   return out;
 }
 
+export interface KlineRow {
+  /** Açılış zamanı (sn) */
+  time: number;
+  close: number;
+  volume: number | null;
+  /** Kapanış zamanı (ms) */
+  closeTime: number;
+}
+
+type RawKline = [number | string, string, string, string, string, string, number | string, ...unknown[]];
+
+function toKlineRows(rows: RawKline[], mult = 1): KlineRow[] {
+  const out: KlineRow[] = [];
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const close = Number(r[4]) / mult;
+    const vol = Number(r[5]) * mult;
+    const t = Number(r[0]);
+    if (!Number.isFinite(t) || !Number.isFinite(close) || close <= 0) continue;
+    out.push({ time: Math.floor(t / 1000), close, volume: Number.isFinite(vol) && vol > 0 ? vol : null, closeTime: Number(r[6]) });
+  }
+  return out;
+}
+
+/**
+ * Spotta olmayan coinlerin mumları: Binance Vadeli (fapi /fapi/v1/klines; çarpanlı kontratta fiyat 1 coin
+ * için, hacim coin adedi) ya da Binance Alpha (bapi alpha-trade/klines, ALPHA_<id>USDT). Kontrat / Alpha
+ * kimliği bellekteki fiyat listesinden bulunur. Interval Binance biçiminde (5m, 30m, 4h, 1d, 1w).
+ */
+export async function extraVenueKlines(c: CryptoRef, interval: string, limit: number): Promise<KlineRow[]> {
+  if (c.venue === "BINANCE-F") {
+    // Yeni listelenen kontrat uzun süreli bellekte yoksa liste bir kez tazelenir
+    const q = (await binanceFuturesQuotes(60 * 60_000)).get(c.base) ?? (await binanceFuturesQuotes(60_000)).get(c.base);
+    if (!q) throw new Error(`${c.base} için Binance vadeli kontratı bulunamadı.`);
+    const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(q.pair)}&interval=${interval}&limit=${limit}`, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Binance Vadeli grafik HTTP ${res.status}`);
+    return toKlineRows((await res.json()) as RawKline[], q.mult);
+  }
+  if (c.venue === "BINANCE-ALPHA") {
+    const t = (await binanceAlphaTokens(6 * 3600_000)).get(c.base) ?? (await binanceAlphaTokens(60_000)).get(c.base);
+    if (!t) throw new Error(`${c.base} için Binance Alpha tokenı bulunamadı.`);
+    const res = await fetch(`https://www.binance.com/bapi/defi/v1/public/alpha-trade/klines?symbol=${encodeURIComponent(`${t.alphaId}USDT`)}&interval=${interval}&limit=${limit}`, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Binance Alpha grafik HTTP ${res.status}`);
+    const d = (await res.json()) as { success?: boolean; data?: RawKline[] };
+    if (d.success === false || !Array.isArray(d.data)) throw new Error("Binance Alpha grafik verisi alınamadı.");
+    return toKlineRows(d.data);
+  }
+  throw new Error("Bu borsa için mum verisi yok.");
+}
+
 /** Binance aralıklarının BtcTurk karşılığı (dakika) */
 const BTCTURK_RES: Record<string, number> = { "5m": 5, "30m": 30, "4h": 240, "1d": 1440, "1w": 10080 };
 
@@ -386,7 +442,11 @@ async function cryptoSeries(symbol: string, range: ChartRange): Promise<Series> 
   if (!c) throw new Error("Kripto sembolü geçersiz.");
   const spec = RANGE_SPEC[range];
   const currency = c.quote === "TRY" ? "TRY" : "USD";
-  const name = `${c.base}/${c.quote}${c.venue === "BTCTURK" ? " (BtcTurk)" : ""}`;
+  const name = c.venue === "BINANCE-F" ? `${c.base} (Binance Vadeli)` : c.venue === "BINANCE-ALPHA" ? `${c.base} (Binance Alpha)` : `${c.base}/${c.quote}${c.venue === "BTCTURK" ? " (BtcTurk)" : ""}`;
+  if (c.venue === "BINANCE-F" || c.venue === "BINANCE-ALPHA") {
+    const rows = await extraVenueKlines(c, spec.binance, spec.limit);
+    return { points: rows.map((r) => ({ time: r.time, value: r.close })), currency, name };
+  }
   if (c.venue === "BTCTURK") {
     const rows = await btcturkKlines(`${c.base}${c.quote}`, BTCTURK_RES[spec.binance] ?? 1440, Date.now() - spec.ms);
     return { points: rows.map((r) => ({ time: r.time, value: r.close })), currency, name };

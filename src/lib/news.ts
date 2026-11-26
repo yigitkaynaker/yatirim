@@ -273,7 +273,7 @@ function buildPrompt(
     "Analiz edilecek varlıklar:",
     ...lines,
     "",
-    "BIST hisseleri Borsa İstanbul'dadır; fx = döviz/TRY, gold = altın (GRAM gram altın, CEYREK/YARIM/TAM/CUMHURIYET/ATA sikke, TL), fund = TEFAS yatırım fonu (TL), crypto = kripto para (BTC gibi sade semboller Binance USDT paritesi, fiyat USD; BTC-TRY Binance TL paritesi, BTC@BTCTURK BtcTurk TL paritesi, fiyat TL).",
+    "BIST hisseleri Borsa İstanbul'dadır; fx = döviz/TRY, gold = altın (GRAM gram altın, CEYREK/YARIM/TAM/CUMHURIYET/ATA sikke, TL), fund = TEFAS yatırım fonu (TL), crypto = kripto para (BTC gibi sade semboller Binance USDT paritesi, fiyat USD; BTC-TRY Binance TL paritesi, BTC@BTCTURK BtcTurk TL paritesi, fiyat TL; X@BINANCE-F Binance vadeli kontrat fiyatı, X@BINANCE-ALPHA Binance Alpha erken aşama token, ikisi de USD).",
   ].join("\n");
   return { system, user };
 }

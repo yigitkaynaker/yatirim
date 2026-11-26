@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ASSET_TYPE_INFO, CATALOG_CATEGORIES, CATALOG_CATEGORY_LABEL, displaySymbol, type CatalogCategory } from "@/lib/assets";
+import { ASSET_TYPE_INFO, CATALOG_CATEGORIES, CATALOG_CATEGORY_LABEL, displaySymbol, parseCryptoSymbol, type CatalogCategory } from "@/lib/assets";
 import type { CatalogItem, CatalogPage } from "@/lib/catalog";
 import { formatPercent, pnlClass } from "@/lib/format";
 import type { Quote } from "@/lib/prices";
@@ -22,7 +22,17 @@ const VENUES: { value: string; label: string }[] = [
   { value: "binance-usdt", label: "Binance USDT" },
   { value: "binance-try", label: "Binance TRY" },
   { value: "btcturk", label: "BtcTurk" },
+  { value: "binance-futures", label: "Binance Vadeli" },
+  { value: "binance-alpha", label: "Binance Alpha" },
 ];
+
+/** Süzgece özel kısa uyarı (vadeli ve Alpha satırları) */
+const VENUE_HINTS: Record<string, string> = {
+  "binance-futures":
+    "Yalnızca Binance vadeli işlemlerde (sürekli kontrat) olan, spotta bulunmayan coinler. Fiyat vadeli kontrat fiyatıdır (1 coin için; 1000RATS gibi kontratlarda 1000'e bölünür) ve spot fiyattan biraz farklı olabilir. Yatırım tavsiyesi değildir.",
+  "binance-alpha":
+    "Binance Alpha: henüz Binance'te listelenmemiş, erken aşama zincir üstü tokenlar. Fiyatı çok oynak, likiditesi düşük olabilir; yüksek risklidir. Yatırım tavsiyesi değildir.",
+};
 
 const FUND_KINDS: { value: string; label: string }[] = [
   { value: "", label: "Tümü" },
@@ -32,7 +42,8 @@ const FUND_KINDS: { value: string; label: string }[] = [
 ];
 
 const HINTS: Partial<Record<CatalogCategory, string>> = {
-  kripto: "Binance (USDT ve TL pariteleri) ve BtcTurk (TL pariteleri). Aynı coin farklı borsada ayrı satırdır; TL paritelerinin fiyatı TL'dir.",
+  kripto:
+    "Binance (USDT ve TL pariteleri) ve BtcTurk (TL pariteleri). Aynı coin farklı borsada ayrı satırdır; TL paritelerinin fiyatı TL'dir. Spotta olmayan coinler Binance Vadeli ve Binance Alpha süzgeçlerindedir (her coin bir kez).",
   bist: "Borsa İstanbul'daki tüm hisseler (büyükler önce). Fiyatlar ~15 dk gecikmelidir.",
   hisse: "Nasdaq ve NYSE'deki tüm ABD hisseleri (popülerler önce). Fiyatlar USD'dir.",
   etf: "ABD borsa yatırım fonları (ETF): tek alımla bir endeksi ya da sepeti takip eder. Popülerler önce.",
@@ -142,6 +153,7 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
             />
           )}
           {HINTS[category] && <p className="text-xs text-slate-500">{HINTS[category]}</p>}
+          {category === "kripto" && VENUE_HINTS[venue] && <p className="text-xs text-amber-300/80">{VENUE_HINTS[venue]}</p>}
         </div>
 
         {!current ? (
@@ -196,6 +208,21 @@ function FilterButtons({ options, value, onChange }: { options: { value: string;
   );
 }
 
+/** Vadeli / Alpha satırlarında sembol + rozet (sembolün yanında "(Vadeli)" tekrar yazılmaz) */
+function rowSymbol(it: CatalogItem) {
+  const c = it.assetType === "crypto" ? parseCryptoSymbol(it.symbol) : null;
+  return c && (c.venue === "BINANCE-F" || c.venue === "BINANCE-ALPHA") ? c.base : displaySymbol(it.assetType, it.symbol);
+}
+
+function VenueBadge({ item }: { item: CatalogItem }) {
+  const c = item.assetType === "crypto" ? parseCryptoSymbol(item.symbol) : null;
+  if (c?.venue === "BINANCE-F")
+    return <span className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300" title="Binance vadeli kontrat fiyatı">Vadeli</span>;
+  if (c?.venue === "BINANCE-ALPHA")
+    return <span className="shrink-0 rounded bg-fuchsia-500/15 px-1.5 py-0.5 text-[10px] font-medium text-fuchsia-300" title="Binance Alpha: erken aşama, yüksek riskli token">Alpha</span>;
+  return null;
+}
+
 /** Görünen satırlar + yalnızca bu satırların fiyatları (60 sn'de bir; sunucu önbelleği ~30 sn) */
 function ListRows({ items, watched, onToggleWatch }: { items: CatalogItem[]; watched: Map<string, number>; onToggleWatch: (item: CatalogItem) => void }) {
   const ids = items.map((i) => i.instrument).join(",");
@@ -212,7 +239,8 @@ function ListRows({ items, watched, onToggleWatch }: { items: CatalogItem[]; wat
               <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: ASSET_TYPE_INFO[it.assetType].color }} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5 font-medium">
-                  <span className="truncate">{displaySymbol(it.assetType, it.symbol)}</span>
+                  <span className="truncate">{rowSymbol(it)}</span>
+                  <VenueBadge item={it} />
                   {q?.stale && q.price != null && <StaleBadge fetchedAt={q.fetchedAt} />}
                 </div>
                 <div className="truncate text-xs text-slate-500">{[it.name !== it.symbol ? it.name : null, it.exchange, it.currency].filter(Boolean).join(" · ")}</div>

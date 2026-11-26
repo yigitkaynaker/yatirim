@@ -611,11 +611,20 @@ export const TERMS = [
   {
     id: "vadeli-kontrat",
     term: "Vadeli kontrat",
-    aliases: ["vadeli işlem", "futures", "viop"],
+    aliases: ["vadeli işlem", "futures", "viop", "binance vadeli", "perpetual"],
     short: "Bir varlığı bugünden belirlenen fiyattan ileri bir tarihte alıp satma anlaşması.",
     definition: "Malın tamamı ödenmez, yalnızca teminat yatırılır; bu yüzden kaldıraçlıdır. Türkiye'de vadeli işlemler Borsa İstanbul'un VİOP pazarında yapılır.",
     example: "10.000 TL teminatla 100.000 TL'lik pozisyon açarsan fiyatın %10 aleyhine gitmesi teminatın tamamını silebilir.",
     more: { href: "/egitim/vadeli-kontrat", label: "Ders: Vadeli kontrat mantığı" },
+  },
+  {
+    id: "binance-alpha",
+    term: "Binance Alpha",
+    aliases: ["alpha token", "erken aşama token"],
+    short: "Binance'te henüz listelenmemiş, erken aşamadaki zincir üstü tokenların bulunduğu bölüm.",
+    definition: "Alpha'daki tokenlar yenidir; işlem hacmi düşük, fiyatı çok oynak olabilir ve bir kısmı zamanla listeden çıkar. Yüksek risklidir, yatırım tavsiyesi değildir.",
+    example: "1.000 TL'lik bir Alpha tokenı bir günde %40 düşüp 600 TL'ye inebilir; satmak istediğinde alıcı da az olabilir.",
+    more: { href: "/kilavuz#piyasa", label: "Kılavuz: Piyasa listeleri" },
   },
   {
     id: "kaldirac",

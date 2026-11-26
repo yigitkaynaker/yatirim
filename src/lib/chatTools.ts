@@ -28,7 +28,7 @@ export interface ToolOutcome {
   card?: ActionCard;
 }
 
-const assetTypeProp = { type: "string", enum: [...ASSET_TYPES], description: "bist: BIST hissesi, foreign: yabancı hisse / ETF / endeks (^GSPC) / emtia vadelisi (GC=F altın, SI=F gümüş, CL=F petrol, BZ=F Brent, NG=F doğalgaz, HG=F bakır), crypto: kripto (symbol BTC = Binance BTC/USDT, fiyat USD; BTC-TRY = Binance BTC/TL; BTC@BTCTURK = BtcTurk BTC/TL; BTC-USDT@BTCTURK = BtcTurk BTC/USDT), fx: döviz, gold: altın (symbol GRAM = gram altın, CEYREK, YARIM, TAM, CUMHURIYET, ATA, BILEZIK22 = 22 ayar bilezik gramı), fund: TEFAS yatırım fonu (3 karakterli fon kodu, örn. AFT)" };
+const assetTypeProp = { type: "string", enum: [...ASSET_TYPES], description: "bist: BIST hissesi, foreign: yabancı hisse / ETF / endeks (^GSPC) / emtia vadelisi (GC=F altın, SI=F gümüş, CL=F petrol, BZ=F Brent, NG=F doğalgaz, HG=F bakır), crypto: kripto (symbol BTC = Binance BTC/USDT, fiyat USD; BTC-TRY = Binance BTC/TL; BTC@BTCTURK = BtcTurk BTC/TL; BTC-USDT@BTCTURK = BtcTurk BTC/USDT; spotta olmayan coinler: RATS@BINANCE-F = Binance vadeli kontrat fiyatı (1 coin için, USD), SHARE@BINANCE-ALPHA = Binance Alpha token (USD)), fx: döviz, gold: altın (symbol GRAM = gram altın, CEYREK, YARIM, TAM, CUMHURIYET, ATA, BILEZIK22 = 22 ayar bilezik gramı), fund: TEFAS yatırım fonu (3 karakterli fon kodu, örn. AFT)" };
 const modeProp = { type: "string", enum: ["real", "virtual"], description: "real: gerçek portföy, virtual: sanal portföy" };
 const currencyProp = { type: "string", enum: ["TRY", "USD", "EUR"] };
 const numProp = (description: string) => ({ type: "number", description });
@@ -263,7 +263,7 @@ function guessRef(raw: string): { assetType: AssetType; symbol: string } {
   const up = raw.trim().toLocaleUpperCase("en-US");
   if (!up) throw new actions.ValidationError("symbol eksik.");
   if (up.endsWith(".IS")) return { assetType: "bist", symbol: normalizeSymbol("bist", up) };
-  if (/USDT$|@(BTCTURK|BINANCE)$|^[A-Z0-9]+[-/](TRY|USDT)$/.test(up)) return { assetType: "crypto", symbol: normalizeSymbol("crypto", up) };
+  if (/USDT$|@(BTCTURK|BINANCE|BINANCE[-_]F|BINANCE[-_]ALPHA)$|^[A-Z0-9]+[-/](TRY|USDT)$/.test(up)) return { assetType: "crypto", symbol: normalizeSymbol("crypto", up) };
   if (up === "GRAM" || up === "ALTIN") return { assetType: "gold", symbol: "GRAM" };
   return { assetType: "foreign", symbol: normalizeSymbol("foreign", up) };
 }

@@ -2,6 +2,7 @@ import "server-only";
 import YahooFinance from "yahoo-finance2";
 import { getDb, sqlNow } from "./db";
 import { cryptoCurrency, GOLD_KINDS, GOLD_SYMBOL, goldKind, instrumentId, isDelayedType, parseCryptoSymbol, type AssetType } from "./assets";
+import { parseAlphaTokens, parseFuturesTickers, type AlphaToken, type FuturesQuote } from "./binanceExtra";
 import { inBackoff, markFailure, markSuccess, politeFetch } from "./http";
 import {
   parseFundPrices,
@@ -16,7 +17,10 @@ import {
 // Sunucu tarafı fiyat servisi.
 // - Hisse / döviz / gram altın: Yahoo Finance (yahoo-finance2). BIST ~15 dk gecikmeli.
 // - Kripto: Binance herkese açık REST API (USDT ve TRY pariteleri; engellenirse data-api.binance.vision
-//   aynası; toplu ticker 20'li gruplarla, ağırlık 2) ve BtcTurk (tek toplu /api/v2/ticker isteği)
+//   aynası; toplu ticker 20'li gruplarla, ağırlık 2) ve BtcTurk (tek toplu /api/v2/ticker isteği).
+//   Spotta olmayan coinler: Binance Vadeli (fapi /fapi/v1/ticker/24hr sembolsüz tek istek, ağırlık 40,
+//   10 sn bellek; çarpanlı kontratta fiyat 1 coin için = kontrat fiyatı / çarpan) ve Binance Alpha
+//   (bapi token listesi tek istek; fiyat ve 24 saatlik değişim listede; 30 sn bellek).
 // - Yatırım fonları: TEFAS (günde bir fiyat; 0 gelen fiyatlar geçersiz sayılır)
 // - Çeyrek / yarım / tam / cumhuriyet / ata altın, 22 ayar bilezik: Truncgil
 //   (yedek: Genelpara; ikisi de yoksa gram altından "yaklaşık" hesap)
@@ -106,7 +110,7 @@ export function yahooClient() {
 
 // ---- Kaynak anahtarları -------------------------------------------------
 
-type SourceKey = `yahoo:${string}` | `binance:${string}` | `btcturk:${string}` | `tefas:${string}` | `gold:${string}`;
+type SourceKey = `yahoo:${string}` | `binance:${string}` | `binancef:${string}` | `alpha:${string}` | `btcturk:${string}` | `tefas:${string}` | `gold:${string}`;
 
 function ttlFor(key: string): number {
   if (key.startsWith("tefas:")) return FUND_TTL_MS;
@@ -132,6 +136,8 @@ function sourcesFor(type: AssetType, symbol: string): SourceKey[] {
   if (type === "crypto") {
     const c = parseCryptoSymbol(symbol);
     if (!c) return [];
+    if (c.venue === "BINANCE-F") return [`binancef:${c.base}`];
+    if (c.venue === "BINANCE-ALPHA") return [`alpha:${c.base}`];
     return [c.venue === "BTCTURK" ? `btcturk:${c.base}${c.quote}` : `binance:${c.base}${c.quote}`];
   }
   if (type === "fund") return [`tefas:${symbol}`];
@@ -320,6 +326,78 @@ async function fetchBtcTurk(pairs: string[]): Promise<Map<string, RawQuote>> {
       // BtcTurk "günlük" değişimi 24 saat önceki açılışa göredir
       prevClose: Number.isFinite(open) && open > 0 ? open : null,
     });
+  }
+  return out;
+}
+
+// ---- Binance Vadeli ve Alpha (spotta olmayan coinler) ------------------------------------------------
+
+const FAPI_TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr";
+const ALPHA_LIST_URL = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list";
+
+interface Shared<T> {
+  at: number;
+  data: T;
+}
+const gx = globalThis as unknown as {
+  __yatirimFutures?: Shared<Map<string, FuturesQuote>> | null;
+  __yatirimFuturesJob?: Promise<Map<string, FuturesQuote>> | null;
+  __yatirimAlpha?: Shared<Map<string, AlphaToken>> | null;
+  __yatirimAlphaJob?: Promise<Map<string, AlphaToken>> | null;
+};
+
+/** Tüm vadeli kontratların fiyatı, coin adına göre (tek istek; maxAgeMs bellekte; eşzamanlı çağrılar aynı isteği bekler) */
+export async function binanceFuturesQuotes(maxAgeMs = 10_000): Promise<Map<string, FuturesQuote>> {
+  const c = gx.__yatirimFutures;
+  if (c && Date.now() - c.at < maxAgeMs) return c.data;
+  gx.__yatirimFuturesJob ??= (async () => {
+    const text = await politeFetch("Binance Vadeli", FAPI_TICKER_URL, { timeoutMs: FETCH_TIMEOUT_MS, backoffBaseMs: 30_000 });
+    const data = parseFuturesTickers(JSON.parse(text));
+    if (data.size === 0) throw new Error("Binance Vadeli fiyat listesi boş geldi");
+    gx.__yatirimFutures = { at: Date.now(), data };
+    return data;
+  })().finally(() => {
+    gx.__yatirimFuturesJob = null;
+  });
+  return await gx.__yatirimFuturesJob;
+}
+
+/** Alpha token listesi, coin adına göre (tek istek; maxAgeMs bellekte). Uç engellenirse hata fırlatır. */
+export async function binanceAlphaTokens(maxAgeMs = 30_000): Promise<Map<string, AlphaToken>> {
+  const c = gx.__yatirimAlpha;
+  if (c && Date.now() - c.at < maxAgeMs) return c.data;
+  gx.__yatirimAlphaJob ??= (async () => {
+    const text = await politeFetch("Binance Alpha", ALPHA_LIST_URL, { timeoutMs: 15_000, backoffBaseMs: 60_000 });
+    const data = parseAlphaTokens(JSON.parse(text)).tokens;
+    if (data.size === 0) throw new Error("Binance Alpha token listesi boş geldi");
+    gx.__yatirimAlpha = { at: Date.now(), data };
+    return data;
+  })().finally(() => {
+    gx.__yatirimAlphaJob = null;
+  });
+  return await gx.__yatirimAlphaJob;
+}
+
+async function fetchBinanceFutures(coins: string[]): Promise<Map<string, RawQuote>> {
+  const out = new Map<string, RawQuote>();
+  if (coins.length === 0) return out;
+  const all = await binanceFuturesQuotes();
+  for (const coin of coins) {
+    const q = all.get(coin);
+    if (!q) continue;
+    out.set(coin, { price: q.price, currency: "USD", changePct: q.changePct, sourceTime: q.closeTime });
+  }
+  return out;
+}
+
+async function fetchBinanceAlpha(coins: string[]): Promise<Map<string, RawQuote>> {
+  const out = new Map<string, RawQuote>();
+  if (coins.length === 0) return out;
+  const all = await binanceAlphaTokens();
+  for (const coin of coins) {
+    const t = all.get(coin);
+    if (!t || t.price == null) continue;
+    out.set(coin, { price: t.price, currency: "USD", changePct: t.changePct, sourceTime: Date.now(), extra: { name: t.name } });
   }
   return out;
 }
@@ -553,11 +631,21 @@ async function refresh(keys: SourceKey[], force: boolean) {
     const yahoo = due.filter((k) => k.startsWith("yahoo:")).map((k) => k.slice(6));
     const binance = due.filter((k) => k.startsWith("binance:")).map((k) => k.slice(8));
     const btcturk = due.filter((k) => k.startsWith("btcturk:")).map((k) => k.slice(8));
+    const futures = due.filter((k) => k.startsWith("binancef:")).map((k) => k.slice(9));
+    const alpha = due.filter((k) => k.startsWith("alpha:")).map((k) => k.slice(6));
     const funds = due.filter((k) => k.startsWith("tefas:")).map((k) => k.slice(6));
     const golds = due.filter((k) => k.startsWith("gold:")).map((k) => k.slice(5));
 
     const job = (async () => {
-      const [y, b, bt, f, au] = await Promise.allSettled([fetchYahoo(yahoo), fetchBinance(binance), fetchBtcTurk(btcturk), fetchFunds(funds), fetchGoldKinds(golds)]);
+      const [y, b, bt, f, au, bf, al] = await Promise.allSettled([
+        fetchYahoo(yahoo),
+        fetchBinance(binance),
+        fetchBtcTurk(btcturk),
+        fetchFunds(funds),
+        fetchGoldKinds(golds),
+        fetchBinanceFutures(futures),
+        fetchBinanceAlpha(alpha),
+      ]);
       const fetchedAt = Date.now();
       const writes: Promise<void>[] = [];
       const store = (prefix: string, r: PromiseSettledResult<Map<string, RawQuote>>, label: string) => {
@@ -574,6 +662,8 @@ async function refresh(keys: SourceKey[], force: boolean) {
       store("yahoo:", y, "Yahoo");
       store("binance:", b, "Binance");
       store("btcturk:", bt, "BtcTurk");
+      store("binancef:", bf, "Binance Vadeli");
+      store("alpha:", al, "Binance Alpha");
       store("tefas:", f, "TEFAS");
       store("gold:", au, "Altın");
       await Promise.all(writes);
@@ -636,6 +726,8 @@ function prevFrom(price: number, changePct: number | null, given?: number | null
 
 function sourceLabel(key: string): string {
   if (key.startsWith("binance:")) return "Binance";
+  if (key.startsWith("binancef:")) return "Binance Vadeli";
+  if (key.startsWith("alpha:")) return "Binance Alpha";
   if (key.startsWith("btcturk:")) return "BtcTurk";
   if (key.startsWith("tefas:")) return "TEFAS";
   return "Yahoo";

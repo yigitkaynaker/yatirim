@@ -12,7 +12,9 @@ function nf(key: string, opts: Intl.NumberFormatOptions) {
 
 export function formatMoney(value: number | null | undefined, currency = "TRY", maxDigits = 2): string {
   if (value == null || !Number.isFinite(value)) return "—";
-  const digits = Math.abs(value) < 1 && value !== 0 ? Math.max(maxDigits, 4) : maxDigits;
+  // 1'in altındaki değerlerde en az 4 ondalık; çok küçük fiyatlarda (0,00001123 gibi coinler) ~4 anlamlı basamak
+  const abs = Math.abs(value);
+  const digits = abs < 1 && value !== 0 ? Math.max(maxDigits, 4, Math.min(12, Math.ceil(-Math.log10(abs)) + 3)) : maxDigits;
   return nf(`m-${currency}-${digits}`, {
     style: "currency",
     currency,
