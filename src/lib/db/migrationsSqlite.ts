@@ -648,4 +648,23 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE dividends_u RENAME TO dividends;
   CREATE INDEX idx_dividends_user ON dividends (user_id);
   `,
+  `
+  -- Sembol kataloğu (paylaşımlı, kullanıcıya özel değil): piyasa listeleri ve arama için kripto pariteleri
+  -- (Binance, BtcTurk), BIST / ABD hisseleri, ETF, endeks, emtia, döviz. Günlük yenilenir; yeniden oluşturulabilir.
+  CREATE TABLE symbol_catalog (
+    asset_type  TEXT    NOT NULL,
+    symbol      TEXT    NOT NULL,
+    name        TEXT,
+    exchange    TEXT,
+    currency    TEXT,
+    category    TEXT    NOT NULL,
+    source      TEXT    NOT NULL,
+    sort_rank   INTEGER NOT NULL DEFAULT 1000000,
+    search      TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (asset_type, symbol)
+  );
+  CREATE INDEX idx_symbol_catalog_category ON symbol_catalog (category, sort_rank, symbol);
+  CREATE INDEX idx_symbol_catalog_source ON symbol_catalog (source);
+  `,
 ];

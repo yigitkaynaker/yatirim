@@ -5,6 +5,8 @@ import {
   ASSET_TYPE_INFO,
   ASSET_TYPES,
   CURRENCIES,
+  defaultCurrencyFor,
+  normalizeSymbol,
   quantityUnit,
   type AssetType,
   type Currency,
@@ -90,6 +92,15 @@ export function TransactionForm({ mode, initial, endpoint, method, lockAsset, lo
     }));
   }
 
+  /** Kriptoda parite değişince para birimi de değişir (BTC → USD, BTC-TRY / BTC@BTCTURK → TRY) */
+  function changeSymbol(sym: string) {
+    setV((p) =>
+      p.assetType === "crypto" && p.currency === defaultCurrencyFor("crypto", normalizeSymbol("crypto", p.symbol))
+        ? { ...p, symbol: sym, currency: defaultCurrencyFor("crypto", normalizeSymbol("crypto", sym)) }
+        : { ...p, symbol: sym },
+    );
+  }
+
   const qty = parseDecimal(v.quantity);
   const price = parseDecimal(v.price);
   const total = Number.isFinite(qty) && Number.isFinite(price) ? qty * price : null;
@@ -156,7 +167,7 @@ export function TransactionForm({ mode, initial, endpoint, method, lockAsset, lo
         </select>
       </Field>
 
-      <SymbolField assetType={v.assetType} value={v.symbol} disabled={lockAsset} onChange={(s) => set("symbol", s)} />
+      <SymbolField assetType={v.assetType} value={v.symbol} disabled={lockAsset} onChange={changeSymbol} />
 
       {!lockSide && (
         <Field label="İşlem">

@@ -129,6 +129,19 @@ export const TASKS: TaskDef[] = [
       return ran.length ? `${ran.length} kullanıcı, ${sum(ran, (x) => (x.ran ? x.changes.length : 0))} değişim` : (r[0]?.ran === false ? r[0].reason : "atlandı");
     },
   },
+  {
+    name: "katalog",
+    label: "Sembol kataloğu (kripto pariteleri, hisse listeleri)",
+    slow: true,
+    minIntervalSec: 6 * 3600,
+    leaseSec: 300,
+    run: async () => {
+      // Paylaşımlı (kullanıcıya özel değil); 24 saatten eskiyse yenilenir
+      const { maybeRefreshCatalog } = await import("../catalog");
+      const r = await maybeRefreshCatalog();
+      return r ? `Binance ${r.binance}, BtcTurk ${r.btcturk}, toplam ${r.total}` : "güncel";
+    },
+  },
 ];
 
 /** En az aralığa hoşgörü (zamanlayıcı tam 60 sn'de bir çağırmayabilir) */

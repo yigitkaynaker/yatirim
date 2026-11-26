@@ -20,7 +20,7 @@ export interface AssetTypeInfo {
 export const ASSET_TYPE_INFO: Record<AssetType, AssetTypeInfo> = {
   bist: { label: "BIST Hisse", defaultCurrency: "TRY", symbolHint: "örn. THYAO", color: "#38bdf8" },
   foreign: { label: "Yabancı Hisse", defaultCurrency: "USD", symbolHint: "örn. AAPL", color: "#a78bfa" },
-  crypto: { label: "Kripto", defaultCurrency: "USD", symbolHint: "örn. BTC", color: "#f59e0b" },
+  crypto: { label: "Kripto", defaultCurrency: "USD", symbolHint: "örn. BTC (Binance USDT), BTC-TRY, BTC@BTCTURK", color: "#f59e0b" },
   fx: { label: "Döviz", defaultCurrency: "TRY", symbolHint: "örn. USD, EUR", color: "#34d399" },
   gold: { label: "Altın", defaultCurrency: "TRY", symbolHint: "Gram, çeyrek, yarım, tam, cumhuriyet…", color: "#facc15" },
   fund: { label: "Fon", defaultCurrency: "TRY", symbolHint: "TEFAS fon kodu, örn. AFT", color: "#fb7185" },
@@ -106,7 +106,7 @@ export function normalizeSymbol(type: AssetType, raw: string): string {
       s = s.replace(/\.IS$/, "");
       break;
     case "crypto":
-      s = s.replace(/(USDT|USD)$/, "") || s;
+      s = normalizeCryptoSymbol(s);
       break;
     case "fx":
       s = s.replace(/TRY(=X)?$/, "");
@@ -131,7 +131,7 @@ export function isValidSymbol(type: AssetType, symbol: string): boolean {
     case "foreign":
       return /^[A-Z0-9.\-^=]{1,15}$/.test(symbol);
     case "crypto":
-      return /^[A-Z0-9]{2,12}$/.test(symbol);
+      return CRYPTO_SYMBOL_RE.test(symbol);
     case "fx":
       return /^[A-Z]{3}$/.test(symbol) && symbol !== "TRY";
     case "gold":
@@ -160,7 +160,146 @@ export function parseInstrumentId(id: string): { type: AssetType; symbol: string
 export function displaySymbol(type: AssetType, symbol: string): string {
   if (type === "gold") return goldKind(symbol)?.label ?? "Gram Altın";
   if (type === "fx") return `${symbol}/TRY`;
+  if (type === "crypto") {
+    const c = parseCryptoSymbol(symbol);
+    if (!c || (c.venue === "BINANCE" && c.quote === "USDT")) return symbol;
+    return `${c.base}/${c.quote}${c.venue === "BTCTURK" ? " (BtcTurk)" : ""}`;
+  }
   return symbol;
+}
+
+// ---- Kripto sembol biçimi ------------------------------------------------------------
+// Saklanan biçim: TABAN[-KOTASYON][@BORSA]. Varsayılanlar yazılmaz:
+//   "BTC"              → Binance BTC/USDT (fiyat USD; eski kayıtlar aynen bu anlama gelir)
+//   "BTC-TRY"          → Binance BTC/TRY (fiyat TL)
+//   "BTC@BTCTURK"      → BtcTurk BTC/TRY (fiyat TL; BtcTurk'te varsayılan kotasyon TRY)
+//   "BTC-USDT@BTCTURK" → BtcTurk BTC/USDT (fiyat USD)
+
+export const CRYPTO_VENUES = ["BINANCE", "BTCTURK"] as const;
+export type CryptoVenue = (typeof CRYPTO_VENUES)[number];
+export const CRYPTO_QUOTES = ["USDT", "TRY"] as const;
+export type CryptoQuote = (typeof CRYPTO_QUOTES)[number];
+
+export const CRYPTO_VENUE_LABEL: Record<CryptoVenue, string> = { BINANCE: "Binance", BTCTURK: "BtcTurk" };
+
+const CRYPTO_SYMBOL_RE = /^[A-Z0-9]{1,15}(-(USDT|TRY))?(@BTCTURK)?$/;
+
+export interface CryptoRef {
+  base: string;
+  quote: CryptoQuote;
+  venue: CryptoVenue;
+}
+
+const defaultQuote = (venue: CryptoVenue): CryptoQuote => (venue === "BTCTURK" ? "TRY" : "USDT");
+
+/** Kanonik kripto sembolü (varsayılan kotasyon ve borsa yazılmaz) */
+export function cryptoSymbol(base: string, quote: CryptoQuote = "USDT", venue: CryptoVenue = "BINANCE"): string {
+  return `${base}${quote === defaultQuote(venue) ? "" : `-${quote}`}${venue === "BINANCE" ? "" : `@${venue}`}`;
+}
+
+/** Saklanan kripto sembolünü parçalarına ayırır; geçersizse null. "BTC" → Binance BTC/USDT */
+export function parseCryptoSymbol(symbol: string): CryptoRef | null {
+  if (!CRYPTO_SYMBOL_RE.test(symbol)) return null;
+  const [pair, venueRaw] = symbol.split("@");
+  const venue: CryptoVenue = venueRaw === "BTCTURK" ? "BTCTURK" : "BINANCE";
+  const [base, quoteRaw] = pair.split("-");
+  const quote = (quoteRaw as CryptoQuote | undefined) ?? defaultQuote(venue);
+  return { base, quote, venue };
+}
+
+/** Kullanıcı girişini kanonik biçime çevirir: BTCUSDT → BTC, btc/try → BTC-TRY, BTC-TRY@BTCTURK → BTC@BTCTURK */
+function normalizeCryptoSymbol(raw: string): string {
+  const s = raw.replace(/[/_]/g, "-");
+  const at = s.indexOf("@");
+  let pair = at >= 0 ? s.slice(0, at) : s;
+  const venueRaw = at >= 0 ? s.slice(at + 1) : "BINANCE";
+  if (venueRaw !== "BINANCE" && venueRaw !== "BTCTURK") return s; // bilinmeyen borsa: geçersiz kalır
+  const venue = venueRaw as CryptoVenue;
+  let quote: CryptoQuote = defaultQuote(venue);
+  const m = /^(.+?)-(USDT|USD|TRY)$/.exec(pair);
+  if (m) {
+    pair = m[1];
+    quote = m[2] === "TRY" ? "TRY" : "USDT";
+  } else if (!pair.includes("-")) {
+    // Eski davranış: BTCUSDT / BTCUSD → BTC (yalnızca USDT kotasyonu ekten çıkarılır)
+    const stripped = pair.replace(/(USDT|USD)$/, "");
+    if (stripped && stripped !== pair) {
+      pair = stripped;
+      quote = "USDT";
+    } else if (venue === "BTCTURK" && /.TRY$/.test(pair)) {
+      pair = pair.slice(0, -3); // BtcTurk çift adı: BTCTRY@BTCTURK → BTC@BTCTURK
+    }
+  }
+  return cryptoSymbol(pair, quote, venue);
+}
+
+/** Fiyatın para birimi: USDT pariteleri USD, TRY pariteleri TRY sayılır. */
+export function cryptoCurrency(symbol: string): Currency {
+  return parseCryptoSymbol(symbol)?.quote === "TRY" ? "TRY" : "USD";
+}
+
+/** Kripto için taban sembol (haber, ad eşleştirme): "BTC@BTCTURK" → "BTC" */
+export function cryptoBase(symbol: string): string {
+  return parseCryptoSymbol(symbol)?.base ?? symbol;
+}
+
+/** İşlem formunda önerilen para birimi (kripto TL paritelerinde TRY) */
+export function defaultCurrencyFor(type: AssetType, symbol: string): Currency {
+  if (type === "crypto") return cryptoCurrency(symbol);
+  return ASSET_TYPE_INFO[type].defaultCurrency;
+}
+
+// ---- Piyasa listeleri (katalog kategorileri) -------------------------------------------
+
+export const CATALOG_CATEGORIES = ["kripto", "bist", "hisse", "etf", "endeks", "emtia", "doviz", "altin", "fon"] as const;
+export type CatalogCategory = (typeof CATALOG_CATEGORIES)[number];
+
+export const CATALOG_CATEGORY_LABEL: Record<CatalogCategory, string> = {
+  kripto: "Kripto",
+  bist: "BIST",
+  hisse: "ABD Hisseleri",
+  etf: "ETF",
+  endeks: "Endeksler",
+  emtia: "Emtia",
+  doviz: "Döviz",
+  altin: "Altın",
+  fon: "Fonlar",
+};
+
+export function isCatalogCategory(v: unknown): v is CatalogCategory {
+  return typeof v === "string" && (CATALOG_CATEGORIES as readonly string[]).includes(v);
+}
+
+/** BIST endeks kodları (fiyat yerine puan gösterilir) */
+export const BIST_INDICES = ["XU100", "XU030", "XU050", "XUTUM", "XBANK", "XUSIN", "XHOLD", "XUTEK", "XUMAL", "XUHIZ", "XGMYO", "XKTUM", "XELKT", "XULAS"] as const;
+
+/** Yahoo vadeli emtia sembolleri (=F) */
+export function isCommoditySymbol(symbol: string): boolean {
+  return /=F$/.test(symbol);
+}
+
+/** Enstrüman bir endeks mi (fiyat yerine puan) */
+export function isIndexInstrument(type: AssetType, symbol: string): boolean {
+  if (type === "bist") return (BIST_INDICES as readonly string[]).includes(symbol);
+  return type === "foreign" && symbol.startsWith("^");
+}
+
+/** Sembolün varsayılan piyasa listesi (katalogda yoksa) */
+export function defaultCategory(type: AssetType, symbol: string): CatalogCategory {
+  switch (type) {
+    case "crypto":
+      return "kripto";
+    case "bist":
+      return isIndexInstrument(type, symbol) ? "endeks" : "bist";
+    case "foreign":
+      return symbol.startsWith("^") ? "endeks" : isCommoditySymbol(symbol) ? "emtia" : "hisse";
+    case "fx":
+      return "doviz";
+    case "gold":
+      return "altin";
+    case "fund":
+      return "fon";
+  }
 }
 
 /** BIST fiyatları ücretsiz kaynakta ~15 dk gecikmelidir */

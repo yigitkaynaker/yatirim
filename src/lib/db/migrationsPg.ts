@@ -480,6 +480,27 @@ export const PG_MIGRATIONS: { id: number; name: string; sql: string }[] = [
   CREATE INDEX idx_dividends_user ON dividends (user_id);
   `,
   },
+  {
+    id: 5,
+    name: "sembol kataloğu (SQLite sürüm 14 ile denk)",
+    sql: `
+  CREATE TABLE symbol_catalog (
+    asset_type  TEXT    NOT NULL,
+    symbol      TEXT    NOT NULL,
+    name        TEXT,
+    exchange    TEXT,
+    currency    TEXT,
+    category    TEXT    NOT NULL,
+    source      TEXT    NOT NULL,
+    sort_rank   BIGINT  NOT NULL DEFAULT 1000000,
+    search      TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL DEFAULT ${NOW},
+    PRIMARY KEY (asset_type, symbol)
+  );
+  CREATE INDEX idx_symbol_catalog_category ON symbol_catalog (category, sort_rank, symbol);
+  CREATE INDEX idx_symbol_catalog_source ON symbol_catalog (source);
+  `,
+  },
 ];
 
 /** Postgres şema sürümü (son geçiş kimliği) */

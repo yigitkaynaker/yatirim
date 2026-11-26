@@ -1,7 +1,7 @@
 import "server-only";
 import YahooFinance from "yahoo-finance2";
 import { getDb, sqlNow } from "./db";
-import { GOLD_KINDS, GOLD_SYMBOL, goldKind, instrumentId, isDelayedType, type AssetType } from "./assets";
+import { cryptoCurrency, GOLD_KINDS, GOLD_SYMBOL, goldKind, instrumentId, isDelayedType, parseCryptoSymbol, type AssetType } from "./assets";
 import { inBackoff, markFailure, markSuccess, politeFetch } from "./http";
 import {
   parseFundPrices,
@@ -15,7 +15,8 @@ import {
 
 // Sunucu tarafı fiyat servisi.
 // - Hisse / döviz / gram altın: Yahoo Finance (yahoo-finance2). BIST ~15 dk gecikmeli.
-// - Kripto: Binance herkese açık REST API (engellenirse data-api.binance.vision aynası)
+// - Kripto: Binance herkese açık REST API (USDT ve TRY pariteleri; engellenirse data-api.binance.vision
+//   aynası; toplu ticker 20'li gruplarla, ağırlık 2) ve BtcTurk (tek toplu /api/v2/ticker isteği)
 // - Yatırım fonları: TEFAS (günde bir fiyat; 0 gelen fiyatlar geçersiz sayılır)
 // - Çeyrek / yarım / tam / cumhuriyet / ata altın, 22 ayar bilezik: Truncgil
 //   (yedek: Genelpara; ikisi de yoksa gram altından "yaklaşık" hesap)
@@ -103,7 +104,7 @@ export function yahooClient() {
 
 // ---- Kaynak anahtarları -------------------------------------------------
 
-type SourceKey = `yahoo:${string}` | `binance:${string}` | `tefas:${string}` | `gold:${string}`;
+type SourceKey = `yahoo:${string}` | `binance:${string}` | `btcturk:${string}` | `tefas:${string}` | `gold:${string}`;
 
 function ttlFor(key: string): number {
   if (key.startsWith("tefas:")) return FUND_TTL_MS;
@@ -126,7 +127,11 @@ export function yahooSymbolFor(type: AssetType, symbol: string): string | null {
 
 /** Bir enstrümanın fiyatı için gereken ham kaynak anahtarları */
 function sourcesFor(type: AssetType, symbol: string): SourceKey[] {
-  if (type === "crypto") return [`binance:${symbol}USDT`];
+  if (type === "crypto") {
+    const c = parseCryptoSymbol(symbol);
+    if (!c) return [];
+    return [c.venue === "BTCTURK" ? `btcturk:${c.base}${c.quote}` : `binance:${c.base}${c.quote}`];
+  }
   if (type === "fund") return [`tefas:${symbol}`];
   if (type === "gold") {
     // Sikke/bilezik fiyatı kaynaktan; kaynak hiç yoksa gram altından yaklaşık hesap için ons + kur da gerekir.
@@ -215,9 +220,26 @@ async function fetchBinanceFrom(base: string, symbols: string[]): Promise<Binanc
   }
 }
 
+/** Toplu ticker isteği en fazla 20 sembol: 1–20 sembol ağırlık 2, 21–100 sembol ağırlık 40 */
+const BINANCE_CHUNK = 20;
+
 async function fetchBinance(symbols: string[]): Promise<Map<string, RawQuote>> {
   const out = new Map<string, RawQuote>();
   if (symbols.length === 0) return out;
+  const chunks: string[][] = [];
+  for (let i = 0; i < symbols.length; i += BINANCE_CHUNK) chunks.push(symbols.slice(i, i + BINANCE_CHUNK));
+  const settled = await Promise.allSettled(chunks.map((c) => fetchBinanceChunk(c)));
+  let firstErr: unknown = null;
+  for (const r of settled) {
+    if (r.status === "fulfilled") for (const [k, v] of r.value) out.set(k, v);
+    else firstErr ??= r.reason;
+  }
+  if (out.size === 0 && firstErr) throw firstErr;
+  return out;
+}
+
+async function fetchBinanceChunk(symbols: string[]): Promise<Map<string, RawQuote>> {
+  const out = new Map<string, RawQuote>();
   let tickers: BinanceTicker[] = [];
   const start = gb.__yatirimBinanceBase ?? 0;
   let lastErr: unknown = null;
@@ -239,9 +261,62 @@ async function fetchBinance(symbols: string[]): Promise<Map<string, RawQuote>> {
     const change = Number(t.priceChangePercent);
     out.set(t.symbol, {
       price,
-      currency: "USD",
+      // TRY paritelerinin fiyatı TL; USDT pariteleri USD sayılır
+      currency: t.symbol.endsWith("TRY") ? "TRY" : "USD",
       changePct: Number.isFinite(change) ? change : null,
       sourceTime: t.closeTime ?? null,
+    });
+  }
+  return out;
+}
+
+// ---- BtcTurk ---------------------------------------------------------------------
+
+const BTCTURK_TICKER_URL = "https://api.btcturk.com/api/v2/ticker";
+
+interface BtcTurkTicker {
+  pair: string;
+  last: number;
+  dailyPercent: number | null;
+  open?: number | null;
+  timestamp?: number;
+  denominatorSymbol?: string;
+}
+
+const gt = globalThis as unknown as { __yatirimBtcTurk?: { at: number; data: BtcTurkTicker[] } | null; __yatirimBtcTurkJob?: Promise<BtcTurkTicker[]> | null };
+
+/** Tüm BtcTurk çiftlerini tek istekte alır (10 sn bellek; eşzamanlı çağrılar aynı isteği bekler). */
+async function btcturkTickers(): Promise<BtcTurkTicker[]> {
+  const c = gt.__yatirimBtcTurk;
+  if (c && Date.now() - c.at < 10_000) return c.data;
+  gt.__yatirimBtcTurkJob ??= (async () => {
+    const text = await politeFetch("BtcTurk", BTCTURK_TICKER_URL, { timeoutMs: FETCH_TIMEOUT_MS, backoffBaseMs: 30_000 });
+    const data = (JSON.parse(text) as { data?: BtcTurkTicker[] }).data ?? [];
+    gt.__yatirimBtcTurk = { at: Date.now(), data };
+    return data;
+  })().finally(() => {
+    gt.__yatirimBtcTurkJob = null;
+  });
+  return await gt.__yatirimBtcTurkJob;
+}
+
+async function fetchBtcTurk(pairs: string[]): Promise<Map<string, RawQuote>> {
+  const out = new Map<string, RawQuote>();
+  if (pairs.length === 0) return out;
+  const want = new Set(pairs);
+  for (const t of await btcturkTickers()) {
+    if (!want.has(t.pair)) continue;
+    const price = Number(t.last);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const change = Number(t.dailyPercent);
+    const open = Number(t.open);
+    out.set(t.pair, {
+      price,
+      currency: t.pair.endsWith("TRY") ? "TRY" : "USD",
+      changePct: Number.isFinite(change) ? change : null,
+      sourceTime: typeof t.timestamp === "number" ? t.timestamp : null,
+      // BtcTurk "günlük" değişimi 24 saat önceki açılışa göredir
+      prevClose: Number.isFinite(open) && open > 0 ? open : null,
     });
   }
   return out;
@@ -469,11 +544,12 @@ async function refresh(keys: SourceKey[], force: boolean) {
   if (due.length > 0) {
     const yahoo = due.filter((k) => k.startsWith("yahoo:")).map((k) => k.slice(6));
     const binance = due.filter((k) => k.startsWith("binance:")).map((k) => k.slice(8));
+    const btcturk = due.filter((k) => k.startsWith("btcturk:")).map((k) => k.slice(8));
     const funds = due.filter((k) => k.startsWith("tefas:")).map((k) => k.slice(6));
     const golds = due.filter((k) => k.startsWith("gold:")).map((k) => k.slice(5));
 
     const job = (async () => {
-      const [y, b, f, au] = await Promise.allSettled([fetchYahoo(yahoo), fetchBinance(binance), fetchFunds(funds), fetchGoldKinds(golds)]);
+      const [y, b, bt, f, au] = await Promise.allSettled([fetchYahoo(yahoo), fetchBinance(binance), fetchBtcTurk(btcturk), fetchFunds(funds), fetchGoldKinds(golds)]);
       const fetchedAt = Date.now();
       const writes: Promise<void>[] = [];
       const store = (prefix: string, r: PromiseSettledResult<Map<string, RawQuote>>, label: string) => {
@@ -489,6 +565,7 @@ async function refresh(keys: SourceKey[], force: boolean) {
       };
       store("yahoo:", y, "Yahoo");
       store("binance:", b, "Binance");
+      store("btcturk:", bt, "BtcTurk");
       store("tefas:", f, "TEFAS");
       store("gold:", au, "Altın");
       await Promise.all(writes);
@@ -551,6 +628,7 @@ function prevFrom(price: number, changePct: number | null, given?: number | null
 
 function sourceLabel(key: string): string {
   if (key.startsWith("binance:")) return "Binance";
+  if (key.startsWith("btcturk:")) return "BtcTurk";
   if (key.startsWith("tefas:")) return "TEFAS";
   return "Yahoo";
 }
@@ -597,7 +675,7 @@ function buildQuote({ type, symbol }: InstrumentRef): Quote {
 
   const [key] = sourcesFor(type, symbol);
   const { entry, fresh } = key ? readSource(key) : { entry: undefined, fresh: false };
-  if (!entry) return missing(id, type === "fund" ? "TRY" : "", type);
+  if (!entry) return missing(id, type === "fund" ? "TRY" : type === "crypto" ? cryptoCurrency(symbol) : "", type);
   const q = entry.quote;
   return {
     id,

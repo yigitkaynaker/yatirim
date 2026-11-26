@@ -3,13 +3,15 @@
 import { MarketMoodCard } from "./AssetInsights";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ASSET_TYPE_INFO, displaySymbol, parseInstrumentId } from "@/lib/assets";
+import { ASSET_TYPE_INFO, CATALOG_CATEGORY_LABEL, displaySymbol, isIndexInstrument, parseInstrumentId } from "@/lib/assets";
+import type { CatalogItem } from "@/lib/catalog";
 import { formatMoney, formatPercent, formatTime, pnlClass } from "@/lib/format";
 import type { SearchResult, WatchItem } from "@/lib/market";
 import type { Quote } from "@/lib/prices";
 import { goToLogin, usePolling } from "@/lib/usePolling";
 import { Card, inputCls, Modal, PriceMeta, PrimaryButton, StaleBadge } from "./ui";
 import { EmptyState } from "./help";
+import { MarketLists } from "./MarketLists";
 
 /** Genel bakış kartları: kimlik + Türkçe ad */
 export const OVERVIEW: { id: string; label: string }[] = [
@@ -27,7 +29,8 @@ export const OVERVIEW: { id: string; label: string }[] = [
 
 /** Endeksler için para birimi yerine puan gösterilir. */
 export function isIndex(id: string) {
-  return id === "bist:XU100" || id.startsWith("foreign:^");
+  const ref = parseInstrumentId(id);
+  return !!ref && isIndexInstrument(ref.type, ref.symbol);
 }
 
 export function detailHref(id: string, name?: string | null) {
@@ -55,6 +58,36 @@ export function MarketView() {
     const res = await fetch(`/api/watchlist/${w.id}`, { method: "DELETE" });
     if (res.status === 401) return goToLogin();
     void watch.reload();
+  }
+
+  async function addWatch(r: { assetType: string; symbol: string; name: string }) {
+    const res = await fetch("/api/watchlist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assetType: r.assetType, symbol: r.symbol, name: r.name }),
+    });
+    if (res.status === 401) {
+      goToLogin();
+      return false;
+    }
+    if (!res.ok) {
+      alert(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Eklenemedi.");
+      return false;
+    }
+    void watch.reload();
+    return true;
+  }
+
+  /** Piyasa listelerindeki ☆: izleme listesine ekle / çıkar */
+  const watchedIds = new Map((items ?? []).map((w) => [w.instrument, w.id]));
+  async function toggleWatch(it: CatalogItem) {
+    const id = watchedIds.get(it.instrument);
+    if (id != null) {
+      const w = items?.find((x) => x.id === id);
+      if (w) await remove(w);
+    } else {
+      await addWatch(it);
+    }
   }
 
   return (
@@ -164,23 +197,14 @@ export function MarketView() {
         )}
       </section>
 
+      <MarketLists watched={watchedIds} onToggleWatch={(it) => void toggleWatch(it)} />
+
       {adding && (
         <Modal title="İzleme listesine ekle" onClose={() => setAdding(false)}>
           <SymbolSearch
             existing={new Set((items ?? []).map((w) => w.instrument))}
             onPick={async (r) => {
-              const res = await fetch("/api/watchlist", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ assetType: r.assetType, symbol: r.symbol, name: r.name }),
-              });
-              if (res.status === 401) return goToLogin();
-              if (!res.ok) {
-                alert(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Eklenemedi.");
-                return;
-              }
-              setAdding(false);
-              void watch.reload();
+              if (await addWatch(r)) setAdding(false);
             }}
           />
         </Modal>
@@ -189,7 +213,7 @@ export function MarketView() {
   );
 }
 
-/** Yahoo Finance + Binance araması. Yazmayı bırakınca arar. */
+/** Sembol araması (katalog + Yahoo Finance + TEFAS); sonuçlar türe göre gruplu. Yazmayı bırakınca arar. */
 export function SymbolSearch({ onPick, existing }: { onPick: (r: SearchResult) => void; existing?: Set<string> }) {
   const [q, setQ] = useState("");
   const [state, setState] = useState<{ q: string; results: SearchResult[] | null; error?: string }>({ q: "", results: null });
@@ -225,18 +249,23 @@ export function SymbolSearch({ onPick, existing }: { onPick: (r: SearchResult) =
         onChange={(e) => setQ(e.target.value)}
       />
       <p className="text-xs text-slate-500">
-        BIST, yabancı hisse, endeks, döviz, altın türleri ve Binance kripto paritelerinde arar. Yatırım fonu için 3 harfli TEFAS kodunu yazın (örn. AFT);
-        fon, birçok kişinin parasının uzmanlarca hisse, tahvil, altın gibi varlıklara yatırıldığı ortak bir sepettir.
+        BIST, ABD hisse / ETF / endeks, emtia (gümüş, petrol…), döviz, altın türleri ile Binance (USDT ve TL) ve BtcTurk kripto paritelerinde arar. TL
+        paritesi için BTC-TRY, BtcTurk için BTC@BTCTURK yazabilirsiniz. Yatırım fonu için 3 harfli TEFAS kodunu yazın (örn. AFT); fon, birçok kişinin
+        parasının uzmanlarca hisse, tahvil, altın gibi varlıklara yatırıldığı ortak bir sepettir.
       </p>
       {query && !current && <p className="text-sm text-slate-500">Aranıyor…</p>}
       {current?.error && <p className="text-sm text-rose-400">{current.error}</p>}
       {current && !current.error && current.results?.length === 0 && <p className="text-sm text-slate-500">Sonuç bulunamadı.</p>}
       {current?.results && current.results.length > 0 && (
         <ul className="-mx-2 divide-y divide-line/60">
-          {current.results.map((r) => {
+          {current.results.map((r, i) => {
             const added = existing?.has(r.instrument);
+            const header = i === 0 || current.results![i - 1].category !== r.category;
             return (
               <li key={r.instrument}>
+                {header && (
+                  <div className="px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-slate-500">{CATALOG_CATEGORY_LABEL[r.category] ?? ASSET_TYPE_INFO[r.assetType].label}</div>
+                )}
                 <button
                   type="button"
                   disabled={added}
@@ -246,12 +275,9 @@ export function SymbolSearch({ onPick, existing }: { onPick: (r: SearchResult) =
                   <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: ASSET_TYPE_INFO[r.assetType].color }} />
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">{displaySymbol(r.assetType, r.symbol)}</div>
-                    <div className="truncate text-xs text-slate-500">{r.name}</div>
+                    <div className="truncate text-xs text-slate-500">{[r.name, r.exchange, r.currency].filter(Boolean).join(" · ")}</div>
                   </div>
-                  <div className="shrink-0 text-right text-xs text-slate-500">
-                    <div>{ASSET_TYPE_INFO[r.assetType].label}</div>
-                    <div>{added ? "Listede" : r.exchange}</div>
-                  </div>
+                  <div className="shrink-0 text-right text-xs text-slate-500">{added ? "Listede" : CATALOG_CATEGORY_LABEL[r.category]}</div>
                 </button>
               </li>
             );

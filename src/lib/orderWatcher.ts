@@ -53,6 +53,7 @@ export function startOrderWatcher() {
     void runAlarms();
     void runDailySummary();
     void runDailyBackup();
+    void runCatalogRefresh();
   }, ORDER_CHECK_MS);
   timer.unref?.();
   g.__yatirimOrderWatcher = { timer, running: false };
@@ -106,6 +107,20 @@ async function runDailyBackup() {
     gb.__yatirimBackupDay = day;
   } catch (err) {
     console.error("[yedek] zamanlayıcı hatası", err);
+  }
+}
+
+/** Sembol kataloğu (kripto pariteleri, hisse listeleri): günde bir; saatte bir kontrol edilir (catalog.ts). */
+const gk = globalThis as unknown as { __yatirimCatalogCheck?: number };
+async function runCatalogRefresh() {
+  if (Date.now() - (gk.__yatirimCatalogCheck ?? 0) < 3600_000) return;
+  gk.__yatirimCatalogCheck = Date.now();
+  try {
+    const { maybeRefreshCatalog } = await import("./catalog");
+    const r = await maybeRefreshCatalog();
+    if (r) console.log(`[katalog] yenilendi: Binance ${r.binance}, BtcTurk ${r.btcturk}, toplam ${r.total}`);
+  } catch (err) {
+    console.error("[katalog] zamanlayıcı hatası", err);
   }
 }
 

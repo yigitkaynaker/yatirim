@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { ASSET_TYPE_INFO, displaySymbol, FUND_EXPLAIN, GOLD_SPREAD_EXPLAIN, GOLD_SYMBOL, isCurrency, parseInstrumentId, supportsDividends } from "@/lib/assets";
+import { ASSET_TYPE_INFO, defaultCurrencyFor, displaySymbol, FUND_EXPLAIN, GOLD_SPREAD_EXPLAIN, GOLD_SYMBOL, isCurrency, parseInstrumentId, supportsDividends } from "@/lib/assets";
 import { formatMoney, formatPercent, formatTime, pnlClass } from "@/lib/format";
 import type { ChartData, ChartRange, WatchItem } from "@/lib/market";
 import type { Quote } from "@/lib/prices";
@@ -256,7 +256,7 @@ export function AssetDetailView() {
           <PriceChart points={points} currency={currency} intraday={!!current?.data?.intraday} overlays={overlays} rsi={rsiPoints} />
           {(!current || current.error || points.length === 0) && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">
-              {!current ? "Grafik yükleniyor…" : current.error ? <span className="text-rose-400">{current.error}</span> : "Bu aralık için veri yok."}
+              {!current ? "Grafik yükleniyor…" : current.error ? <span className="text-rose-400">{current.error}</span> : "Bu aralık için grafik verisi yok."}
             </div>
           )}
         </div>
@@ -370,7 +370,7 @@ export function AssetDetailView() {
               assetType: ref.type,
               symbol: ref.symbol,
               price: q?.price != null ? toInput(q.price, 6) : "",
-              currency: isCurrency(q?.currency) ? q.currency : ASSET_TYPE_INFO[ref.type].defaultCurrency,
+              currency: isCurrency(q?.currency) ? q.currency : defaultCurrencyFor(ref.type, ref.symbol),
             }}
             onSaved={() => done("İşlem gerçek portföye eklendi.")}
           />

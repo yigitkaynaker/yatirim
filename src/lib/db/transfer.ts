@@ -36,10 +36,11 @@ export const DATA_TABLES = [
   "price_cache",
   "dividend_history",
   "ext_cache",
+  "symbol_catalog",
 ] as const;
 
 /** Yeniden oluşan önbellek tabloları (JSON yedeğe varsayılan olarak girmez) */
-export const CACHE_TABLES = new Set<string>(["price_cache", "dividend_history", "ext_cache"]);
+export const CACHE_TABLES = new Set<string>(["price_cache", "dividend_history", "ext_cache", "symbol_catalog"]);
 
 /** Kimlik (id) sütunu otomatik artan tablolar: yükleme sonrası sayaç ayarlanır */
 export const ID_TABLES = new Set<string>([

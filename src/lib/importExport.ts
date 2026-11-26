@@ -2,7 +2,7 @@ import "server-only";
 import { background } from "./background";
 import { createHash } from "node:crypto";
 import { getDb } from "./db";
-import { ASSET_TYPE_INFO, ASSET_TYPES, isAssetType, normalizeSymbol, type AssetType } from "./assets";
+import { ASSET_TYPE_INFO, ASSET_TYPES, defaultCurrencyFor, isAssetType, normalizeSymbol, type AssetType } from "./assets";
 import {
   activeTransactions,
   getPortfolio,
@@ -313,7 +313,7 @@ async function buildRows(text: string, opts: ImportOptions): Promise<{ headers: 
     const price = parseNumberLoose(pRaw);
     if (!Number.isFinite(price) || price < 0) errors.push(`Fiyat geçersiz: "${pRaw}".`);
     const curRaw = cell(cells, "currency").toUpperCase().replace(/^TL$/, "TRY");
-    const currency = curRaw || (assetType ? ASSET_TYPE_INFO[assetType].defaultCurrency : "TRY");
+    const currency = curRaw || (assetType && symbol ? defaultCurrencyFor(assetType, symbol) : assetType ? ASSET_TYPE_INFO[assetType].defaultCurrency : "TRY");
     if (!["TRY", "USD", "EUR"].includes(currency)) errors.push(`Para birimi desteklenmiyor: "${curRaw}" (TRY, USD, EUR).`);
     const feeRaw = cell(cells, "fee");
     const fee = feeRaw ? Math.abs(parseNumberLoose(feeRaw)) : 0;

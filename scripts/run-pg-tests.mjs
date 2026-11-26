@@ -20,6 +20,7 @@ const SUITES = [
   ["test-help.ts", true],
   ["test-users.ts", true],
   ["test-ollama.ts", true],
+  ["test-catalog.ts", true],
 ];
 
 /** Alt süreci çalıştırır; çıkış kodu */

@@ -1,6 +1,9 @@
 import "server-only";
 import { getDb } from "./db";
 import {
+  CATALOG_CATEGORIES,
+  defaultCategory,
+  defaultCurrencyFor,
   GOLD_KINDS,
   GOLD_SYMBOL,
   goldKind,
@@ -8,8 +11,12 @@ import {
   isAssetType,
   isValidSymbol,
   normalizeSymbol,
+  parseCryptoSymbol,
   type AssetType,
+  type CatalogCategory,
 } from "./assets";
+import { rememberSearchHit, searchCatalog } from "./catalog";
+import { COMMODITIES, COMMODITY_KEYWORDS } from "./catalogData";
 import { ValidationError } from "./portfolio";
 import { getCurrentUserId } from "./userContext";
 import { fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
@@ -85,91 +92,117 @@ export interface SearchResult {
   name: string;
   /** Borsa / kaynak etiketi */
   exchange: string;
+  /** Piyasa listesi (Kripto, BIST, ABD Hisseleri, ETF, Endeksler, Emtia, Döviz, Altın, Fonlar) */
+  category: CatalogCategory;
+  /** Fiyatın para birimi (endekslerde boş) */
+  currency: string;
 }
 
 /** Türkçe anahtar kelimelerle bulunabilen hazır varlıklar */
 const BUILTIN: (SearchResult & { keys: string[] })[] = [
-  { instrument: "gold:GRAM", assetType: "gold", symbol: GOLD_SYMBOL, name: "Gram Altın", exchange: "Hesaplanan", keys: ["altın", "altin", "gram", "gold"] },
+  { instrument: "gold:GRAM", assetType: "gold", symbol: GOLD_SYMBOL, name: "Gram Altın", exchange: "Hesaplanan", category: "altin", currency: "TRY", keys: ["altın", "altin", "gram", "gold"] },
   ...GOLD_KINDS.filter((k) => k.symbol !== GOLD_SYMBOL).map((k) => ({
     instrument: `gold:${k.symbol}`,
     assetType: "gold" as const,
     symbol: k.symbol,
     name: k.label,
     exchange: "Kuyumcu",
+    category: "altin" as const,
+    currency: "TRY",
     keys: ["altın", "altin", "gold", k.label.toLocaleLowerCase("tr-TR"), k.symbol.toLowerCase(), ...(k.symbol === "BILEZIK22" ? ["bilezik", "22 ayar"] : [])],
   })),
-  { instrument: "foreign:GC=F", assetType: "foreign", symbol: "GC=F", name: "Ons Altın (vadeli)", exchange: "COMEX", keys: ["ons", "altın", "altin", "gold"] },
-  { instrument: "fx:USD", assetType: "fx", symbol: "USD", name: "Amerikan Doları", exchange: "Döviz", keys: ["dolar", "usd"] },
-  { instrument: "fx:EUR", assetType: "fx", symbol: "EUR", name: "Euro", exchange: "Döviz", keys: ["euro", "avro", "eur"] },
-  { instrument: "fx:GBP", assetType: "fx", symbol: "GBP", name: "İngiliz Sterlini", exchange: "Döviz", keys: ["sterlin", "pound", "gbp"] },
-  { instrument: "bist:XU100", assetType: "bist", symbol: "XU100", name: "BIST 100 Endeksi", exchange: "Borsa İstanbul", keys: ["bist", "xu100", "endeks"] },
+  // Emtia kısayolları: "gümüş", "petrol", "brent", "doğalgaz", "bakır"…
+  ...COMMODITIES.filter(([sym]) => COMMODITY_KEYWORDS[sym]).map(([sym, name]) => ({
+    instrument: `foreign:${sym}`,
+    assetType: "foreign" as const,
+    symbol: sym,
+    name,
+    exchange: "Vadeli",
+    category: "emtia" as const,
+    currency: "USD",
+    keys: COMMODITY_KEYWORDS[sym],
+  })),
+  { instrument: "fx:USD", assetType: "fx", symbol: "USD", name: "Amerikan Doları", exchange: "Döviz", category: "doviz", currency: "TRY", keys: ["dolar", "usd"] },
+  { instrument: "fx:EUR", assetType: "fx", symbol: "EUR", name: "Euro", exchange: "Döviz", category: "doviz", currency: "TRY", keys: ["euro", "avro", "eur"] },
+  { instrument: "fx:GBP", assetType: "fx", symbol: "GBP", name: "İngiliz Sterlini", exchange: "Döviz", category: "doviz", currency: "TRY", keys: ["sterlin", "pound", "gbp"] },
+  { instrument: "bist:XU100", assetType: "bist", symbol: "XU100", name: "BIST 100 Endeksi", exchange: "Borsa İstanbul", category: "endeks", currency: "", keys: ["bist", "xu100", "endeks"] },
 ];
 
-interface BinanceSymbols {
-  at: number;
-  bases: string[];
-}
-const g = globalThis as unknown as { __yatirimBinanceSymbols?: BinanceSymbols };
-
-/** Binance'teki USDT paritelerinin taban sembolleri (günde bir kez yenilenir). */
-async function binanceBases(): Promise<string[]> {
-  const c = g.__yatirimBinanceSymbols;
-  if (c && Date.now() - c.at < 24 * 3600_000) return c.bases;
-  try {
-    const res = await fetch("https://api.binance.com/api/v3/ticker/price", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
-    if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-    const all = await res.json() as { symbol: string }[];
-    const bases = all.filter((t) => t.symbol.endsWith("USDT")).map((t) => t.symbol.slice(0, -4)).filter((b) => /^[A-Z0-9]{2,12}$/.test(b));
-    g.__yatirimBinanceSymbols = { at: Date.now(), bases };
-    return bases;
-  } catch (err) {
-    console.warn("[piyasa] Binance sembol listesi alınamadı:", (err as Error).message);
-    return c?.bases ?? [];
-  }
-}
-
 /** Yahoo arama sonucunu uygulamadaki varlık türüne çevirir. */
-function mapYahoo(symbol: string, quoteType: string): { assetType: AssetType; symbol: string } | null {
+export function mapYahoo(symbol: string, quoteType: string): { assetType: AssetType; symbol: string; category: CatalogCategory } | null {
   const s = symbol.toUpperCase();
-  if (s.endsWith(".IS")) return { assetType: "bist", symbol: s.slice(0, -3) };
+  if (s.endsWith(".IS")) {
+    const sym = s.slice(0, -3);
+    return { assetType: "bist", symbol: sym, category: quoteType === "INDEX" ? "endeks" : defaultCategory("bist", sym) };
+  }
   if (quoteType === "CRYPTOCURRENCY") {
     const base = s.replace(/-USD$/, "");
-    return /^[A-Z0-9]{2,12}$/.test(base) ? { assetType: "crypto", symbol: base } : null;
+    return /^[A-Z0-9]{1,15}$/.test(base) ? { assetType: "crypto", symbol: base, category: "kripto" } : null;
   }
   if (quoteType === "CURRENCY") {
     const m = /^([A-Z]{3})TRY=X$/.exec(s);
-    return m ? { assetType: "fx", symbol: m[1] } : null;
+    return m ? { assetType: "fx", symbol: m[1], category: "doviz" } : null;
   }
-  if (["EQUITY", "ETF", "INDEX", "FUTURE", "MUTUALFUND"].includes(quoteType)) return { assetType: "foreign", symbol: s };
-  return null;
+  // "foreign" türü korunur; alt kategori (Hisse / ETF / Endeks / Emtia) Yahoo quoteType'tan gelir
+  const cat: Record<string, CatalogCategory> = { EQUITY: "hisse", ETF: "etf", MUTUALFUND: "etf", INDEX: "endeks", FUTURE: "emtia" };
+  return cat[quoteType] ? { assetType: "foreign", symbol: s, category: cat[quoteType] } : null;
 }
 
-/** Yahoo Finance araması + Binance pariteleri + hazır Türkçe eşleşmeler. */
+/**
+ * Arama sonuçlarını türe göre gruplar: grupların sırası, grubun en alakalı (ilk) sonucunun sırasıdır
+ * (hazır Türkçe eşleşmeler ve fonlar en başta, sonra katalog, en son Yahoo). Grup içinde sıra korunur.
+ */
+export function groupResults<T extends { category: CatalogCategory }>(results: T[]): T[] {
+  const first = new Map<CatalogCategory, number>();
+  results.forEach((r, i) => {
+    if (!first.has(r.category)) first.set(r.category, i);
+  });
+  const rank = (c: CatalogCategory) => first.get(c) ?? CATALOG_CATEGORIES.length;
+  return results
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => rank(a.r.category) - rank(b.r.category) || a.i - b.i)
+    .map((x) => x.r);
+}
+
+/** Arama sonucu üst sınırı (kategori başına ve toplam) */
+const SEARCH_PER_CATEGORY = 15;
+const SEARCH_MAX = 60;
+
+/**
+ * Arama: hazır Türkçe eşleşmeler + bilinen fonlar + sembol kataloğu (kripto pariteleri, BIST, ABD hisse /
+ * ETF / endeks / emtia, döviz) + Yahoo Finance. Sonuçlar türe göre gruplu döner (kategori başına en fazla 15).
+ */
 export async function searchSymbols(rawQuery: string): Promise<SearchResult[]> {
   const q = rawQuery.trim();
   if (q.length < 1) return [];
   const lower = q.toLocaleLowerCase("tr-TR");
-  const upper = q.toLocaleUpperCase("en-US").replace(/\s+/g, "");
   const out: SearchResult[] = [];
   const seen = new Set<string>();
+  const perCat = new Map<CatalogCategory, number>();
   const push = (r: SearchResult) => {
-    if (seen.has(r.instrument) || !isValidSymbol(r.assetType, r.symbol)) return;
+    if (seen.has(r.instrument) || !isValidSymbol(r.assetType, r.symbol)) return false;
+    const n = perCat.get(r.category) ?? 0;
+    if (n >= SEARCH_PER_CATEGORY) return false;
+    perCat.set(r.category, n + 1);
     seen.add(r.instrument);
     out.push(r);
+    return true;
   };
 
-  for (const b of BUILTIN) if (b.keys.some((k) => k.startsWith(lower) || lower.startsWith(k))) push(b);
+  for (const { keys, ...b } of BUILTIN) if (keys.some((k) => k.startsWith(lower) || (k.length >= 3 && lower.startsWith(k)))) push(b);
 
   // Yatırım fonları: daha önce doğrulanan fonlar (kod / ad), 3 karakterli kod yazıldıysa TEFAS'ta doğrula.
   for (const f of (await searchKnownFunds(q, lower))) push(f);
   const fundCode = /^[A-Za-z0-9]{3}$/.test(q) ? q.toLocaleUpperCase("en-US") : null;
 
-  const [yahoo, bases, fund] = await Promise.allSettled([
+  const [catalog, yahoo, fund] = await Promise.allSettled([
+    searchCatalog(q, SEARCH_PER_CATEGORY),
     yahooClient().search(q, { quotesCount: 12, newsCount: 0 }, { validateResult: false }),
-    binanceBases(),
     fundCode && !seen.has(`fund:${fundCode}`) ? lookupFund(fundCode) : Promise.resolve(null),
   ]);
   if (fund.status === "fulfilled" && fund.value) push(fund.value);
+  if (catalog.status === "fulfilled") for (const c of catalog.value) push(c);
+  else console.warn("[piyasa] katalog araması hatası:", (catalog.reason as Error)?.message);
 
   if (yahoo.status === "fulfilled") {
     const quotes = ((yahoo.value as { quotes?: unknown[] }).quotes ?? []) as Record<string, unknown>[];
@@ -177,31 +210,21 @@ export async function searchSymbols(rawQuery: string): Promise<SearchResult[]> {
       if (typeof r.symbol !== "string" || r.isYahooFinance === false) continue;
       const ref = mapYahoo(r.symbol, String(r.quoteType ?? ""));
       if (!ref) continue;
-      push({
+      const hit: SearchResult = {
         ...ref,
         instrument: instrumentId(ref.assetType, ref.symbol),
         name: String(r.longname ?? r.shortname ?? r.symbol),
         exchange: String(r.exchDisp ?? r.exchange ?? ""),
-      });
+        currency: ref.category === "endeks" ? "" : defaultCurrencyFor(ref.assetType, ref.symbol),
+      };
+      // Yahoo'da bulunan yabancı / BIST sembolü ilgili listede de görünsün (katalog genişler)
+      if (push(hit) && (hit.assetType === "foreign" || hit.assetType === "bist")) void rememberSearchHit(hit);
     }
   } else {
     console.warn("[piyasa] Yahoo arama hatası:", (yahoo.reason as Error)?.message);
   }
 
-  if (bases.status === "fulfilled" && upper.length >= 2) {
-    const matches = bases.value
-      .filter((b) => b.startsWith(upper))
-      .sort((a, b) => (a === upper ? -1 : b === upper ? 1 : a.length - b.length))
-      .slice(0, 6);
-    for (const b of matches) push({ instrument: instrumentId("crypto", b), assetType: "crypto", symbol: b, name: `${b}/USDT`, exchange: "Binance" });
-  }
-
-  // Türk kullanıcı için BIST sonuçları önce gelsin (hazır eşleşmeler ve fonlar en üstte kalır).
-  const builtinCount = out.filter((r) => r.assetType === "fund" || BUILTIN.some((b) => b.instrument === r.instrument)).length;
-  const head = out.slice(0, builtinCount);
-  const rest = out.slice(builtinCount);
-  rest.sort((a, b) => Number(b.assetType === "bist") - Number(a.assetType === "bist"));
-  return [...head, ...rest].slice(0, 20);
+  return groupResults(out).slice(0, SEARCH_MAX);
 }
 
 /** funds tablosundaki (daha önce doğrulanmış) fonlarda kod / ad araması */
@@ -212,7 +235,7 @@ async function searchKnownFunds(q: string, lower: string): Promise<SearchResult[
     return rows
       .filter((r) => wantAll || r.code.startsWith(q.toLocaleUpperCase("en-US")) || (q.length >= 3 && (r.name ?? "").toLocaleLowerCase("tr-TR").includes(lower)))
       .slice(0, 8)
-      .map((r) => ({ instrument: instrumentId("fund", r.code), assetType: "fund" as const, symbol: r.code, name: r.name ?? r.code, exchange: "TEFAS" }));
+      .map((r) => ({ instrument: instrumentId("fund", r.code), assetType: "fund" as const, symbol: r.code, name: r.name ?? r.code, exchange: "TEFAS", category: "fon" as const, currency: "TRY" }));
   } catch {
     return [];
   }
@@ -223,7 +246,7 @@ async function lookupFund(code: string): Promise<SearchResult | null> {
   try {
     const f = await fetchFundPrices(code, 1);
     if (!f.last) return null;
-    return { instrument: instrumentId("fund", code), assetType: "fund", symbol: code, name: f.name ?? code, exchange: "TEFAS" };
+    return { instrument: instrumentId("fund", code), assetType: "fund", symbol: code, name: f.name ?? code, exchange: "TEFAS", category: "fon", currency: "TRY" };
   } catch (err) {
     console.warn("[piyasa] TEFAS fon araması yapılamadı:", (err as Error).message);
     return null;
@@ -317,17 +340,62 @@ async function yahooSeries(symbol: string, range: ChartRange): Promise<Series> {
   return { points, currency: currency.toUpperCase(), name };
 }
 
-async function binanceSeries(base: string, range: ChartRange): Promise<Series> {
-  const spec = RANGE_SPEC[range];
-  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(`${base}USDT`)}&interval=${spec.binance}&limit=${spec.limit}`;
+/** Binance mumları; ana uç engellenirse (451/403) piyasa verisi aynası */
+export async function binanceKlines(pair: string, interval: string, limit: number): Promise<[number, string, string, string, string, string, number, ...unknown[]][]> {
+  let lastErr: unknown = null;
+  for (const base of ["https://api.binance.com", "https://data-api.binance.vision"]) {
+    try {
+      const res = await fetch(`${base}/api/v3/klines?symbol=${encodeURIComponent(pair)}&interval=${interval}&limit=${limit}`, {
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        cache: "no-store",
+      });
+      if (!res.ok) throw Object.assign(new Error(`Binance HTTP ${res.status}`), { status: res.status });
+      // [openTime, open, high, low, close, volume, closeTime, ...]
+      return (await res.json()) as [number, string, string, string, string, string, number, ...unknown[]][];
+    } catch (err) {
+      lastErr = err;
+      const status = (err as { status?: number }).status;
+      if (status !== 451 && status !== 403) break;
+    }
+  }
+  throw lastErr;
+}
+
+/** BtcTurk mumları (graph-api.btcturk.com, TradingView biçimi: t, o, h, l, c, v). resolution dakika. */
+export async function btcturkKlines(pair: string, resolutionMin: number, fromMs: number): Promise<{ time: number; close: number; volume: number | null }[]> {
+  const to = Math.floor(Date.now() / 1000);
+  const url = `https://graph-api.btcturk.com/v1/klines/history?symbol=${encodeURIComponent(pair)}&resolution=${resolutionMin}&from=${Math.floor(fromMs / 1000)}&to=${to}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
-  if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-  // [openTime, open, high, low, close, volume, closeTime, ...]
-  const rows = await res.json() as [number, string, string, string, string, ...unknown[]][];
+  if (!res.ok) throw new Error(`BtcTurk grafik HTTP ${res.status}`);
+  const d = (await res.json()) as { s?: string; t?: number[]; c?: number[]; v?: number[] };
+  if (d.s !== "ok" || !Array.isArray(d.t) || !Array.isArray(d.c)) return [];
+  const out: { time: number; close: number; volume: number | null }[] = [];
+  for (let i = 0; i < d.t.length; i++) {
+    const close = Number(d.c[i]);
+    const vol = Number(d.v?.[i]);
+    if (Number.isFinite(d.t[i]) && Number.isFinite(close) && close > 0) out.push({ time: d.t[i], close, volume: Number.isFinite(vol) && vol > 0 ? vol : null });
+  }
+  return out;
+}
+
+/** Binance aralıklarının BtcTurk karşılığı (dakika) */
+const BTCTURK_RES: Record<string, number> = { "5m": 5, "30m": 30, "4h": 240, "1d": 1440, "1w": 10080 };
+
+async function cryptoSeries(symbol: string, range: ChartRange): Promise<Series> {
+  const c = parseCryptoSymbol(symbol);
+  if (!c) throw new Error("Kripto sembolü geçersiz.");
+  const spec = RANGE_SPEC[range];
+  const currency = c.quote === "TRY" ? "TRY" : "USD";
+  const name = `${c.base}/${c.quote}${c.venue === "BTCTURK" ? " (BtcTurk)" : ""}`;
+  if (c.venue === "BTCTURK") {
+    const rows = await btcturkKlines(`${c.base}${c.quote}`, BTCTURK_RES[spec.binance] ?? 1440, Date.now() - spec.ms);
+    return { points: rows.map((r) => ({ time: r.time, value: r.close })), currency, name };
+  }
+  const rows = await binanceKlines(`${c.base}${c.quote}`, spec.binance, spec.limit);
   const points = rows
     .map((r) => ({ time: Math.floor(r[0] / 1000), value: Number(r[4]) }))
     .filter((p) => Number.isFinite(p.value));
-  return { points, currency: "USD", name: `${base}/USDT` };
+  return { points, currency, name };
 }
 
 /** Gram altın = ons (GC=F) × USDTRY / 31,1035; her ons noktası için en yakın önceki kur kullanılır. */
@@ -376,7 +444,7 @@ export async function getChart(type: AssetType, symbol: string, range: ChartRang
   if (cached && Date.now() - cached.at < ttl) return cached.data;
 
   let s: Series;
-  if (type === "crypto") s = await binanceSeries(symbol, range);
+  if (type === "crypto") s = await cryptoSeries(symbol, range);
   else if (type === "fund") s = await fundSeries(symbol, range);
   else if (type === "gold") s = symbol === GOLD_SYMBOL ? await gramGoldSeries(range) : await goldKindSeries(symbol, range);
   else s = await yahooSeries(yahooSymbolFor(type, symbol)!, range);

@@ -1,7 +1,7 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import * as actions from "./actions";
-import { ASSET_TYPES, displaySymbol, isAssetType, isCurrency, normalizeSymbol, type AssetType, type Mode } from "./assets";
+import { ASSET_TYPES, CATALOG_CATEGORY_LABEL, displaySymbol, isAssetType, isCurrency, normalizeSymbol, type AssetType, type Mode } from "./assets";
 import { formatMoney, formatQuantity } from "./format";
 import { todayIstanbul } from "./portfolio";
 import { getLatestReport } from "./news";
@@ -28,7 +28,7 @@ export interface ToolOutcome {
   card?: ActionCard;
 }
 
-const assetTypeProp = { type: "string", enum: [...ASSET_TYPES], description: "bist: BIST hissesi, foreign: yabancı hisse/endeks, crypto: kripto, fx: döviz, gold: altın (symbol GRAM = gram altın, CEYREK, YARIM, TAM, CUMHURIYET, ATA, BILEZIK22 = 22 ayar bilezik gramı), fund: TEFAS yatırım fonu (3 karakterli fon kodu, örn. AFT)" };
+const assetTypeProp = { type: "string", enum: [...ASSET_TYPES], description: "bist: BIST hissesi, foreign: yabancı hisse / ETF / endeks (^GSPC) / emtia vadelisi (GC=F altın, SI=F gümüş, CL=F petrol, BZ=F Brent, NG=F doğalgaz, HG=F bakır), crypto: kripto (symbol BTC = Binance BTC/USDT, fiyat USD; BTC-TRY = Binance BTC/TL; BTC@BTCTURK = BtcTurk BTC/TL; BTC-USDT@BTCTURK = BtcTurk BTC/USDT), fx: döviz, gold: altın (symbol GRAM = gram altın, CEYREK, YARIM, TAM, CUMHURIYET, ATA, BILEZIK22 = 22 ayar bilezik gramı), fund: TEFAS yatırım fonu (3 karakterli fon kodu, örn. AFT)" };
 const modeProp = { type: "string", enum: ["real", "virtual"], description: "real: gerçek portföy, virtual: sanal portföy" };
 const currencyProp = { type: "string", enum: ["TRY", "USD", "EUR"] };
 const numProp = (description: string) => ({ type: "number", description });
@@ -61,7 +61,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "search_symbol",
-    description: "Sembol arar (şirket adı, kısaltma ya da \"altın\", \"dolar\" gibi Türkçe kelimeler). Doğru asset_type ve symbol'ü bulmak için kullan.",
+    description: "Sembol arar (şirket adı, kısaltma ya da \"altın\", \"dolar\", \"gümüş\", \"petrol\" gibi Türkçe kelimeler). Kripto paritelerinin tümünü (Binance USDT/TL, BtcTurk) de bulur. Doğru asset_type ve symbol'ü bulmak için kullan; sonuçlar kategori (liste), borsa ve para birimiyle gelir.",
     input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
   },
   {
@@ -258,12 +258,12 @@ function ref(i: Input): { assetType: AssetType; symbol: string } {
   return { assetType: i.asset_type, symbol };
 }
 
-/** asset_type verilmediğinde sembolden tahmin: THYAO.IS → bist, BTCUSDT → crypto, diğerleri → foreign */
+/** asset_type verilmediğinde sembolden tahmin: THYAO.IS → bist, BTCUSDT / BTC-TRY / BTC@BTCTURK → crypto, diğerleri → foreign */
 function guessRef(raw: string): { assetType: AssetType; symbol: string } {
   const up = raw.trim().toLocaleUpperCase("en-US");
   if (!up) throw new actions.ValidationError("symbol eksik.");
   if (up.endsWith(".IS")) return { assetType: "bist", symbol: normalizeSymbol("bist", up) };
-  if (/USDT$/.test(up)) return { assetType: "crypto", symbol: normalizeSymbol("crypto", up) };
+  if (/USDT$|@(BTCTURK|BINANCE)$|^[A-Z0-9]+[-/](TRY|USDT)$/.test(up)) return { assetType: "crypto", symbol: normalizeSymbol("crypto", up) };
   if (up === "GRAM" || up === "ALTIN") return { assetType: "gold", symbol: "GRAM" };
   return { assetType: "foreign", symbol: normalizeSymbol("foreign", up) };
 }
@@ -408,7 +408,7 @@ async function run(name: string, i: Input, ctx: ToolContext): Promise<ToolOutcom
 
     case "search_symbol": {
       const res = await actions.searchSymbols(String(i.query ?? ""));
-      return { result: res.slice(0, 8).map((s) => ({ asset_type: s.assetType, symbol: s.symbol, ad: s.name, borsa: s.exchange })) };
+      return { result: res.slice(0, 20).map((s) => ({ asset_type: s.assetType, symbol: s.symbol, ad: s.name, borsa: s.exchange, para_birimi: s.currency || null, liste: CATALOG_CATEGORY_LABEL[s.category] })) };
     }
 
     case "create_sanal_position": {

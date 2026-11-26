@@ -206,19 +206,33 @@ export const SECTIONS_1: GuideSection[] = [
   {
     id: "piyasa",
     title: "Piyasa ve izleme listesi",
-    summary: "Genel bakış, izleme listesine ekleme ve varlık sayfası.",
+    summary: "Genel bakış, piyasa listeleri (kripto, BIST, ABD, ETF, endeks, emtia…), izleme listesi ve varlık sayfası.",
     blocks: [
       {
         type: "p",
         text: "Piyasa sayfası, piyasanın bugünkü \"hava durumu\"dur: [[bist-100|BIST 100]], dolar, euro, gram ve ons altın, Bitcoin, Ethereum, S&P 500 ve Nasdaq'ın günlük yüzde değişimi. Yeşil yükseldi, kırmızı düştü demektir. Kripto piyasası için ayrıca \"Korku ve Açgözlülük\" göstergesi vardır.",
+      },
+      { type: "h", text: "Piyasa listeleri" },
+      {
+        type: "p",
+        text: "Sayfanın altında her tür için ayrı bir liste vardır: **Kripto · BIST · ABD Hisseleri · ETF · Endeksler · Emtia · Döviz · Altın · Fonlar**. Bir sekmeye dokun, listenin içinde ara; görünen satırların canlı fiyatı ve günlük değişimi gelir. Liste uzunsa altta **Sonraki ›** ile sayfa değiştir. Satıra dokunmak varlık sayfasını açar, sağdaki **☆** ise izleme listesine ekler ya da çıkarır.",
+      },
+      {
+        type: "list",
+        items: [
+          "**Kripto:** Binance'in USDT ve TL pariteleri ile BtcTurk'ün TL pariteleri. Aynı coin her borsada ayrı satırdır; üstteki düğmelerle borsaya göre süzebilirsin.",
+          "**Sembol yazımı:** **BTC** = Binance BTC/USDT (fiyat dolar), **BTC-TRY** = Binance BTC/TL, **BTC@BTCTURK** = BtcTurk BTC/TL. TL paritelerinde fiyat, kâr/zarar ve işlem para birimi TL'dir.",
+          "**Emtia:** altın (GC=F), gümüş (SI=F), petrol (CL=F, Brent BZ=F), doğalgaz (NG=F), bakır (HG=F) gibi vadeli fiyatlar, dolar cinsinden. Aramada \"gümüş\", \"petrol\" yazman yeterli.",
+          "**Endeksler:** BIST 100, BIST 30, S&P 500, Nasdaq, DAX gibi endeksler puan olarak gösterilir.",
+        ],
       },
       { type: "h", text: "İzleme listesine eklemek" },
       {
         type: "steps",
         items: [
           "Piyasa sayfasında **İzleme listesi** başlığının yanındaki **+ Ekle**'ye bas.",
-          "Aramak istediğini yaz: şirket kodu (ASELS), Türkçe kelime (altın, dolar), kripto (BTC) ya da fon kodu (AFT).",
-          "Sonuçlardan birine dokun; varlık listene eklenir.",
+          "Aramak istediğini yaz: şirket kodu (ASELS), Türkçe kelime (altın, dolar, gümüş), kripto (BTC, BTC-TRY) ya da fon kodu (AFT).",
+          "Sonuçlar türe göre gruplu gelir (Kripto, BIST, ABD Hisseleri…); her satırda ad · borsa · para birimi yazar. Birine dokun; varlık listene eklenir.",
         ],
       },
       { type: "tip", text: "[[izleme-listesi|İzleme listesi]], para harcamadan bir varlığı tanımanın en kolay yoludur. Birkaç hafta izle, sonra istersen sanal olarak dene." },

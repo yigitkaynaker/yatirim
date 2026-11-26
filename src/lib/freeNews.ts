@@ -1,6 +1,6 @@
 import "server-only";
 import { getDb } from "./db";
-import { goldKind, instrumentId, type AssetType } from "./assets";
+import { cryptoBase, goldKind, instrumentId, type AssetType } from "./assets";
 import { politeFetch } from "./http";
 import { dedupeHeadlines, parseRss, type Headline } from "./rssParse";
 
@@ -43,7 +43,7 @@ export function rssQuery(type: AssetType, symbol: string, name?: string | null):
     case "foreign":
       return name && name.length < 40 ? `${symbol} ${name}` : symbol;
     case "crypto":
-      return CRYPTO_NAMES[symbol] ?? `${symbol} kripto`;
+      return CRYPTO_NAMES[cryptoBase(symbol)] ?? `${cryptoBase(symbol)} kripto`;
     case "fx":
       return FX_NAMES[symbol] ?? `${symbol} TL kur`;
     case "gold":
@@ -60,7 +60,7 @@ function googleUrl(q: string) {
 /** Yahoo yalnızca yabancı hisse ve kriptoda (BIST için gürültülü) */
 function yahooUrl(type: AssetType, symbol: string): string | null {
   if (type === "foreign" && !symbol.startsWith("^")) return `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${encodeURIComponent(symbol)}&region=US&lang=en-US`;
-  if (type === "crypto") return `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${encodeURIComponent(`${symbol}-USD`)}&region=US&lang=en-US`;
+  if (type === "crypto") return `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${encodeURIComponent(`${cryptoBase(symbol)}-USD`)}&region=US&lang=en-US`;
   return null;
 }
 

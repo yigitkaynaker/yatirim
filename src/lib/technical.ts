@@ -1,9 +1,9 @@
 import "server-only";
 import { background } from "./background";
 import { getDb, sqlNow } from "./db";
-import { displaySymbol, GOLD_SYMBOL, goldKind, instrumentId, type AssetType } from "./assets";
+import { displaySymbol, GOLD_SYMBOL, goldKind, instrumentId, parseCryptoSymbol, type AssetType } from "./assets";
 import { fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
-import { listWatchlist } from "./market";
+import { binanceKlines, btcturkKlines, listWatchlist } from "./market";
 import { getPortfolio } from "./portfolio";
 import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
@@ -22,12 +22,11 @@ import {
 } from "./signalRules";
 
 // TEKNİK ANALİZ SERVİSİ
-// Günlük mumları (Yahoo / Binance) çeker, göstergeleri hesaplar (indicators.ts),
+// Günlük mumları (Yahoo / Binance / BtcTurk) çeker, göstergeleri hesaplar (indicators.ts),
 // kuralları uygular (signalRules.ts). Mumlar 30 dk bellekte tutulur.
 // Günlük sinyal uyarısı: emir izleyici döngüsünden çağrılır; özet sinyal bir
 // önceki günlük kontrole göre DEĞİŞTİYSE bildirim + push üretir.
 
-const FETCH_TIMEOUT_MS = 10_000;
 const CANDLE_TTL_MS = 30 * 60_000;
 const TROY_OUNCE_GRAMS = 31.1035;
 const DAY_S = 86_400;
@@ -98,17 +97,23 @@ async function yahooCandles(symbol: string): Promise<CandleSet> {
   return { candles, currency: currency.toUpperCase(), lastPartial };
 }
 
-async function binanceCandles(base: string): Promise<CandleSet> {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(`${base}USDT`)}&interval=1d&limit=${BINANCE_LIMIT}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
-  if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-  const rows = await res.json() as [number, string, string, string, string, string, number, ...unknown[]][];
+/** Kripto günlük mumları: Binance (USDT / TRY) ya da BtcTurk paritesi */
+async function cryptoCandles(symbol: string): Promise<CandleSet> {
+  const c = parseCryptoSymbol(symbol);
+  if (!c) throw new Error("Kripto sembolü geçersiz.");
+  const currency = c.quote === "TRY" ? "TRY" : "USD";
+  if (c.venue === "BTCTURK") {
+    const rows = await btcturkKlines(`${c.base}${c.quote}`, 1440, Date.now() - BINANCE_LIMIT * DAY_S * 1000);
+    const lastRow = rows[rows.length - 1];
+    return { candles: rows, currency, lastPartial: !!lastRow && (lastRow.time + DAY_S) * 1000 > Date.now() };
+  }
+  const rows = await binanceKlines(`${c.base}${c.quote}`, "1d", BINANCE_LIMIT);
   const candles = rows
     .map((r) => ({ time: Math.floor(r[0] / 1000), close: Number(r[4]), volume: Number(r[5]) > 0 ? Number(r[5]) : null }))
     .filter((c) => Number.isFinite(c.close));
   // Kripto 7/24: son mumun kapanış zamanı gelmediyse günün hacmi kısmidir.
   const lastRow = rows[rows.length - 1];
-  return { candles, currency: "USD", lastPartial: !!lastRow && Number(lastRow[6]) > Date.now() };
+  return { candles, currency, lastPartial: !!lastRow && Number(lastRow[6]) > Date.now() };
 }
 
 /** Gram altın = ons × USDTRY / 31,1035 (her gün için o güne kadarki son kur). Hacim yok. */
@@ -144,7 +149,7 @@ export async function getDailyCandles(type: AssetType, symbol: string, opts: { f
   const hit = cache.get(key);
   if (!opts.force && hit && Date.now() - hit.at < CANDLE_TTL_MS) return hit.data;
   let data: CandleSet;
-  if (type === "crypto") data = await binanceCandles(symbol);
+  if (type === "crypto") data = await cryptoCandles(symbol);
   else if (type === "fund") data = await fundCandles(symbol);
   else if (type === "gold") data = symbol === GOLD_SYMBOL ? await gramGoldCandles() : await goldKindCandles(symbol);
   else data = await yahooCandles(yahooSymbolFor(type, symbol)!);
