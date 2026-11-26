@@ -168,6 +168,10 @@ await test("geri uyumluluk: crypto:BTC aynen Binance BTC/USDT (USD)", () => {
   assert.equal(assets.normalizeSymbol("crypto", "BTC-USD"), "BTC");
   assert.equal(assets.normalizeSymbol("crypto", "ETH"), "ETH");
   assert.equal(assets.normalizeSymbol("crypto", "USDT"), "USDT");
+  // Adı USD ile biten coinler bölünmez (PYUSD ≠ PY/USD)
+  assert.equal(assets.normalizeSymbol("crypto", "PYUSD@COINGECKO"), "PYUSD@COINGECKO");
+  assert.equal(assets.normalizeSymbol("crypto", "FDUSD"), "FDUSD");
+  assert.equal(assets.normalizeSymbol("crypto", "TUSD"), "TUSD");
   assert.equal(assets.displaySymbol("crypto", "BTC"), "BTC");
 });
 

@@ -233,8 +233,9 @@ function normalizeCryptoSymbol(raw: string): string {
     pair = m[1];
     quote = m[2] === "TRY" ? "TRY" : "USDT";
   } else if (!pair.includes("-")) {
-    // Eski davranış: BTCUSDT / BTCUSD → BTC (yalnızca USDT kotasyonu ekten çıkarılır)
-    const stripped = pair.replace(/(USDT|USD)$/, "");
+    // Eski davranış: BTCUSDT → BTC (yalnızca USDT eki çıkarılır). "USD" eki çıkarılmaz: adı USD ile
+    // biten coinler var (PYUSD, FDUSD, TUSD…).
+    const stripped = pair.replace(/USDT$/, "");
     if (stripped && stripped !== pair) {
       pair = stripped;
       quote = "USDT";
