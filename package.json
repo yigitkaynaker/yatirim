@@ -20,6 +20,7 @@
     "test:users": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-users.ts",
     "test:ollama": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-ollama.ts",
     "test:help": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-help.ts",
+    "test:video": "node --import ./scripts/ts-hooks.mjs scripts/test-video.ts",
     "test:catalog": "node --conditions=react-server --import ./scripts/ts-hooks.mjs scripts/test-catalog.ts",
     "test:pg": "node scripts/run-pg-tests.mjs",
     "db:migrate": "node --env-file-if-exists=.env.bulut --import ./scripts/ts-hooks.mjs scripts/db-migrate.ts",

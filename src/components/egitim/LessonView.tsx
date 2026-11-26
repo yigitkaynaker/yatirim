@@ -10,6 +10,7 @@ import { CheckIcon, Disclaimer, LevelBadge } from "./common";
 import { PositionCalculator } from "./PositionCalculator";
 import { setLessonDone, useCompletedLessons } from "./progress";
 import { Quiz } from "./Quiz";
+import { unlockSpeech, VideoLesson } from "./VideoLesson";
 
 function Section({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
@@ -38,6 +39,7 @@ export function LessonView({
   const completed = useCompletedLessons();
   const done = completed.has(lesson.slug);
   const [justFinished, setJustFinished] = useState(false);
+  const [video, setVideo] = useState(false);
 
   return (
     <article className="mx-auto max-w-3xl space-y-4 md:space-y-5">
@@ -62,6 +64,25 @@ export function LessonView({
           )}
         </div>
         <h1 className="mt-1 text-xl font-semibold tracking-tight md:text-2xl">{lesson.title}</h1>
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              // iOS Safari sesi yalnızca dokunuşla açar: oynatıcı açılmadan önce burada kilit açılır
+              unlockSpeech();
+              setVideo(true);
+            }}
+            aria-haspopup="dialog"
+            className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:brightness-110"
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden>
+              <path d="M7 4.5v15l12-7.5z" />
+            </svg>
+            Videolu anlat
+          </button>
+          <span className="text-xs text-slate-500">Sesli ve altyazılı, adım adım anlatım</span>
+        </div>
+        {video && <VideoLesson lesson={lesson} onClose={() => setVideo(false)} />}
       </div>
 
       <Section id="nedir" title="Nedir?">

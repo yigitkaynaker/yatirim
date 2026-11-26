@@ -238,6 +238,7 @@ export const SECTIONS_2: GuideSection[] = [
         type: "list",
         items: [
           "Her ders: \"Nedir?\", örnek bir grafik ya da çizim, adım adım yorum, sık yapılan hatalar ve 3 soruluk bir test.",
+          "**Videolu anlat** düğmesi dersi sahne sahne, sesli ve altyazılı anlatır; maddeler ve çizimler adım adım belirir. Oynat/duraklat, sahne atlama, hız (0,75x–1,5x), ses ve altyazı düğmeleri vardır; klavyede Boşluk, ← → ve Esc çalışır. Ses cihazının Türkçe sesiyle okunur; Türkçe ses yoksa anlatım sessiz, altyazıyla ilerler.",
           "Testi bitirince ders tamamlandı olarak işaretlenir. İlerlemen yalnızca bu cihazda saklanır.",
           "\"Uygulamada dene\" bağlantıları öğrendiğini hemen sanal portföyde ya da grafiklerde denemeni sağlar.",
         ],

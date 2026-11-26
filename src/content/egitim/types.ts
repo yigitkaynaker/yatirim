@@ -183,6 +183,21 @@ export interface Lesson {
   tryIt: TryLink[];
   /** Derse özel ek araç */
   extra?: "positionCalculator";
+  /** Videolu anlatım için isteğe bağlı elle yazılmış senaryo; yoksa sahneler ders metninden üretilir (video.ts) */
+  video?: VideoScript;
+}
+
+/** Videolu anlatımın orta sahneleri (giriş ve "mini sınavı dene" kapanışı her zaman eklenir) */
+export interface VideoScript {
+  scenes: {
+    heading: string;
+    /** Ekranda sırayla beliren kısa maddeler */
+    points: string[];
+    /** Her madde için okunacak metin (yoksa maddenin kendisi okunur) */
+    narration?: string[];
+    /** "diagram": dersin çizimi, sayı: o sıradaki grafik örneği */
+    visual?: "diagram" | number;
+  }[];
 }
 
 export type DiagramId = "ucret" | "stopaj" | "cesitlendirme" | "duygular" | "saatler" | "kur" | "gider" | "contango" | "altinMakas";
