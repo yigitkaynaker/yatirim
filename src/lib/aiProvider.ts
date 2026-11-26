@@ -1,17 +1,17 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
-import { aiErrorMessage, getAiClient, getGeminiClient, getOpenAiClient, type AiClient, type UsageKind, type UsageTotals } from "./aiClient";
+import { aiErrorMessage, getAiClient, getOllamaClient, getOpenAiClient, type AiClient, type UsageKind, type UsageTotals } from "./aiClient";
 import { getAiSettings, PROVIDER_LABELS, type AiProviderId } from "./settings";
 import { anthropicProvider } from "./aiAnthropic";
 import { openAiProvider } from "./aiOpenAi";
-import { geminiProvider } from "./aiGemini";
+import { ollamaProvider } from "./aiOllama";
 
 // YAPAY ZEKA SAĞLAYICI ARAYÜZÜ
 // Sohbet, haber analizi, günlük özet ve "neden hareket ediyor" bu arayüzü kullanır; Claude
-// (aiAnthropic.ts), OpenAI (aiOpenAi.ts, Responses API) ve Gemini (aiGemini.ts, generateContent)
-// aynı araç tanımlarıyla çalışır. Sohbet geçmişi veritabanında Claude içerik blokları biçiminde
-// saklanır (text, tool_use, tool_result); OpenAI ve Gemini sağlayıcıları bunları her çağrıda kendi
-// biçimine çevirir (Gemini'nin ham parçaları ve düşünce imzaları bloklarda ek alan olarak saklanır).
+// (aiAnthropic.ts), OpenAI (aiOpenAi.ts, Responses API) ve yerel model (aiOllama.ts, Ollama
+// /api/chat) aynı araç tanımlarıyla çalışır. Sohbet geçmişi veritabanında Claude içerik blokları
+// biçiminde saklanır (text, tool_use, tool_result); diğer sağlayıcılar bunları her çağrıda kendi
+// biçimine çevirir. (Kaldırılan Gemini sağlayıcısının eski sohbetlerdeki ek alanları yok sayılır.)
 
 /** Saklanan sohbet mesajı (Claude biçimi; sağlayıcıdan bağımsız ortak biçim olarak kullanılır) */
 export type CanonMessage = Anthropic.MessageParam;
@@ -76,6 +76,8 @@ export interface CompleteParams {
 export interface AiProvider {
   readonly id: AiProviderId;
   readonly label: string;
+  /** Web araması yapabilir mi (yerel model: hayır; haber analizi aramasız, ücretsiz başlıklarla yapılır) */
+  readonly webSearch: boolean;
   /** Seçili ana model kimliği */
   model(): Promise<string>;
   /** Sohbet: tek model çağrısı (akış hâlinde), araç çağrılarını döndürür */
@@ -103,7 +105,7 @@ export async function getProvider(backend?: AiBackend | null, which?: AiProvider
   if (backend) return isProvider(backend) ? backend : anthropicProvider(backend);
   const id = which ?? (await getAiSettings()).provider;
   if (id === "openai") return openAiProvider(await getOpenAiClient());
-  if (id === "gemini") return geminiProvider(await getGeminiClient());
+  if (id === "ollama") return ollamaProvider(await getOllamaClient());
   return anthropicProvider(await getAiClient());
 }
 

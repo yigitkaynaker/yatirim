@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import { handle, readJson } from "@/lib/api";
 import {
   AI_MODELS,
-  GEMINI_MODELS,
   getAiSettings,
   getDividendWithholding,
   getKapNotifyScope,
   getSharedAiDailyLimit,
   getSharedAiGlobalLimit,
   getSignalAlertsEnabled,
+  localModelUnavailable,
   OPENAI_MODELS,
   publicKeyState,
   setDividendWithholding,
@@ -31,17 +31,18 @@ async function snapshot() {
   // Yalnızca kullanıcının kendi anahtarı (maskeli); sahibin anahtarı başkasına hiç dönmez.
   const an = await publicKeyState("anthropic");
   const oa = await publicKeyState("openai");
-  const gm = await publicKeyState("gemini");
   const owner = await isOwner();
+  const settings = await getAiSettings();
   return {
     key: an,
-    keys: { anthropic: an, openai: oa, gemini: gm },
+    keys: { anthropic: an, openai: oa },
     isOwner: owner,
+    // Yerel model (Ollama): bulutta (Vercel) kullanılamaz; adresi yalnızca sahip görür ve değiştirir
+    localModel: { available: !localModelUnavailable() },
     // Sahibin anahtarını paylaşma: sahip-dışı kullanıcıda günlük sınır ve bugünkü kullanım; sahipte sınır ayarı
     sharedAi: { active: await usesSharedAi(), dailyLimit: await getSharedAiDailyLimit(), usedToday: owner ? 0 : await sharedAiUsedToday(), ...(owner ? { globalLimit: await getSharedAiGlobalLimit(), totalToday: await sharedAiTotalToday() } : {}) },
     openaiModels: OPENAI_MODELS,
-    geminiModels: GEMINI_MODELS,
-    settings: await getAiSettings(),
+    settings: owner ? settings : { ...settings, ollamaUrl: "" },
     models: Object.entries(AI_MODELS).map(([k, m]) => ({ key: k, id: m.id, label: m.label, inputPerMTok: m.inputPerMTok, outputPerMTok: m.outputPerMTok })),
     budget: await getBudgetStatus(),
     savings: await monthlySavings(),
@@ -56,7 +57,7 @@ export async function GET() {
   return handle(async () => (await snapshot()));
 }
 
-/** PUT /api/settings — { provider?, model?, openaiModel?, openaiPrice?, geminiModel?, geminiPrice?, scheduleEnabled?, scheduleTimes?, maxSearches?, budgetUsd?, signalAlerts?, kapNotify? } */
+/** PUT /api/settings — { provider?, model?, openaiModel?, openaiPrice?, ollamaUrl? (sahip), ollamaModel? (sahip), scheduleEnabled?, scheduleTimes?, maxSearches?, budgetUsd?, signalAlerts?, kapNotify? } */
 export async function PUT(req: Request) {
   return handle(async () => {
     const { signalAlerts, kapNotify, withholding, sharedAiDailyLimit, sharedAiGlobalLimit, ...rest } = await readJson(req);

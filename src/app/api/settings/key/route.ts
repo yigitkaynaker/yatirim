@@ -1,13 +1,14 @@
 import { handle, readJson } from "@/lib/api";
-import { deleteApiKey, isAiProviderId, publicKeyState, saveApiKey, type AiProviderId } from "@/lib/settings";
+import { deleteApiKey, isKeyProviderId, publicKeyState, saveApiKey, type KeyProviderId } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
-const providerOf = (v: unknown): AiProviderId => (isAiProviderId(v) ? v : "anthropic");
+// Yalnızca anahtarlı sağlayıcılar (yerel model anahtarsızdır)
+const providerOf = (v: unknown): KeyProviderId => (isKeyProviderId(v) ? v : "anthropic");
 
 // Anahtarlar kullanıcı başınadır: her kullanıcı yalnızca kendi anahtarını kaydeder / siler / (maskeli) görür.
 // Sahibin anahtarı diğer kullanıcılara hiçbir biçimde dönmez (bkz. publicKeyState).
-async function keyState(provider: AiProviderId) {
+async function keyState(provider: KeyProviderId) {
   return { provider, key: await publicKeyState(provider) };
 }
 

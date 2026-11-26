@@ -255,8 +255,9 @@ export async function runChatTurn(opts: {
 
   await insertMessage(conversationId, "user", [{ type: "text", text }]);
 
-  const { maxSearches } = await getAiSettings();
-  const system = await systemPrompt();
+  // Yerel modelde web araması yok: model bunu bilsin (ücretsiz kaynaklarla yetinsin).
+  const maxSearches = provider.webSearch ? (await getAiSettings()).maxSearches : 0;
+  const system = (await systemPrompt()) + (provider.webSearch ? "" : "\n\nBu oturumda web_search aracı YOK; güncel haber için yalnızca get_headlines, get_kap_disclosures ve get_latest_news_report kullan.");
   let turnText = "";
   let lastAssistantId: number | null = null;
   // Web araması bütün tur için sınırlıdır (her adımda kalan hak gönderilir).

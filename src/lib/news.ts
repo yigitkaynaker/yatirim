@@ -18,7 +18,8 @@ import { getCurrentUserId } from "./userContext";
 
 // HABER ANALİZİ
 // Gerçek + sanal pozisyonlar, izleme listesi ve bekleyen emirlerdeki varlıklar
-// için yapay zeka (Claude, OpenAI ya da Gemini) web aramasıyla güncel haberleri arar ve varlık başına yapılandırılmış
+// için yapay zeka (Claude ya da OpenAI web aramasıyla; yerel model aramasız, yalnızca ücretsiz başlık ve KAP
+// bağlamıyla) güncel haberleri değerlendirir ve varlık başına yapılandırılmış
 // bir değerlendirme döndürür (submit_news_report aracı). Raporlar news_reports
 // tablosunda saklanır; önem derecesi 4+ olan maddeler bildirim + push üretir.
 
@@ -406,7 +407,8 @@ export async function startNewsScan(opts: {
 
 async function runScan(reportId: number, provider: AiProvider, only?: { type: AssetType; symbol: string }) {
   const db = await getDb();
-  const { maxSearches } = await getAiSettings();
+  // Yerel modelde web araması yok: tarama ücretsiz başlıklar ve KAP bildirimleriyle yapılır.
+  const maxSearches = provider.webSearch ? (await getAiSettings()).maxSearches : 0;
   let usage = emptyUsage();
   const sources = new Map<string, string>();
   try {

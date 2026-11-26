@@ -59,14 +59,22 @@ export function isAiModelKey(v: unknown): v is AiModelKey {
   return v === "ekonomik" || v === "gelismis";
 }
 
-// ---- Sağlayıcı (Claude / OpenAI / Gemini) ---------------------------------------------
+// ---- Sağlayıcı (Claude / OpenAI / yerel model) ----------------------------------------
 
-export const AI_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
+export const AI_PROVIDERS = ["anthropic", "openai", "ollama"] as const;
 export type AiProviderId = (typeof AI_PROVIDERS)[number];
-export const PROVIDER_LABELS: Record<AiProviderId, string> = { anthropic: "Claude", openai: "OpenAI (ChatGPT)", gemini: "Google Gemini" };
+export const PROVIDER_LABELS: Record<AiProviderId, string> = { anthropic: "Claude", openai: "OpenAI (ChatGPT)", ollama: "Yerel model (Ollama)" };
+
+/** API anahtarı isteyen sağlayıcılar (yerel model anahtarsız çalışır) */
+export const KEY_PROVIDERS = ["anthropic", "openai"] as const;
+export type KeyProviderId = (typeof KEY_PROVIDERS)[number];
 
 export function isAiProviderId(v: unknown): v is AiProviderId {
   return (AI_PROVIDERS as readonly unknown[]).includes(v);
+}
+
+export function isKeyProviderId(v: unknown): v is KeyProviderId {
+  return (KEY_PROVIDERS as readonly unknown[]).includes(v);
 }
 
 /**
@@ -83,26 +91,38 @@ export const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
 /** Günlük özet ve "neden hareket ediyor" için ucuz OpenAI modeli */
 export const OPENAI_CHEAP_MODEL = "gpt-5-nano";
 
-/**
- * Google Gemini modelleri ve ücretli katman fiyatları ($ / milyon token, metin; çıktıya düşünme
- * token'ları dahil). Kaynak: aistudio.google.com/docs/pricing (Kasım 2026). 2.5 modelleri
- * kullanımdan kalkıyor; listede yok. 3.8 Flash fiyatı 1 Ocak 2027'de artacak.
- */
-export const GEMINI_MODELS = [
-  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite (en ucuz)", inputPerMTok: 0.25, outputPerMTok: 1.5 },
-  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (önerilen)", inputPerMTok: 0.3, outputPerMTok: 2.5 },
-  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", inputPerMTok: 0.75, outputPerMTok: 3.75 },
-  { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (gelişmiş)", inputPerMTok: 1.5, outputPerMTok: 7.5 },
-] as const;
-export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
-/** Günlük özet ve "neden hareket ediyor" için ucuz Gemini modeli */
-export const GEMINI_CHEAP_MODEL = "gemini-3.1-flash-lite";
-/** Google Search grounding (Gemini 3+): arama sorgusu başına $14 / 1000 (aylık ilk 5.000 ücretsiz; temkinli tahminde sayılmaz) */
-export const GEMINI_SEARCH_USD = 0.014;
-
 export interface ModelPrice {
   inputPerMTok: number;
   outputPerMTok: number;
+}
+
+/**
+ * Yerel model (Ollama): bilgisayardaki Ollama sunucusu. Ücretsizdir (maliyet 0 kaydedilir), anahtar
+ * istemez, web araması yoktur. Adres ve model YALNIZCA SAHİP tarafından ayarlanır (adres alanı
+ * sunucudan istek attırdığı için SSRF riski); değerler her zaman sahibin kaydından okunur.
+ */
+export const DEFAULT_OLLAMA_URL = "http://localhost:11434";
+/** 4 GB VRAM'e sığan, araç çağırmayı destekleyen önerilen model */
+export const DEFAULT_OLLAMA_MODEL = "qwen3:4b-instruct";
+export const ZERO_PRICE: ModelPrice = { inputPerMTok: 0, outputPerMTok: 0 };
+
+/** Yerel model bu sunucuda kullanılamaz: Vercel'de "localhost" kullanıcının bilgisayarı değildir. */
+export function localModelUnavailable(): boolean {
+  return !!process.env.VERCEL;
+}
+
+/** Ollama adresi: http(s)://sunucu[:port]; kullanıcı adı / şifre / yol / sorgu yok. Geçersizse null. */
+export function normalizeOllamaUrl(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw.trim() || raw.length > 200) return null;
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if ((u.protocol !== "http:" && u.protocol !== "https:") || u.username || u.password || u.search || u.hash) return null;
+  if (u.pathname !== "/" && u.pathname !== "") return null;
+  return `${u.protocol}//${u.host}`;
 }
 
 /** Bilinen modelin fiyatı (yoksa null) */
@@ -110,7 +130,6 @@ export function knownPrice(modelId: string): ModelPrice | null {
   return (
     Object.values(AI_MODELS).find((m) => m.id === modelId) ??
     OPENAI_MODELS.find((m) => m.id === modelId) ??
-    GEMINI_MODELS.find((m) => m.id === modelId) ??
     null
   );
 }
@@ -121,17 +140,18 @@ function isModelId(v: unknown): v is string {
 
 // ---- API anahtarı -----------------------------------------------------------
 
-const KEY_SETTINGS: Record<AiProviderId, { setting: string; env: string }> = {
+// Not: Kaldırılan Gemini sağlayıcısından kalmış "gemini_api_key" kayıtları zararsızdır (okunmaz);
+// JSON dökümünde gizli sayılmaya devam eder (db/transfer.ts).
+const KEY_SETTINGS: Record<KeyProviderId, { setting: string; env: string }> = {
   anthropic: { setting: "anthropic_api_key", env: "ANTHROPIC_API_KEY" },
   openai: { setting: "openai_api_key", env: "OPENAI_API_KEY" },
-  gemini: { setting: "gemini_api_key", env: "GEMINI_API_KEY" },
 };
 
 /** env: .env (sahibin), db: kullanıcının kendi kaydettiği, owner: sahibin anahtarı paylaşımlı kullanılıyor */
 export type KeySource = "env" | "db" | "owner" | null;
 
-/** Sahibin anahtarı: .env'deki ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY önceliklidir; yoksa sahibin Ayarlar'dan kaydettiği. */
-async function ownerKey(provider: AiProviderId): Promise<{ key: string; source: "env" | "db" } | null> {
+/** Sahibin anahtarı: .env'deki ANTHROPIC_API_KEY / OPENAI_API_KEY önceliklidir; yoksa sahibin Ayarlar'dan kaydettiği. */
+async function ownerKey(provider: KeyProviderId): Promise<{ key: string; source: "env" | "db" } | null> {
   const k = KEY_SETTINGS[provider];
   const env = process.env[k.env]?.trim();
   if (env) return { key: env, source: "env" };
@@ -140,7 +160,7 @@ async function ownerKey(provider: AiProviderId): Promise<{ key: string; source: 
 }
 
 /** Geçerli kullanıcının KENDİ anahtarı (sahip için .env dahil); paylaşılan anahtar dahil değil */
-export async function getOwnApiKey(provider: AiProviderId = "anthropic"): Promise<{ key: string | null; source: KeySource }> {
+export async function getOwnApiKey(provider: KeyProviderId = "anthropic"): Promise<{ key: string | null; source: KeySource }> {
   const uid = await getCurrentUserId();
   if (uid === OWNER_USER_ID) {
     const o = await ownerKey(provider);
@@ -155,14 +175,14 @@ export async function getOwnApiKey(provider: AiProviderId = "anthropic"): Promis
  * anahtar öncelikli; yoksa sahibin anahtarı paylaşımlı kullanılır (source "owner"; günlük istek
  * sınırına tabidir, bkz. consumeSharedAiQuota). Sahibin anahtarı istemciye asla dönmez.
  */
-export async function getApiKey(provider: AiProviderId = "anthropic"): Promise<{ key: string | null; source: KeySource }> {
+export async function getApiKey(provider: KeyProviderId = "anthropic"): Promise<{ key: string | null; source: KeySource }> {
   const own = await getOwnApiKey(provider);
   if (own.key || (await getCurrentUserId()) === OWNER_USER_ID) return own;
   const o = await ownerKey(provider);
   return o ? { key: o.key, source: "owner" } : { key: null, source: null };
 }
 
-export async function hasApiKey(provider: AiProviderId = "anthropic"): Promise<boolean> {
+export async function hasApiKey(provider: KeyProviderId = "anthropic"): Promise<boolean> {
   return (await getApiKey(provider)).key != null;
 }
 
@@ -170,7 +190,7 @@ export async function hasApiKey(provider: AiProviderId = "anthropic"): Promise<b
  * İstemciye gösterilecek anahtar durumu: yalnızca kullanıcının KENDİ anahtarı maskeli gösterilir.
  * Sahibin anahtarını paylaşan kullanıcıya yalnızca "owner" kaynağı döner (anahtar, maskeli bile, dönmez).
  */
-export async function publicKeyState(provider: AiProviderId): Promise<{ source: KeySource; masked: string | null }> {
+export async function publicKeyState(provider: KeyProviderId): Promise<{ source: KeySource; masked: string | null }> {
   const own = await getOwnApiKey(provider);
   if (own.key) return { source: own.source, masked: maskKey(own.key) };
   const used = await getApiKey(provider);
@@ -180,7 +200,7 @@ export async function publicKeyState(provider: AiProviderId): Promise<{ source: 
 /** Sahip-dışı kullanıcının hiç kendi anahtarı yok: sahibin yapay zekasını (sağlayıcı + model) paylaşır */
 export async function usesSharedAi(): Promise<boolean> {
   if ((await getCurrentUserId()) === OWNER_USER_ID) return false;
-  for (const p of AI_PROVIDERS) if ((await getOwnApiKey(p)).key) return false;
+  for (const p of KEY_PROVIDERS) if ((await getOwnApiKey(p)).key) return false;
   return true;
 }
 
@@ -300,7 +320,7 @@ export async function consumeSharedAiQuota(now = Date.now()): Promise<void> {
   }
 }
 
-export async function saveApiKey(raw: unknown, provider: AiProviderId = "anthropic") {
+export async function saveApiKey(raw: unknown, provider: KeyProviderId = "anthropic") {
   const key = typeof raw === "string" ? raw.trim() : "";
   if (!key) throw new ValidationError("Anahtar boş olamaz.");
   if (provider === "anthropic" && !/^sk-ant-[A-Za-z0-9_\-]{10,}$/.test(key)) {
@@ -312,25 +332,15 @@ export async function saveApiKey(raw: unknown, provider: AiProviderId = "anthrop
       throw new ValidationError("Bu bir OpenAI API anahtarına benzemiyor. Anahtar \"sk-\" (çoğunlukla \"sk-proj-\") ile başlar.");
     }
   }
-  if (provider === "gemini") {
-    if (key.startsWith("sk-")) throw new ValidationError("Bu bir Claude ya da OpenAI anahtarı. Gemini anahtarı aistudio.google.com/apikey adresinden alınır.");
-    if (!isGeminiKey(key)) {
-      throw new ValidationError("Bu bir Gemini API anahtarına benzemiyor. Anahtar \"AIza\" ya da \"AQ.\" ile başlar (aistudio.google.com/apikey).");
-    }
-  }
   await setSetting(KEY_SETTINGS[provider].setting, key);
   // Kullanıcının seçili sağlayıcısının kendi anahtarı yoksa yeni anahtarın sağlayıcısına geçilir
   // (sahip-dışı kullanıcı kendi anahtarını girince sahibin değil kendi sağlayıcısı geçerli olsun).
+  // Yerel model anahtarsızdır: seçiliyse korunur.
   const cur = await readAiSettings(await getCurrentUserId());
-  if (cur.provider !== provider && !(await getOwnApiKey(cur.provider)).key) await updateAiSettings({ provider });
+  if (cur.provider !== provider && isKeyProviderId(cur.provider) && !(await getOwnApiKey(cur.provider)).key) await updateAiSettings({ provider });
 }
 
-/** Gemini anahtar biçimi: klasik "AIza…" (39 karakter) ya da yeni "AQ.…" biçimi */
-export function isGeminiKey(key: string): boolean {
-  return /^AIza[0-9A-Za-z_\-]{30,}$/.test(key) || /^AQ\.[0-9A-Za-z_\-.]{20,}$/.test(key);
-}
-
-export async function deleteApiKey(provider: AiProviderId = "anthropic") {
+export async function deleteApiKey(provider: KeyProviderId = "anthropic") {
   await deleteSetting(KEY_SETTINGS[provider].setting);
 }
 
@@ -350,10 +360,10 @@ export interface AiSettings {
   openaiModel: string;
   /** Listede olmayan OpenAI modeli için elle girilen fiyat (yoksa null: tahmin en pahalı bilinen modelle) */
   openaiPrice: ModelPrice | null;
-  /** Gemini model kimliği (listeden ya da elle) */
-  geminiModel: string;
-  /** Listede olmayan Gemini modeli için elle girilen fiyat */
-  geminiPrice: ModelPrice | null;
+  /** Ollama sunucu adresi (yalnızca sahibin kaydı geçerlidir) */
+  ollamaUrl: string;
+  /** Ollama model adı (ör. qwen3:4b-instruct; yalnızca sahibin kaydı geçerlidir) */
+  ollamaModel: string;
   /** Otomatik haber taraması açık mı */
   scheduleEnabled: boolean;
   /** "HH:MM" listesi, Europe/Istanbul saatiyle, yalnızca hafta içi */
@@ -369,8 +379,8 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   model: "ekonomik",
   openaiModel: DEFAULT_OPENAI_MODEL,
   openaiPrice: null,
-  geminiModel: DEFAULT_GEMINI_MODEL,
-  geminiPrice: null,
+  ollamaUrl: DEFAULT_OLLAMA_URL,
+  ollamaModel: DEFAULT_OLLAMA_MODEL,
   scheduleEnabled: true,
   scheduleTimes: ["09:45", "13:00", "18:30"],
   // Ücretsiz RSS + KAP bağlamı önce kullanıldığından varsayılan 2 arama yeterli.
@@ -380,14 +390,28 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
 
 const AI_SETTINGS_KEY = "ai_settings";
 
+/**
+ * Kullanıcının kayıtlı ayarları (normalize edilmiş). Kaldırılan Gemini sağlayıcısı kayıtlıysa
+ * kullanıcının kendi anahtarı olan sağlayıcıya (OpenAI, yoksa Claude) dönülür. Sahip-dışı kullanıcıda
+ * yerel model kayıtlı olamaz (JSON geri yüklemesiyle gelse bile varsayılana döner).
+ */
 async function readAiSettings(userId: number): Promise<AiSettings> {
   const raw = await readSetting(userId, AI_SETTINGS_KEY);
   if (!raw) return { ...DEFAULT_AI_SETTINGS };
+  let parsed: Partial<AiSettings>;
+  let s: AiSettings;
   try {
-    return normalizeAiSettings({ ...DEFAULT_AI_SETTINGS, ...(JSON.parse(raw) as Partial<AiSettings>) });
+    parsed = JSON.parse(raw) as Partial<AiSettings>;
+    s = normalizeAiSettings({ ...DEFAULT_AI_SETTINGS, ...parsed });
   } catch {
     return { ...DEFAULT_AI_SETTINGS };
   }
+  if ((parsed.provider as string | undefined) === "gemini") {
+    const oa = userId === OWNER_USER_ID ? await ownerKey("openai") : (await readSetting(userId, KEY_SETTINGS.openai.setting))?.trim();
+    s.provider = oa ? "openai" : DEFAULT_AI_SETTINGS.provider;
+  }
+  if (userId !== OWNER_USER_ID && s.provider === "ollama") s.provider = DEFAULT_AI_SETTINGS.provider;
+  return s;
 }
 
 /**
@@ -395,17 +419,20 @@ async function readAiSettings(userId: number): Promise<AiSettings> {
  * kullanıcıda sağlayıcı ve model sahibin seçimidir; takvim, arama sayısı ve bütçe kullanıcınındır.
  */
 export async function getAiSettings(): Promise<AiSettings> {
-  const own = await readAiSettings(await getCurrentUserId());
-  if (!(await usesSharedAi())) return own;
+  const uid = await getCurrentUserId();
+  const own = await readAiSettings(uid);
+  if (uid === OWNER_USER_ID) return own;
   const o = await readAiSettings(OWNER_USER_ID);
+  // Yerel model adresi ve modeli her zaman sahibinkidir (sahip-dışı kullanıcı adres giremez)
+  const local = { ollamaUrl: o.ollamaUrl, ollamaModel: o.ollamaModel };
+  if (!(await usesSharedAi())) return { ...own, ...local };
   return {
     ...own,
+    ...local,
     provider: o.provider,
     model: o.model,
     openaiModel: o.openaiModel,
     openaiPrice: o.openaiPrice,
-    geminiModel: o.geminiModel,
-    geminiPrice: o.geminiPrice,
   };
 }
 
@@ -448,8 +475,8 @@ function normalizeAiSettings(s: AiSettings): AiSettings {
     model: isAiModelKey(s.model) ? s.model : DEFAULT_AI_SETTINGS.model,
     openaiModel: isModelId(s.openaiModel) ? s.openaiModel : DEFAULT_OPENAI_MODEL,
     openaiPrice: normPrice(s.openaiPrice),
-    geminiModel: isModelId(s.geminiModel) ? s.geminiModel : DEFAULT_GEMINI_MODEL,
-    geminiPrice: normPrice(s.geminiPrice),
+    ollamaUrl: normalizeOllamaUrl(s.ollamaUrl) ?? DEFAULT_OLLAMA_URL,
+    ollamaModel: isModelId(s.ollamaModel) ? s.ollamaModel : DEFAULT_OLLAMA_MODEL,
     scheduleEnabled: !!s.scheduleEnabled,
     scheduleTimes: parseTimes(s.scheduleTimes),
     maxSearches: Math.min(10, Math.max(0, Math.round(Number(s.maxSearches) || 0))),
@@ -459,14 +486,17 @@ function normalizeAiSettings(s: AiSettings): AiSettings {
 
 /** Kısmi güncelleme. Hatalı değerde ValidationError. */
 export async function updateAiSettings(body: Record<string, unknown>): Promise<AiSettings> {
-  const cur = await readAiSettings(await getCurrentUserId());
+  const uid = await getCurrentUserId();
+  const cur = await readAiSettings(uid);
   const next: AiSettings = { ...cur };
+  const ownerOnly = "Yerel model (Ollama) ayarlarını yalnızca uygulama sahibi değiştirebilir.";
   if (body.model !== undefined) {
     if (!isAiModelKey(body.model)) throw new ValidationError("Model geçersiz.");
     next.model = body.model;
   }
   if (body.provider !== undefined) {
     if (!isAiProviderId(body.provider)) throw new ValidationError("Yapay zeka sağlayıcısı geçersiz.");
+    if (body.provider === "ollama" && uid !== OWNER_USER_ID) throw new ValidationError(ownerOnly);
     next.provider = body.provider;
   }
   if (body.openaiModel !== undefined) {
@@ -475,12 +505,18 @@ export async function updateAiSettings(body: Record<string, unknown>): Promise<A
     next.openaiModel = id;
   }
   if (body.openaiPrice !== undefined) next.openaiPrice = parsePrice(body.openaiPrice);
-  if (body.geminiModel !== undefined) {
-    const id = typeof body.geminiModel === "string" ? body.geminiModel.trim() : "";
-    if (!isModelId(id) || !id.startsWith("gemini")) throw new ValidationError("Gemini model adı geçersiz. Örnek: gemini-3.5-flash-lite");
-    next.geminiModel = id;
+  if (body.ollamaUrl !== undefined) {
+    if (uid !== OWNER_USER_ID) throw new ValidationError(ownerOnly);
+    const url = normalizeOllamaUrl(body.ollamaUrl);
+    if (!url) throw new ValidationError("Ollama adresi geçersiz. Örnek: http://localhost:11434");
+    next.ollamaUrl = url;
   }
-  if (body.geminiPrice !== undefined) next.geminiPrice = parsePrice(body.geminiPrice);
+  if (body.ollamaModel !== undefined) {
+    if (uid !== OWNER_USER_ID) throw new ValidationError(ownerOnly);
+    const id = typeof body.ollamaModel === "string" ? body.ollamaModel.trim() : "";
+    if (!isModelId(id)) throw new ValidationError("Model adı geçersiz. Örnek: qwen3:4b-instruct");
+    next.ollamaModel = id;
+  }
   if (body.scheduleEnabled !== undefined) next.scheduleEnabled = !!body.scheduleEnabled;
   if (body.scheduleTimes !== undefined) next.scheduleTimes = parseTimes(body.scheduleTimes);
   if (body.maxSearches !== undefined) {

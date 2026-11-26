@@ -10,8 +10,8 @@ import type { AiProvider, CanonMessage, ChatStepResult } from "./aiProvider";
 const CHEAP_MODEL = AI_MODELS.ekonomik.id;
 
 /**
- * OpenAI / Gemini'den gelen (url_citation) alıntılar Claude'a geri gönderilemez: metin bloğu
- * sadeleştirilir. Gemini'nin ek alanları (gemini_parts, gemini_signature) atılır.
+ * OpenAI'dan gelen (url_citation) alıntılar Claude'a geri gönderilemez: metin bloğu sadeleştirilir.
+ * Kaldırılan Gemini sağlayıcısından eski sohbetlerde kalmış ek alanlar (gemini_parts, gemini_signature) atılır.
  */
 function sanitize(messages: CanonMessage[]): Anthropic.MessageParam[] {
   return messages.map((m) => {
@@ -51,6 +51,7 @@ export function anthropicProvider(client: AiClient): AiProvider {
   return {
     id: "anthropic",
     label: "Claude",
+    webSearch: true,
     model: async () => (await currentModel()).id,
 
     async chatStep(p): Promise<ChatStepResult> {

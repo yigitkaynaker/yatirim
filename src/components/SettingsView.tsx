@@ -7,21 +7,34 @@ import { AccountsSection, BackupSection, NobetSection } from "./DataSettings";
 import { Card, Field, inputCls, PrimaryButton, Segmented } from "./ui";
 import { useHashScroll } from "./help";
 
-type ProviderId = "anthropic" | "openai" | "gemini";
-const PROVIDER_NAMES: Record<ProviderId, string> = { anthropic: "Claude (Anthropic)", openai: "OpenAI (ChatGPT)", gemini: "Google Gemini" };
+type ProviderId = "anthropic" | "openai" | "ollama";
+type KeyProvider = Exclude<ProviderId, "ollama">;
+const PROVIDER_NAMES: Record<ProviderId, string> = { anthropic: "Claude (Anthropic)", openai: "OpenAI (ChatGPT)", ollama: "Yerel model (Ollama)" };
 type ModelOption = { id: string; label: string; inputPerMTok: number; outputPerMTok: number };
 type KeyState = { source: "env" | "db" | "owner" | null; masked: string | null };
+type LocalModelInfo = { name: string; sizeGb: number; parameterSize: string | null; tools: boolean | null };
 
 interface SettingsData {
   /** owner: sahibin anahtarı paylaşımlı kullanılıyor (anahtarın kendisi gösterilmez) */
   key: KeyState;
   /** Sağlayıcı başına anahtar durumu (yalnızca kullanıcının kendi anahtarı maskeli) */
-  keys?: Record<ProviderId, KeyState>;
+  keys?: Partial<Record<KeyProvider, KeyState>>;
   openaiModels?: ModelOption[];
-  geminiModels?: ModelOption[];
   isOwner?: boolean;
+  /** Yerel model (Ollama) bu sunucuda kullanılabilir mi (bulutta hayır) */
+  localModel?: { available: boolean };
   sharedAi?: { active: boolean; dailyLimit: number; usedToday: number; globalLimit?: number; totalToday?: number };
-  settings: { provider?: ProviderId; openaiModel?: string; geminiModel?: string; model: "ekonomik" | "gelismis"; scheduleEnabled: boolean; scheduleTimes: string[]; maxSearches: number; budgetUsd: number };
+  settings: {
+    provider?: ProviderId;
+    openaiModel?: string;
+    ollamaUrl?: string;
+    ollamaModel?: string;
+    model: "ekonomik" | "gelismis";
+    scheduleEnabled: boolean;
+    scheduleTimes: string[];
+    maxSearches: number;
+    budgetUsd: number;
+  };
   models: { key: string; id: string; label: string; inputPerMTok: number; outputPerMTok: number }[];
   budget: { spentUsd: number; budgetUsd: number; overBudget: boolean; searches: number; calls: number };
   savings?: { searches: number; usd: number };
@@ -111,10 +124,12 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
   const [busy, setBusy] = useState<"save" | "delete" | "test" | "provider" | "model" | null>(null);
   const [msg, setMsg] = useState<Msg>(null);
   const isOpenAi = provider === "openai";
-  const isGemini = provider === "gemini";
-  const keyState = data.keys?.[provider] ?? (provider !== "anthropic" ? { source: null, masked: null } : data.key);
+  const isLocal = provider === "ollama";
+  const keyState = isLocal ? { source: null, masked: null } : (data.keys?.[provider] ?? (provider !== "anthropic" ? { source: null, masked: null } : data.key));
   const { source, masked } = keyState;
   const activeProvider = data.settings.provider ?? "anthropic";
+  // Yerel model yalnızca sahip tarafından seçilir; diğer kullanıcılar yalnızca sahibin seçimi olarak görür
+  const showLocal = !!data.isOwner || activeProvider === "ollama";
 
   async function run(kind: NonNullable<typeof busy>, fn: () => Promise<void>) {
     setBusy(kind);
@@ -146,12 +161,6 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
     });
   }
 
-  function chooseGeminiModel(id: string) {
-    void run("model", async () => {
-      onChange((await send("/api/settings", "PUT", { geminiModel: id })) as SettingsData);
-      setMsg({ ok: true, text: "Gemini modeli kaydedildi." });
-    });
-  }
 
   function save(e: React.FormEvent) {
     e.preventDefault();
@@ -183,16 +192,15 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
   const openaiModel = data.settings.openaiModel ?? "gpt-5-mini";
   const openaiModels = data.openaiModels ?? [];
   const customModel = openaiModels.some((m) => m.id === openaiModel) ? null : openaiModel;
-  const geminiModel = data.settings.geminiModel ?? "gemini-3.5-flash-lite";
-  const geminiModels = data.geminiModels ?? [];
-  const customGemini = geminiModels.some((m) => m.id === geminiModel) ? null : geminiModel;
-  const keyName = isOpenAi ? "OpenAI anahtarı" : isGemini ? "Gemini anahtarı" : "Anahtar";
+  const keyName = isOpenAi ? "OpenAI anahtarı" : "Anahtar";
 
   return (
     <Card className="space-y-4 p-4 md:p-6">
       <div id="anahtar" className="scroll-mt-20">
         <h2 className="font-semibold">Yapay zeka anahtarı</h2>
-        <p className="mt-1 text-sm text-slate-500">Sohbet, haber analizi ve günlük özet seçtiğiniz yapay zekayı kullanır. Bunun için bir API anahtarı gerekir.</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Sohbet, haber analizi ve günlük özet seçtiğiniz yapay zekayı kullanır. Claude ve OpenAI için bir API anahtarı gerekir; yerel model anahtarsız ve ücretsizdir.
+        </p>
       </div>
 
       <Field
@@ -209,10 +217,15 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
           options={[
             { value: "anthropic", label: "Claude (Anthropic)", activeCls: "bg-violet-500/20 text-violet-200" },
             { value: "openai", label: "OpenAI (ChatGPT)", activeCls: "bg-violet-500/20 text-violet-200" },
-            { value: "gemini", label: "Google Gemini", activeCls: "bg-violet-500/20 text-violet-200" },
+            ...(showLocal ? [{ value: "ollama" as const, label: "Yerel model (Ollama)", activeCls: "bg-violet-500/20 text-violet-200" }] : []),
           ]}
         />
       </Field>
+
+      {isLocal ? (
+        <LocalModelPanel data={data} onChange={onChange} busy={busy} onTest={test} msg={msg} />
+      ) : (
+        <>
 
       {isOpenAi && (
         <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
@@ -220,11 +233,6 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
         </p>
       )}
 
-      {isGemini && (
-        <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-          Ücretsiz katmanda Google gönderilen verileri ürün geliştirmede kullanabilir; portföy verisi için AI Studio&apos;da faturalandırmayı açın.
-        </p>
-      )}
 
       {source === "owner" && data.sharedAi && (
         <p className="rounded-xl bg-sky-500/10 px-3 py-2 text-sm text-sky-200">
@@ -256,12 +264,12 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
 
       {source === "env" ? (
         <p className="text-sm text-slate-500">
-          Anahtar <code>.env</code> dosyasındaki <code>{isOpenAi ? "OPENAI_API_KEY" : isGemini ? "GEMINI_API_KEY" : "ANTHROPIC_API_KEY"}</code> değerinden geliyor ve önceliklidir. Değiştirmek için .env dosyasını düzenleyip sunucuyu yeniden başlatın.
+          Anahtar <code>.env</code> dosyasındaki <code>{isOpenAi ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"}</code> değerinden geliyor ve önceliklidir. Değiştirmek için .env dosyasını düzenleyip sunucuyu yeniden başlatın.
         </p>
       ) : (
         <form onSubmit={save} className="space-y-2">
           <Field
-            label={source && source !== "owner" ? "Anahtarı değiştir" : isOpenAi ? "OpenAI API anahtarınızı yapıştırın" : isGemini ? "Gemini API anahtarınızı yapıştırın" : "Kendi anahtarınızı yapıştırın"}
+            label={source && source !== "owner" ? "Anahtarı değiştir" : isOpenAi ? "OpenAI API anahtarınızı yapıştırın" : "Kendi anahtarınızı yapıştırın"}
             hint="Anahtar veritabanında saklanır ve ekranda yalnızca maskeli gösterilir."
           >
             <input
@@ -270,7 +278,7 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
               spellCheck={false}
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder={isOpenAi ? "sk-proj-..." : isGemini ? "AIza... ya da AQ...." : "sk-ant-..."}
+              placeholder={isOpenAi ? "sk-proj-..." : "sk-ant-..."}
               className={`${inputCls} font-mono`}
             />
           </Field>
@@ -303,21 +311,6 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
         </Field>
       )}
 
-      {isGemini && (
-        <Field
-          label="Gemini modeli"
-          hint={shared ? "Paylaşımlı kullanımda model uygulama sahibinin seçimidir." : "Günlük özet ve kısa açıklamalarda maliyet için her zaman Gemini 3.1 Flash-Lite kullanılır."}
-        >
-          <select value={geminiModel} onChange={(e) => chooseGeminiModel(e.target.value)} disabled={shared || busy !== null} className={inputCls}>
-            {geminiModels.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} — giriş {m.inputPerMTok} $ / çıkış {m.outputPerMTok} $ (milyon token)
-              </option>
-            ))}
-            {customGemini && <option value={customGemini}>{customGemini}</option>}
-          </select>
-        </Field>
-      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -350,23 +343,6 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
             </li>
             <li>Buraya yapıştırıp Kaydet&apos;e, sonra &quot;Bağlantıyı test et&quot;e basın.</li>
           </ol>
-        ) : isGemini ? (
-          <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-slate-400">
-            <li>
-              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-accent">
-                aistudio.google.com/apikey
-              </a>{" "}
-              adresinde Google hesabınızla oturum açın.
-            </li>
-            <li>
-              <b>Create API key</b> ile bir anahtar oluşturun ve kopyalayın (&quot;AIza&quot; ya da &quot;AQ.&quot; ile başlar).
-            </li>
-            <li>
-              Portföy verinizin ürün geliştirmede kullanılmaması için AI Studio&apos;da <b>Billing</b> bölümünden faturalandırmayı açın (ücretli katman). Google Search
-              aramalarında ayda ilk 5.000 arama ücretsizdir, sonrası 1000 arama başına 14 $.
-            </li>
-            <li>Buraya yapıştırıp Kaydet&apos;e, sonra &quot;Bağlantıyı test et&quot;e basın.</li>
-          </ol>
         ) : (
           <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-slate-400">
             <li>
@@ -386,7 +362,169 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
         )}
         <p className="mt-2 text-xs text-slate-500">Harcamayı aşağıdaki aylık bütçeyle sınırlayabilirsiniz. Sağlayıcının sitesinde de harcama limiti koymanız önerilir.</p>
       </details>
+        </>
+      )}
     </Card>
+  );
+}
+
+// ---- Yerel model (Ollama) ---------------------------------------------------------------
+
+function LocalModelPanel({
+  data,
+  onChange,
+  busy,
+  onTest,
+  msg,
+}: {
+  data: SettingsData;
+  onChange: (d: SettingsData) => void;
+  busy: string | null;
+  onTest: () => void;
+  msg: Msg;
+}) {
+  const owner = !!data.isOwner;
+  const available = data.localModel?.available !== false;
+  const current = data.settings.ollamaModel ?? "qwen3:4b-instruct";
+  const [url, setUrl] = useState(data.settings.ollamaUrl ?? "http://localhost:11434");
+  const [models, setModels] = useState<LocalModelInfo[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<Msg>(null);
+
+  const loadModels = useCallback(async () => {
+    if (!owner || !available) return;
+    try {
+      const r = await fetchJson<{ models: LocalModelInfo[]; error: string | null }>("/api/ai/ollama");
+      setModels(r.models);
+      setListError(r.error);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) return goToLogin();
+      setListError("Model listesi alınamadı.");
+    }
+  }, [owner, available]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadModels();
+  }, [loadModels]);
+
+  async function put(body: Record<string, unknown>, okText: string) {
+    setSaving(true);
+    setNote(null);
+    try {
+      onChange((await send("/api/settings", "PUT", body)) as SettingsData);
+      setNote({ ok: true, text: okText });
+      return true;
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) setNote({ ok: false, text: (err as Error).message });
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveUrl(e: React.FormEvent) {
+    e.preventDefault();
+    if (await put({ ollamaUrl: url }, "Adres kaydedildi.")) void loadModels();
+  }
+
+  const list = models ?? [];
+  const known = list.some((m) => m.name === current);
+  const info = list.find((m) => m.name === current);
+
+  return (
+    <div className="space-y-4">
+      {!available && (
+        <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+          Yalnızca uygulama bilgisayarınızda çalışırken kullanılabilir. Buluttaki sürüm bilgisayarınızdaki modele ulaşamaz; burada Claude ya da OpenAI&apos;yi seçin.
+        </p>
+      )}
+      <p className="rounded-xl bg-sky-500/10 px-3 py-2 text-sm text-sky-200">
+        Model bilgisayarınızda (Ollama ile) çalışır: ücretsizdir, anahtar gerekmez, verileriniz dışarı çıkmaz. Web araması yoktur; haber analizi yalnızca ücretsiz
+        başlıklar ve KAP bildirimleriyle yapılır. Yanıtlar Claude / OpenAI&apos;den daha yavaş ve daha basit olabilir.
+        {!owner && " Bu seçim uygulama sahibine aittir; günlük kullanım sınırınızdan düşmez."}
+      </p>
+
+      {owner ? (
+        <>
+          <form onSubmit={saveUrl} className="flex flex-wrap items-end gap-2">
+            <Field label="Ollama sunucu adresi" hint="Genellikle değiştirmeniz gerekmez: http://localhost:11434">
+              <input value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} className={`${inputCls} w-72 font-mono`} />
+            </Field>
+            <PrimaryButton type="submit" tone="virtual" disabled={saving || !url.trim() || url.trim() === data.settings.ollamaUrl}>
+              {saving ? "Kaydediliyor…" : "Adresi kaydet"}
+            </PrimaryButton>
+          </form>
+
+          <Field
+            label="Model"
+            hint={
+              info?.tools === false
+                ? "Bu model araç çağırmayı desteklemiyor: sohbette portföy işlemleri (emir, işlem, alarm) yapılamaz."
+                : "Bilgisayarınızda yüklü modeller. 4 GB ekran kartı belleği için qwen3:4b-instruct önerilir (araç çağırmayı destekler)."
+            }
+          >
+            <div className="flex flex-wrap gap-2">
+              <select
+                value={current}
+                onChange={(e) => void put({ ollamaModel: e.target.value }, "Model kaydedildi.")}
+                disabled={saving || busy !== null || !available}
+                className={`${inputCls} min-w-0 flex-1`}
+              >
+                {!known && <option value={current}>{current}{models ? " (yüklü değil)" : ""}</option>}
+                {list.map((m) => (
+                  <option key={m.name} value={m.name}>
+                    {m.name}
+                    {m.parameterSize ? ` — ${m.parameterSize}` : ""}, {m.sizeGb.toLocaleString("tr-TR")} GB{m.tools === false ? " (araç desteği yok)" : ""}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={() => void loadModels()} disabled={!available} className="rounded-xl border border-line px-3 py-2 text-sm hover:bg-surface-2 disabled:opacity-50">
+                Listeyi yenile
+              </button>
+            </div>
+          </Field>
+          {listError && <Note msg={{ ok: false, text: listError }} />}
+          <Note msg={note} />
+        </>
+      ) : (
+        <p className="text-sm text-slate-400">
+          Model: <b className="text-slate-200">{current}</b>
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onTest}
+          disabled={busy !== null || !available}
+          className="rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm font-medium hover:brightness-125 disabled:opacity-50"
+        >
+          {busy === "test" ? "Deneniyor…" : "Bağlantıyı test et"}
+        </button>
+        <span className="text-xs text-slate-500">Modele çok kısa bir soru sorar (ilk açılışta modelin yüklenmesi biraz sürebilir).</span>
+      </div>
+      <Note msg={msg} />
+
+      {owner && (
+        <details className="rounded-xl border border-line bg-bg px-3 py-2.5 text-sm">
+          <summary className="cursor-pointer font-medium text-slate-200">Yerel modeli nasıl kurarım?</summary>
+          <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-slate-400">
+            <li>
+              <a href="https://ollama.com/download" target="_blank" rel="noreferrer" className="text-accent">
+                ollama.com/download
+              </a>{" "}
+              adresinden Ollama&apos;yı kurun ve açın.
+            </li>
+            <li>
+              Komut isteminde <code>ollama pull qwen3:4b-instruct</code> yazarak modeli indirin (~2,5 GB).
+            </li>
+            <li>Burada &quot;Listeyi yenile&quot;ye basıp modeli seçin, sonra &quot;Bağlantıyı test et&quot;e basın.</li>
+          </ol>
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -608,12 +746,14 @@ function AiSettingsSection({ data, onChange }: { data: SettingsData; onChange: (
         <div>
           <h2 className="font-semibold">Yapay zeka ayarları</h2>
           <p className="mt-1 text-sm text-slate-500">
-            Tüm tutarlar tahminidir; asıl fatura {s.provider === "openai" ? "OpenAI platformundadır" : s.provider === "gemini" ? "Google AI Studio'dadır" : "Claude Console'dadır"}.
+            {s.provider === "ollama"
+              ? "Yerel model ücretsizdir (harcama 0 $ olarak kaydedilir)."
+              : `Tüm tutarlar tahminidir; asıl fatura ${s.provider === "openai" ? "OpenAI platformundadır" : "Claude Console'dadır"}.`}
           </p>
         </div>
 
-        {s.provider === "openai" || s.provider === "gemini" ? (
-          <p className="text-sm text-slate-500">{s.provider === "gemini" ? "Gemini" : "OpenAI"} modeli yukarıdaki &quot;Yapay zeka anahtarı&quot; kartından seçilir.</p>
+        {s.provider === "openai" || s.provider === "ollama" ? (
+          <p className="text-sm text-slate-500">{s.provider === "ollama" ? "Yerel" : "OpenAI"} modeli yukarıdaki &quot;Yapay zeka anahtarı&quot; kartından seçilir.</p>
         ) : (
         <Field label="Claude modeli" hint={model === "ekonomik" ? "Hızlı ve çok ucuz. Günlük kullanım için önerilir." : "Daha derin analiz, yaklaşık 20 kat pahalı."}>
           <Segmented<"ekonomik" | "gelismis">
@@ -644,9 +784,13 @@ function AiSettingsSection({ data, onChange }: { data: SettingsData; onChange: (
 
         <Field
           label="Tarama başına en fazla web araması"
-          hint={`Her arama ~${s.provider === "gemini" ? "0,014 $ (Gemini: ayda ilk 5.000 arama ücretsiz; Gemini arama sayısını kendisi seçer, bu sınır yalnızca aramayı açıp kapatır)" : "0,01 $"} tutar ve maliyetin çoğunu oluşturur. 0: web araması kapalı.${
-            scansPerMonth ? ` Otomatik taramalarla ayda en fazla ~${scansPerMonth * n} arama (~${(scansPerMonth * n * (s.provider === "gemini" ? 0.014 : 0.01)).toFixed(2).replace(".", ",")} $).` : ""
-          }`}
+          hint={
+            s.provider === "ollama"
+              ? "Yerel modelde web araması yoktur; bu ayar yalnızca Claude / OpenAI seçiliyken kullanılır."
+              : `Her arama ~0,01 $ tutar ve maliyetin çoğunu oluşturur. 0: web araması kapalı.${
+                  scansPerMonth ? ` Otomatik taramalarla ayda en fazla ~${scansPerMonth * n} arama (~${(scansPerMonth * n * 0.01).toFixed(2).replace(".", ",")} $).` : ""
+                }`
+          }
         >
           <input value={maxSearches} onChange={(e) => setMaxSearches(e.target.value)} className={inputCls} inputMode="numeric" />
         </Field>

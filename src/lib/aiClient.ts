@@ -9,65 +9,59 @@ import {
   AiGlobalLimitError,
   consumeSharedAiQuota,
   getAiSettings,
-  GEMINI_MODELS,
-  GEMINI_SEARCH_USD,
   getApiKey,
   knownPrice,
+  localModelUnavailable,
   OPENAI_MODELS,
   WEB_SEARCH_USD,
   type AiModelKey,
   type AiProviderId,
+  type KeyProviderId,
   type ModelPrice,
 } from "./settings";
+import { ValidationError } from "./portfolio";
 
-// Yapay zeka istemcileri (Claude, OpenAI ve Gemini), kullanım/maliyet kaydı, aylık bütçe ve Türkçe
-// hata mesajları. Sağlayıcıdan bağımsız arayüz: aiProvider.ts.
+// Yapay zeka istemcileri (Claude, OpenAI ve yerel model / Ollama), kullanım/maliyet kaydı, aylık
+// bütçe ve Türkçe hata mesajları. Sağlayıcıdan bağımsız arayüz: aiProvider.ts.
 
 /** Testlerde sahte istemci vermek için. Yalnızca messages.stream / messages.create kullanılır. */
 export type AiClient = Pick<Anthropic, "messages">;
 /** OpenAI istemcisi: yalnızca responses.create kullanılır (Responses API). */
 export type OpenAiClient = Pick<OpenAI, "responses">;
 /**
- * Gemini istemcisi: SDK yok, doğrudan REST (generateContent / streamGenerateContent). Testlerde
- * sahte fetch verilir; gerçek istemcide global fetch kullanılır.
+ * Yerel model istemcisi: Ollama sunucusu (yerel REST API, /api/chat). Testlerde sahte fetch
+ * verilir; gerçek istemcide global fetch kullanılır. Adres ve model sahibin ayarlarındandır.
  */
-export interface GeminiClient {
-  apiKey: string;
+export interface OllamaClient {
+  /** ör. http://localhost:11434 */
+  baseUrl: string;
+  model: string;
   fetch: typeof fetch;
-  /** Varsayılan: https://generativelanguage.googleapis.com/v1beta */
-  baseUrl?: string;
 }
 
-/** Gemini REST hatası (gövdedeki error.status / details[].reason ile) */
-export class GeminiApiError extends Error {
-  readonly httpStatus: number;
-  /** ör. INVALID_ARGUMENT, PERMISSION_DENIED, RESOURCE_EXHAUSTED */
-  readonly status: string;
-  /** ör. API_KEY_INVALID */
-  readonly reason: string | null;
-  constructor(httpStatus: number, status: string, message: string, reason: string | null = null) {
+/** Ollama hatası; mesaj kullanıcıya gösterilecek Türkçe metindir. */
+export class OllamaError extends Error {
+  constructor(message: string) {
     super(message);
-    this.name = "GeminiApiError";
-    this.httpStatus = httpStatus;
-    this.status = status;
-    this.reason = reason;
+    this.name = "OllamaError";
   }
 }
 
-/** Gemini'ye ulaşılamadı (ağ hatası ya da zaman aşımı) */
-export class GeminiConnectionError extends Error {
-  readonly timeout: boolean;
-  constructor(timeout: boolean) {
-    super(timeout ? "Gemini API zaman aşımı" : "Gemini API bağlantı hatası");
-    this.name = "GeminiConnectionError";
-    this.timeout = timeout;
+/** Bulutta (Vercel) yerel model seçili (ValidationError: API'de 400 + Türkçe mesaj) */
+export class LocalModelUnavailableError extends ValidationError {
+  constructor() {
+    super(
+      "Yerel model (Ollama) yalnızca uygulama bilgisayarınızda çalışırken kullanılabilir; buluttaki sürüm bilgisayarınızdaki modele ulaşamaz. " +
+        "Uygulamayı bilgisayarınızda açın ya da Ayarlar'dan Claude veya OpenAI'yi seçin.",
+    );
+    this.name = "LocalModelUnavailableError";
   }
 }
 
 const g = globalThis as unknown as {
   __yatirimAiClientOverride?: AiClient | null;
   __yatirimOpenAiClientOverride?: OpenAiClient | null;
-  __yatirimGeminiClientOverride?: GeminiClient | null;
+  __yatirimOllamaFetchOverride?: typeof fetch | null;
 };
 
 /** Testler için: sahte Claude istemcisi ayarla (null: gerçek istemciye dön). */
@@ -80,20 +74,14 @@ export function setOpenAiClientOverride(client: OpenAiClient | null) {
   g.__yatirimOpenAiClientOverride = client;
 }
 
-/** Testler için: sahte Gemini istemcisi (sahte fetch) ayarla (null: gerçek istemciye dön). */
-export function setGeminiClientOverride(client: GeminiClient | null) {
-  g.__yatirimGeminiClientOverride = client;
+/** Testler için: yerel model (Ollama) isteklerinde sahte fetch kullan (null: gerçek fetch). */
+export function setOllamaFetchOverride(f: typeof fetch | null) {
+  g.__yatirimOllamaFetchOverride = f;
 }
 
 export class NoApiKeyError extends Error {
-  constructor(provider: AiProviderId = "anthropic") {
-    super(
-      provider === "openai"
-        ? "OpenAI anahtarı eklenmedi — Ayarlar'dan ekleyin."
-        : provider === "gemini"
-          ? "Gemini anahtarı eklenmedi — Ayarlar'dan ekleyin."
-          : "Yapay zeka anahtarı eklenmedi — Ayarlar'dan ekleyin.",
-    );
+  constructor(provider: KeyProviderId = "anthropic") {
+    super(provider === "openai" ? "OpenAI anahtarı eklenmedi — Ayarlar'dan ekleyin." : "Yapay zeka anahtarı eklenmedi — Ayarlar'dan ekleyin.");
   }
 }
 
@@ -116,20 +104,22 @@ export async function getOpenAiClient(): Promise<OpenAiClient> {
   return new OpenAI({ apiKey: key, maxRetries: 2, timeout: 5 * 60_000 });
 }
 
-/** Gemini istemcisi. Anahtar yoksa NoApiKeyError. */
-export async function getGeminiClient(): Promise<GeminiClient> {
-  const { key, source } = await getApiKey("gemini");
-  if (source === "owner") await consumeSharedAiQuota();
-  if (g.__yatirimGeminiClientOverride) return g.__yatirimGeminiClientOverride;
-  if (!key) throw new NoApiKeyError("gemini");
-  return { apiKey: key, fetch: (input, init) => fetch(input, init) };
+/**
+ * Yerel model istemcisi (Ollama). Ücretsizdir: paylaşılan günlük sınırdan düşmez. Bulutta
+ * (Vercel) LocalModelUnavailableError.
+ */
+export async function getOllamaClient(): Promise<OllamaClient> {
+  if (localModelUnavailable()) throw new LocalModelUnavailableError();
+  const s = await getAiSettings();
+  const f = g.__yatirimOllamaFetchOverride;
+  return { baseUrl: s.ollamaUrl, model: s.ollamaModel, fetch: f ?? ((input, init) => fetch(input, init)) };
 }
 
-/** Etkin sağlayıcının (ya da verilen sağlayıcının) anahtarı / sahte istemcisi var mı */
+/** Etkin sağlayıcının (ya da verilen sağlayıcının) anahtarı / sahte istemcisi var mı (yerel model: bulutta değilse) */
 export async function isAiConfigured(provider?: AiProviderId): Promise<boolean> {
   const p = provider ?? (await getAiSettings()).provider;
   if (p === "openai") return !!g.__yatirimOpenAiClientOverride || (await getApiKey("openai")).key != null;
-  if (p === "gemini") return !!g.__yatirimGeminiClientOverride || (await getApiKey("gemini")).key != null;
+  if (p === "ollama") return !localModelUnavailable();
   return !!g.__yatirimAiClientOverride || (await getApiKey("anthropic")).key != null;
 }
 
@@ -163,24 +153,23 @@ export const emptyUsage = (): UsageTotals => ({
 
 const priciest = (list: readonly ModelPrice[]) => list.reduce((a, b) => (b.outputPerMTok > a.outputPerMTok ? b : a));
 
-/** Fiyatı bilinmeyen model: Claude için Gelişmiş, OpenAI / Gemini için listedeki en pahalı model (temkinli tahmin). */
+/** Fiyatı bilinmeyen model: Claude için Gelişmiş, OpenAI için listedeki en pahalı model (temkinli tahmin). */
 function priceFor(modelId: string, override?: ModelPrice | null): ModelPrice {
   if (override) return override;
   const known = knownPrice(modelId);
   if (known) return known;
   if (modelId.startsWith("claude")) return AI_MODELS.gelismis;
-  if (modelId.startsWith("gemini")) return priciest(GEMINI_MODELS);
   return priciest(OPENAI_MODELS);
 }
 
 /**
  * Tahmini maliyet: girdi, çıktı, önbellek yazma (1,25×), önbellek okuma (0,1×), web araması.
  * OpenAI'de önbellekten okunan girdi de yaklaşık 0,1× fiyatlıdır; yazma ücretsizdir (0 gelir).
- * Gemini'de örtük önbellek okuması da ~0,1×; Google Search sorgusu $14 / 1000.
+ * Yerel model sıfır fiyatla kaydedilir (ZERO_PRICE).
  */
 export function estimateCost(modelId: string, u: Omit<UsageTotals, "costUsd">, price?: ModelPrice | null): number {
   const p = priceFor(modelId, price);
-  const searchUsd = modelId.startsWith("gemini") ? GEMINI_SEARCH_USD : WEB_SEARCH_USD;
+  const searchUsd = WEB_SEARCH_USD;
   return (
     (u.inputTokens * p.inputPerMTok +
       u.cacheWriteTokens * p.inputPerMTok * 1.25 +
@@ -296,38 +285,12 @@ function openAiErrorMessage(err: unknown): string | null {
   return `OpenAI API hatası (${err.status ?? "?"}): ${msg}`;
 }
 
-/** Gemini REST hatası → Türkçe mesaj (Gemini hatası değilse null) */
-function geminiErrorMessage(err: unknown): string | null {
-  if (err instanceof GeminiConnectionError) {
-    return err.timeout ? "Gemini API zaman aşımına uğradı. Biraz sonra tekrar deneyin." : "Gemini API'ye bağlanılamadı. İnternet bağlantınızı kontrol edin.";
-  }
-  if (!(err instanceof GeminiApiError)) return null;
-  const msg = err.message;
-  if (err.reason === "API_KEY_INVALID" || /api key not valid|api_key_invalid/i.test(msg) || err.httpStatus === 401) {
-    return "Gemini API anahtarı geçersiz. Anahtarı aistudio.google.com/apikey adresinden kopyalayıp yeniden yapıştırın.";
-  }
-  if (err.httpStatus === 429 || err.status === "RESOURCE_EXHAUSTED") {
-    return /quota/i.test(msg)
-      ? "Gemini kotası doldu (ücretsiz katman sınırı ya da harcama limiti). AI Studio'da faturalandırmayı açın ya da biraz sonra tekrar deneyin."
-      : "Gemini'ye çok fazla istek gönderildi (hız sınırı). Bir dakika sonra tekrar deneyin.";
-  }
-  if (err.status === "FAILED_PRECONDITION" || /billing/i.test(msg)) {
-    return "Gemini bu istek için faturalandırma istiyor (ücretsiz katman bu bölgede ya da bu modelde kullanılamıyor). AI Studio › Billing bölümünden faturalandırmayı açın.";
-  }
-  if (err.httpStatus === 403 || err.status === "PERMISSION_DENIED") return "Bu Gemini anahtarının bu işleme ya da modele erişim izni yok (Generative Language API kapalı olabilir).";
-  if (err.httpStatus === 404 || err.status === "NOT_FOUND") return "Seçilen Gemini modeli bulunamadı. Ayarlar'dan başka bir model seçin.";
-  if (err.httpStatus === 400) return `Gemini isteği reddetti: ${msg}`;
-  if (err.httpStatus >= 500) return "Gemini API'de geçici bir sorun var. Biraz sonra tekrar deneyin.";
-  return `Gemini API hatası (${err.httpStatus || "?"}): ${msg}`;
-}
-
 /** SDK hatasını kullanıcıya gösterilecek Türkçe mesaja çevirir. */
 export function aiErrorMessage(err: unknown): string {
   if (err instanceof NoApiKeyError || err instanceof AiDailyLimitError || err instanceof AiGlobalLimitError) return err.message;
+  if (err instanceof OllamaError || err instanceof LocalModelUnavailableError) return err.message;
   const oa = openAiErrorMessage(err);
   if (oa) return oa;
-  const gm = geminiErrorMessage(err);
-  if (gm) return gm;
   if (err instanceof Anthropic.APIConnectionTimeoutError) return "Claude API zaman aşımına uğradı. Biraz sonra tekrar deneyin.";
   if (err instanceof Anthropic.APIConnectionError) return "Claude API'ye bağlanılamadı. İnternet bağlantınızı kontrol edin.";
   if (err instanceof Anthropic.APIError) {

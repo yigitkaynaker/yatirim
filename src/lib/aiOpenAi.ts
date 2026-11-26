@@ -183,6 +183,7 @@ export function openAiProvider(client: OpenAiClient): AiProvider {
   return {
     id: "openai",
     label: "OpenAI",
+    webSearch: true,
     model: async () => (await selected()).model,
 
     async chatStep(p): Promise<ChatStepResult> {
