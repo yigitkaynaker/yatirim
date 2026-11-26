@@ -17,18 +17,28 @@ import { Card, inputCls, StaleBadge } from "./ui";
 
 const PAGE_SIZE = 30;
 
-const VENUES: { value: string; label: string }[] = [
+/** Kripto platform klasörleri (değer = /api/catalog borsa süzgeci) */
+const FOLDERS: { value: string; label: string }[] = [
   { value: "", label: "Tümü" },
-  { value: "binance-usdt", label: "Binance USDT" },
-  { value: "binance-try", label: "Binance TRY" },
+  { value: "binance", label: "Binance" },
   { value: "btcturk", label: "BtcTurk" },
-  { value: "binance-futures", label: "Binance Vadeli" },
-  { value: "binance-alpha", label: "Binance Alpha" },
+  { value: "midas", label: "Midas" },
   { value: "coingecko", label: "Diğer (CoinGecko)" },
 ];
 
-/** Süzgece özel kısa uyarı (vadeli, Alpha ve CoinGecko satırları) */
+/** Binance klasörünün alt süzgeçleri ("" = Binance'in tümü) */
+const BINANCE_SUBS: { value: string; label: string }[] = [
+  { value: "", label: "Tümü" },
+  { value: "binance-usdt", label: "Spot USDT" },
+  { value: "binance-try", label: "Spot TL" },
+  { value: "binance-futures", label: "Vadeli" },
+  { value: "binance-alpha", label: "Alpha" },
+];
+
+/** Klasöre / süzgece özel kısa açıklama ya da uyarı (Midas, vadeli, Alpha ve CoinGecko satırları) */
 const VENUE_HINTS: Record<string, string> = {
+  midas:
+    "Midas uygulamasında işlem gören coinler (her coin bir kez). Fiyat, coinin Binance, BtcTurk ya da CoinGecko'daki satırından gelir; Midas'taki fiyat biraz farklı olabilir. Aynı coin Binance klasöründe de görünebilir: iki platformda da işlem görür.",
   "binance-futures":
     "Yalnızca Binance vadeli işlemlerde (sürekli kontrat) olan, spotta bulunmayan coinler. Fiyat vadeli kontrat fiyatıdır (1 coin için; 1000RATS gibi kontratlarda 1000'e bölünür) ve spot fiyattan biraz farklı olabilir. Yatırım tavsiyesi değildir.",
   "binance-alpha":
@@ -46,7 +56,7 @@ const FUND_KINDS: { value: string; label: string }[] = [
 
 const HINTS: Partial<Record<CatalogCategory, string>> = {
   kripto:
-    "Binance (USDT ve TL pariteleri) ve BtcTurk (TL pariteleri). Aynı coin farklı borsada ayrı satırdır; TL paritelerinin fiyatı TL'dir. Spotta olmayan coinler Binance Vadeli ve Binance Alpha, Binance ve BtcTurk'te hiç olmayanlar Diğer (CoinGecko) süzgecindedir (her coin bir kez).",
+    "Coinler platform klasörlerinde: Binance (spot USDT ve TL, vadeli, Alpha), BtcTurk, Midas ve hiçbirinde olmayanlar için Diğer (CoinGecko). Aynı coin farklı borsada ayrı satırdır; TL paritelerinin fiyatı TL'dir. Satırdaki rozetler coinin hangi platformlarda işlem gördüğünü gösterir.",
   bist: "Borsa İstanbul'daki tüm hisseler (büyükler önce). Fiyatlar ~15 dk gecikmelidir.",
   hisse: "Nasdaq ve NYSE'deki tüm ABD hisseleri (popülerler önce). Fiyatlar USD'dir.",
   etf: "ABD borsa yatırım fonları (ETF): tek alımla bir endeksi ya da sepeti takip eder. Popülerler önce.",
@@ -59,7 +69,9 @@ const HINTS: Partial<Record<CatalogCategory, string>> = {
 
 export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, number>; onToggleWatch: (item: CatalogItem) => void }) {
   const [category, setCategory] = useState<CatalogCategory>("kripto");
-  const [venue, setVenue] = useState("");
+  const [folder, setFolder] = useState("");
+  const [binanceSub, setBinanceSub] = useState("");
+  const [folderCounts, setFolderCounts] = useState<Record<string, number> | null>(null);
   const [fundKind, setFundKind] = useState("");
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
@@ -75,6 +87,7 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
     return () => clearTimeout(t);
   }, [q]);
 
+  const venue = folder === "binance" ? binanceSub || "binance" : folder;
   const key = `${category}|${category === "kripto" ? venue : category === "fon" ? fundKind : ""}|${query}|${page}`;
   useEffect(() => {
     let alive = true;
@@ -83,7 +96,11 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
     if (category === "kripto" && venue) p.set("borsa", venue);
     if (category === "fon" && fundKind) p.set("tur", fundKind);
     fetchJson<CatalogPage>(`/api/catalog?${p.toString()}`)
-      .then((data) => alive && setState({ key, data }))
+      .then((data) => {
+        if (!alive) return;
+        setState({ key, data });
+        if (data.folders) setFolderCounts(data.folders);
+      })
       .catch((err: unknown) => {
         if (err instanceof UnauthorizedError) return goToLogin();
         if (alive) setState({ key, data: null, error: "Liste alınamadı." });
@@ -136,14 +153,28 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
             aria-label="Listede ara"
           />
           {category === "kripto" && (
-            <FilterButtons
-              options={VENUES}
-              value={venue}
-              onChange={(v) => {
-                setVenue(v);
-                setPage(0);
-              }}
-            />
+            <>
+              <FolderTabs
+                options={FOLDERS}
+                value={folder}
+                counts={folderCounts}
+                onChange={(v) => {
+                  setFolder(v);
+                  setBinanceSub("");
+                  setPage(0);
+                }}
+              />
+              {folder === "binance" && (
+                <FilterButtons
+                  options={BINANCE_SUBS.map((o) => ({ ...o, label: countLabel(o.label, folderCounts?.[o.value || "binance"]) }))}
+                  value={binanceSub}
+                  onChange={(v) => {
+                    setBinanceSub(v);
+                    setPage(0);
+                  }}
+                />
+              )}
+            </>
           )}
           {category === "fon" && (
             <FilterButtons
@@ -156,7 +187,7 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
             />
           )}
           {HINTS[category] && <p className="text-xs text-slate-500">{HINTS[category]}</p>}
-          {category === "kripto" && VENUE_HINTS[venue] && <p className="text-xs text-amber-300/80">{VENUE_HINTS[venue]}</p>}
+          {category === "kripto" && VENUE_HINTS[venue] && <p className={`text-xs ${venue === "midas" ? "text-violet-200/80" : "text-amber-300/80"}`}>{VENUE_HINTS[venue]}</p>}
         </div>
 
         {!current ? (
@@ -193,7 +224,48 @@ export function MarketLists({ watched, onToggleWatch }: { watched: Map<string, n
   );
 }
 
-/** Liste süzgeci düğmeleri (kripto borsası, fon türü) */
+const countLabel = (label: string, n: number | undefined) => (n == null ? label : `${label} (${n.toLocaleString("tr-TR")})`);
+
+/** Kripto platform klasörleri: yatay kaydırılan sekmeler, her birinde satır sayısı (aramaya göre) */
+function FolderTabs({
+  options,
+  value,
+  counts,
+  onChange,
+}: {
+  options: { value: string; label: string }[];
+  value: string;
+  counts: Record<string, number> | null;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div role="tablist" aria-label="Kripto platformları" className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5">
+      {options.map((o) => {
+        const active = value === o.value;
+        const n = counts?.[o.value];
+        return (
+          <button
+            key={o.value}
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(o.value)}
+            className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition ${
+              active ? "border-sky-500/40 bg-sky-500/15 text-sky-100" : "border-line bg-surface-2/40 text-slate-400 hover:text-white"
+            }`}
+          >
+            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} strokeLinejoin="round" aria-hidden>
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            <span className="font-medium">{o.label}</span>
+            {n != null && <span className={`num rounded px-1 text-[10px] ${active ? "bg-sky-500/20" : "bg-surface-2"}`}>{n.toLocaleString("tr-TR")}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Liste süzgeci düğmeleri (Binance alt süzgeci, fon türü) */
 function FilterButtons({ options, value, onChange }: { options: { value: string; label: string }[]; value: string; onChange: (v: string) => void }) {
   return (
     <div className="flex flex-wrap gap-1">
@@ -228,6 +300,26 @@ function VenueBadge({ item }: { item: CatalogItem }) {
   return null;
 }
 
+const PLATFORM_CLS: Record<string, string> = {
+  Binance: "text-amber-300/90 border-amber-500/30",
+  BtcTurk: "text-sky-300/90 border-sky-500/30",
+  Midas: "text-violet-300/90 border-violet-500/30",
+};
+
+/** Coinin işlem gördüğü platformlar (küçük çerçeveli rozetler) */
+function PlatformBadges({ item }: { item: CatalogItem }) {
+  if (!item.platforms?.length) return null;
+  return (
+    <span className="flex shrink-0 gap-1" title={`İşlem gördüğü platformlar: ${item.platforms.join(", ")}`}>
+      {item.platforms.map((p) => (
+        <span key={p} className={`rounded border px-1 text-[10px] leading-4 ${PLATFORM_CLS[p] ?? "border-line text-slate-400"}`}>
+          {p}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** Görünen satırlar + yalnızca bu satırların fiyatları (60 sn'de bir; sunucu önbelleği ~30 sn) */
 function ListRows({ items, watched, onToggleWatch }: { items: CatalogItem[]; watched: Map<string, number>; onToggleWatch: (item: CatalogItem) => void }) {
   const ids = items.map((i) => i.instrument).join(",");
@@ -248,7 +340,10 @@ function ListRows({ items, watched, onToggleWatch }: { items: CatalogItem[]; wat
                   <VenueBadge item={it} />
                   {q?.stale && q.price != null && <StaleBadge fetchedAt={q.fetchedAt} />}
                 </div>
-                <div className="truncate text-xs text-slate-500">{[it.name !== it.symbol ? it.name : null, it.exchange, it.currency].filter(Boolean).join(" · ")}</div>
+                <div className="flex min-w-0 items-center gap-1.5 text-xs text-slate-500">
+                  <PlatformBadges item={it} />
+                  <span className="truncate">{[it.name !== it.symbol ? it.name : null, it.exchange, it.currency].filter(Boolean).join(" · ")}</span>
+                </div>
               </div>
               <div className="num shrink-0 text-right">
                 <div className="font-medium">{q ? formatQuotePrice(it.instrument, q) : "…"}</div>

@@ -10,7 +10,8 @@ export const dynamic = "force-dynamic";
  * GET /api/catalog?kategori=kripto&q=btc&borsa=btcturk&sayfa=0 — piyasa listesinin bir sayfası
  * (fiyatlar ayrıca /api/prices ile yalnızca görünen satırlar için alınır).
  * kategori: kripto, bist, hisse, etf, endeks, emtia, doviz, altin, fon
- * borsa (yalnızca kripto): binance-usdt, binance-try, btcturk
+ * borsa (yalnızca kripto; platform klasörü): binance (tümü) · binance-usdt, binance-try, binance-futures,
+ *   binance-alpha · btcturk · midas · coingecko. Kriptoda yanıtta klasör sayıları (folders) da döner.
  * tur (yalnızca fon): yat (yatırım fonu), emk (emeklilik fonu, BES), byf (borsa yatırım fonu)
  */
 export async function GET(req: NextRequest) {

@@ -220,7 +220,8 @@ export const SECTIONS_1: GuideSection[] = [
       {
         type: "list",
         items: [
-          "**Kripto:** Binance'in USDT ve TL pariteleri ile BtcTurk'ün TL pariteleri. Aynı coin her borsada ayrı satırdır; üstteki düğmelerle borsaya göre süzebilirsin.",
+          "**Kripto:** coinler platform klasörlerindedir: **Tümü · Binance · BtcTurk · Midas · Diğer (CoinGecko)**; her klasörde kaç coin olduğu yazar. **Binance** klasörünün içinde **Spot USDT · Spot TL · Vadeli · Alpha** alt süzgeçleri vardır. Arama seçili klasörün içinde yapılır. Aynı coin her borsada ayrı satırdır.",
+          "**Midas klasörü:** Midas uygulamasında işlem gören coinler, her biri bir kez. Fiyat, coinin Binance, BtcTurk ya da CoinGecko satırından gelir (Midas'taki fiyat biraz farklı olabilir). Bir coin hem Binance hem Midas klasöründe görünebilir; iki platformda da işlem gördüğü içindir, aynı satırdır. Satırdaki küçük **Binance · BtcTurk · Midas** rozetleri coinin nerede işlem gördüğünü gösterir.",
           "**Binance Vadeli · Binance Alpha:** spotta olmayan coinler, her biri bir kez. **Vadeli** satırlarının fiyatı [[vadeli-kontrat|vadeli kontrat]] fiyatıdır (1 coin için; spottan biraz farklı olabilir). **Alpha** satırları henüz listelenmemiş [[binance-alpha|erken aşama]] tokenlardır; çok oynak ve yüksek risklidir. Bunlar yatırım tavsiyesi değildir.",
           "**Diğer (CoinGecko):** Binance ve BtcTurk'te hiç işlem görmeyen coinler (OKB, Cronos, Pi gibi). Fiyatı ve grafiği CoinGecko'dan gelir (birçok borsanın ortalaması, birkaç dakika gecikebilir; grafik en fazla son 1 yıl).",
           "**Sembol yazımı:** **BTC** = Binance BTC/USDT (fiyat dolar), **BTC-TRY** = Binance BTC/TL, **BTC@BTCTURK** = BtcTurk BTC/TL, **RATS@BINANCE-F** = Binance vadeli, **SHARE@BINANCE-ALPHA** = Binance Alpha, **OKB@COINGECKO** = CoinGecko fiyatı (üçü de dolar). TL paritelerinde fiyat, kâr/zarar ve işlem para birimi TL'dir.",

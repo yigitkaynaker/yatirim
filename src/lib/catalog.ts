@@ -18,6 +18,7 @@ import { COINGECKO_COINS } from "./coingecko";
 import { BIST_INDEX_NAMES, BIST_STOCKS, COMMODITIES, FX_CURRENCIES, US_ETFS, US_STOCKS, WORLD_INDICES } from "./catalogData";
 import { ftpGetText } from "./ftp";
 import { BROWSER_UA } from "./http";
+import { coinKey, MIDAS_KEYS, PLATFORMS, resolveMidasCoins, sourcePlatform, type MidasMatch, type Platform } from "./midas";
 
 // Sembol kataloğu (symbol_catalog tablosu; paylaşımlı, kullanıcıya özel değil). Piyasa sayfasındaki
 // ayrı listeler (Kripto, BIST, ABD Hisseleri, ETF, Endeksler, Emtia, Döviz, Altın, Fonlar) ve arama
@@ -34,6 +35,8 @@ import { BROWSER_UA } from "./http";
 //   - CoinGecko: Binance (spot, vadeli, Alpha) ve BtcTurk'te olmayan, derlenmiş listedeki coinler
 //     (coingecko.ts; Midas'ın kripto listesinden derlendi). Katalog için ağ isteği yok; fiyat ve grafik
 //     CoinGecko'nun anahtarsız ucundan.
+//   - Midas: ayrı satır yok. "Midas" klasörü, Midas'ta işlem gören her coin için yukarıdaki satırlardan
+//     birini (midas.ts tercih sırası) gösteren süzgeçtir; liste data/midasCoins.ts'te (elle güncellenir).
 //   - Derlenmiş statik liste (catalogData.ts) + altın türleri; Yahoo aramasında bulunan yabancı
 //     semboller de (kategori etiketiyle) eklenir.
 //   - TEFAS: /api/funds/fonGetiriBazliBilgiGetir (fon türü başına bir istek: YAT yatırım, EMK
@@ -98,6 +101,8 @@ export interface CatalogItem {
   /** Fiyatın para birimi (USD, TRY…) */
   currency: string;
   category: CatalogCategory;
+  /** Yalnızca kripto listesinde: coinin işlem gördüğü platformlar (Binance, BtcTurk, Midas) */
+  platforms?: Platform[];
 }
 
 interface CatalogRow {
@@ -938,6 +943,58 @@ export interface CatalogPage {
   total: number;
   page: number;
   pageSize: number;
+  /** Yalnızca kripto: klasör / süzgeç başına satır sayısı (arama uygulanmış; anahtar = venue, "" tümü) */
+  folders?: Record<string, number>;
+}
+
+/** Kripto süzgeçleri (venue) → SQL koşulu. "midas" ayrı (sembol listesi). */
+const VENUE_WHERE: Record<string, string> = {
+  binance: "source IN ('binance', 'binance-futures', 'binance-alpha')",
+  "binance-usdt": "source = 'binance' AND currency = 'USD'",
+  "binance-try": "source = 'binance' AND currency = 'TRY'",
+  btcturk: "source = 'btcturk'",
+  "binance-futures": "source = 'binance-futures'",
+  "binance-alpha": "source = 'binance-alpha'",
+  coingecko: "source = 'coingecko'",
+};
+
+interface CryptoIndex {
+  sig: string;
+  midas: MidasMatch[];
+  /** çarpansız coin adı → platformlar */
+  platforms: Map<string, Set<Platform>>;
+}
+let cryptoIndexCache: CryptoIndex | null = null;
+
+/**
+ * Kripto satırlarının platform dizini ve Midas eşlemesi. Katalog değişince (satır sayısı / son
+ * güncelleme) yeniden kurulur; aksi halde bellekteki kopya kullanılır (tek ucuz sorgu).
+ */
+async function cryptoIndex(): Promise<CryptoIndex> {
+  const db = await getDb();
+  const s = await db.get<{ c: number; u: string | null }>("SELECT COUNT(*) AS c, MAX(updated_at) AS u FROM symbol_catalog WHERE category = 'kripto'");
+  const sig = `${s?.c ?? 0}|${s?.u ?? ""}`;
+  if (cryptoIndexCache?.sig === sig) return cryptoIndexCache;
+  const rows = await db.all<{ symbol: string; source: string }>("SELECT symbol, source FROM symbol_catalog WHERE category = 'kripto' AND asset_type = 'crypto'");
+  const platforms = new Map<string, Set<Platform>>();
+  for (const r of rows) {
+    const key = coinKey(r.symbol);
+    const p = sourcePlatform(r.source);
+    if (!key || !p) continue;
+    if (!platforms.has(key)) platforms.set(key, new Set());
+    platforms.get(key)!.add(p);
+  }
+  cryptoIndexCache = { sig, midas: resolveMidasCoins(rows.map((r) => r.symbol)), platforms };
+  return cryptoIndexCache;
+}
+
+/** Kripto satırının platform rozetleri */
+function platformsOf(index: CryptoIndex, symbol: string): Platform[] {
+  const key = coinKey(symbol);
+  if (!key) return [];
+  const set = new Set(index.platforms.get(key));
+  if (MIDAS_KEYS.has(key)) set.add("Midas");
+  return PLATFORMS.filter((p) => set.has(p));
 }
 
 /** LIKE özel karakterlerini kaçırır */
@@ -946,8 +1003,10 @@ function likeEscape(s: string) {
 }
 
 /**
- * Bir piyasa listesinin sayfası. Kripto için borsa/kotasyon süzgeci (venue): "binance-usdt",
- * "binance-try", "btcturk". Fonlar için tür süzgeci (fundKind): "yat", "emk", "byf".
+ * Bir piyasa listesinin sayfası. Kripto için platform klasörü / süzgeci (venue): "binance" (spot, vadeli,
+ * Alpha), "binance-usdt", "binance-try", "binance-futures", "binance-alpha", "btcturk", "midas",
+ * "coingecko"; yanıtta klasör sayıları ve satır başına platform rozetleri de döner. Fonlar için tür
+ * süzgeci (fundKind): "yat", "emk", "byf".
  */
 export async function listCatalog(
   category: CatalogCategory,
@@ -965,13 +1024,17 @@ export async function listCatalog(
     where.push("search LIKE ? ESCAPE '\\'");
     params.push(`%${likeEscape(q)}%`);
   }
+  const index = category === "kripto" ? await cryptoIndex() : null;
+  const midasSymbols = index?.midas.map((m) => m.symbol) ?? [];
+  const midasWhere = midasSymbols.length ? `asset_type = 'crypto' AND symbol IN (${midasSymbols.map(() => "?").join(", ")})` : "1 = 0";
+  // Klasör sayıları süzgeçsiz (yalnızca arama) koşulla
+  const baseWhere = where.join(" AND ");
+  const baseParams = [...params];
   if (category === "kripto" && opts.venue) {
-    if (opts.venue === "binance-usdt") where.push("source = 'binance' AND currency = 'USD'");
-    else if (opts.venue === "binance-try") where.push("source = 'binance' AND currency = 'TRY'");
-    else if (opts.venue === "btcturk") where.push("source = 'btcturk'");
-    else if (opts.venue === "binance-futures") where.push("source = 'binance-futures'");
-    else if (opts.venue === "binance-alpha") where.push("source = 'binance-alpha'");
-    else if (opts.venue === "coingecko") where.push("source = 'coingecko'");
+    if (opts.venue === "midas") {
+      where.push(midasWhere);
+      params.push(...midasSymbols);
+    } else if (VENUE_WHERE[opts.venue]) where.push(VENUE_WHERE[opts.venue]);
   }
   const kind = FUND_KINDS.find((k) => k.toLowerCase() === opts.fundKind?.toLowerCase());
   if (category === "fon" && kind) {
@@ -986,7 +1049,22 @@ export async function listCatalog(
     `SELECT asset_type, symbol, name, exchange, currency, category FROM symbol_catalog WHERE ${w} ORDER BY ${order} LIMIT ? OFFSET ?`,
     [...params, ...(q ? [`${likeEscape(q)} %`] : []), pageSize, page * pageSize],
   );
-  return { items: rows.map(toItem), total, page, pageSize };
+  if (!index) return { items: rows.map(toItem), total, page, pageSize };
+  const groups = await db.all<{ source: string; currency: string; c: number }>(
+    `SELECT source, currency, COUNT(*) AS c FROM symbol_catalog WHERE ${baseWhere} GROUP BY source, currency`,
+    baseParams,
+  );
+  const folders: Record<string, number> = { "": 0, midas: 0 };
+  for (const k of Object.keys(VENUE_WHERE)) folders[k] = 0;
+  for (const g of groups) {
+    const n = Number(g.c);
+    folders[""] += n;
+    if (g.source === "binance") folders[g.currency === "TRY" ? "binance-try" : "binance-usdt"] += n;
+    else if (g.source in folders) folders[g.source] += n;
+    if (sourcePlatform(g.source) === "Binance") folders.binance += n;
+  }
+  folders.midas = Number((await db.get<{ c: number }>(`SELECT COUNT(*) AS c FROM symbol_catalog WHERE ${baseWhere} AND ${midasWhere}`, [...baseParams, ...midasSymbols]))?.c ?? 0);
+  return { items: rows.map((r) => ({ ...toItem(r), platforms: platformsOf(index, r.symbol) })), total, page, pageSize, folders };
 }
 
 /** Arama için katalog eşleşmeleri (sembolün başı ya da adın içinde). Kategori başına en fazla `perCategory`. */

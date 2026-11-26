@@ -585,6 +585,106 @@ await test("katalog: spotta 1000CAT varsa Alpha'da CAT ikinci kez açılmaz; spo
   assert.equal((await catalog.refreshCatalog()).coingecko, gecko.COINGECKO_COINS.length);
 });
 
+// ---- Platform klasörleri ve Midas ---------------------------------------------------------------
+const midas = await import("../src/lib/midas");
+const { MIDAS_COINS } = await import("../src/lib/data/midasCoins");
+
+await test("Midas listesi: üretilmiş dosya, tekil semboller, fiyatı olmayanlar yok", () => {
+  const syms = MIDAS_COINS.map(([s]) => s);
+  assert.ok(syms.length > 300, `${syms.length}`);
+  assert.equal(new Set(syms).size, syms.length);
+  for (const s of syms) assert.match(s, /^[A-Z0-9]{1,15}$/);
+  for (const s of ["TROY", "SLF"]) assert.ok(!syms.includes(s), s);
+  for (const s of ["BTC", "ETH", "CAT", "IP", "OMNI", "OKB"]) assert.ok(syms.includes(s), s);
+});
+
+await test("Midas eşlemesi: tercih sırası spot USDT → BtcTurk → spot TL → vadeli → Alpha → CoinGecko; çarpan ve yeni ad", () => {
+  const pick = (symbols: string[], coin: string) => midas.resolveMidasCoins(symbols).find((m) => m.coin === coin)?.symbol;
+  const all = ["BTC@BTCTURK", "BTC-USDT@BTCTURK", "BTC-TRY", "BTC@BINANCE-F", "BTC@BINANCE-ALPHA", "BTC@COINGECKO", "BTC"];
+  assert.equal(pick(all, "BTC"), "BTC");
+  assert.equal(pick(all.filter((s) => s !== "BTC"), "BTC"), "BTC-USDT@BTCTURK");
+  assert.equal(pick(["BTC@BTCTURK", "BTC-TRY", "BTC@BINANCE-F"], "BTC"), "BTC@BTCTURK");
+  assert.equal(pick(["BTC-TRY", "BTC@BINANCE-F"], "BTC"), "BTC-TRY");
+  assert.equal(pick(["BTC@BINANCE-ALPHA", "BTC@BINANCE-F"], "BTC"), "BTC@BINANCE-F");
+  assert.equal(pick(["BTC@COINGECKO", "BTC@BINANCE-ALPHA"], "BTC"), "BTC@BINANCE-ALPHA");
+  assert.equal(pick(["OKB@COINGECKO"], "OKB"), "OKB@COINGECKO");
+  // Midas CAT = Binance spot 1000CAT (çarpansız ad); spot, Alpha'daki tam addan önce gelir
+  assert.equal(pick(["1000CAT", "CAT@BINANCE-ALPHA"], "CAT"), "1000CAT");
+  assert.equal(pick(["CAT@BINANCE-ALPHA"], "CAT"), "CAT@BINANCE-ALPHA");
+  assert.equal(pick(["DATAIP@BINANCE-F"], "IP"), "DATAIP@BINANCE-F");
+  assert.equal(pick(["NOM", "NOM-TRY"], "OMNI"), "NOM");
+  assert.equal(pick(["ETH"], "BTC"), undefined, "katalogda yoksa atlanır");
+  // Sıra Midas listesindeki sıra; her coin bir kez
+  const r = midas.resolveMidasCoins(["ETH", "BTC", "BTC-TRY", "ETH@BTCTURK"]);
+  assert.deepEqual(r.map((m) => m.symbol), ["BTC", "ETH"]);
+  assert.equal(midas.coinKey("1000CAT"), "CAT");
+  assert.equal(midas.coinKey("1INCH"), "1INCH");
+  assert.ok(midas.MIDAS_KEYS.has("DATAIP") && midas.MIDAS_KEYS.has("NOM") && !midas.MIDAS_KEYS.has("TROY"));
+});
+
+await test("kripto klasörleri: Binance (alt süzgeçler), BtcTurk, Midas, CoinGecko sayıları ve satırları", async () => {
+  const conn = await db.getDb();
+  const count = async (w: string) => Number((await conn.get<{ c: number }>(`SELECT COUNT(*) AS c FROM symbol_catalog WHERE category = 'kripto' AND ${w}`))?.c);
+  const syms = (await conn.all<{ symbol: string }>("SELECT symbol FROM symbol_catalog WHERE category = 'kripto'")).map((r) => r.symbol);
+  const expectMidas = midas.resolveMidasCoins(syms);
+  const all = await catalog.listCatalog("kripto", { pageSize: 50 });
+  const f = all.folders!;
+  assert.equal(f[""], all.total);
+  assert.equal(f[""], syms.length);
+  assert.equal(f["binance-usdt"], 3);
+  assert.equal(f["binance-try"], 1);
+  assert.equal(f.btcturk, 3);
+  assert.equal(f["binance-futures"], await count("source = 'binance-futures'"));
+  assert.equal(f["binance-alpha"], await count("source = 'binance-alpha'"));
+  assert.equal(f.binance, 4 + f["binance-futures"] + f["binance-alpha"]);
+  assert.equal(f.coingecko, gecko.COINGECKO_COINS.length);
+  assert.equal(f.midas, expectMidas.length);
+  // Klasör = süzgeç: toplamlar sayılarla aynı
+  for (const v of ["binance", "binance-usdt", "binance-try", "binance-futures", "binance-alpha", "btcturk", "midas", "coingecko"]) {
+    assert.equal((await catalog.listCatalog("kripto", { venue: v, pageSize: 5 })).total, f[v], v);
+  }
+  // Binance klasörü yalnızca Binance kaynakları
+  const bn = await catalog.listCatalog("kripto", { venue: "binance", pageSize: 50 });
+  assert.ok(bn.items.every((i) => i.exchange.startsWith("Binance")), JSON.stringify(bn.items.map((i) => i.exchange)));
+  // Midas klasörü: her coin tek satır, beklenen fiyat kaynakları; BTC Binance satırıdır (BtcTurk ikinci kez değil)
+  const md: string[] = [];
+  for (let p = 0; p * 50 < f.midas; p++) md.push(...(await catalog.listCatalog("kripto", { venue: "midas", page: p, pageSize: 50 })).items.map((i) => i.symbol));
+  assert.deepEqual(md.slice().sort(), expectMidas.map((m) => m.symbol).sort());
+  for (const s of ["BTC", "ETH", "S", "PEPE@BINANCE-F", "NEWT@BINANCE-ALPHA", "MOG@BINANCE-F", "OKB@COINGECKO"]) assert.ok(md.includes(s), s);
+  for (const s of ["BTC@BTCTURK", "BTC-USDT@BTCTURK", "BTC-TRY", "ETH@BTCTURK"]) assert.ok(!md.includes(s), s);
+  assert.ok(!md.some((s) => s.startsWith("ALP")), "Midas'ta olmayan Alpha tokenı yok");
+  // Platform rozetleri: aynı coin birden çok platformda
+  const badge = (it: { symbol: string; platforms?: string[] }[], s: string) => it.find((i) => i.symbol === s)?.platforms;
+  assert.deepEqual(badge(all.items, "BTC"), ["Binance", "BtcTurk", "Midas"]);
+  const bt = await catalog.listCatalog("kripto", { venue: "btcturk" });
+  assert.deepEqual(badge(bt.items, "ETH@BTCTURK"), ["Binance", "BtcTurk", "Midas"]);
+  assert.deepEqual(badge((await catalog.listCatalog("kripto", { venue: "coingecko", q: "okb" })).items, "OKB@COINGECKO"), ["Midas"]);
+  assert.deepEqual(badge((await catalog.listCatalog("kripto", { venue: "binance-futures", q: "mog" })).items, "MOG@BINANCE-F"), ["Binance", "Midas"]);
+  const alp = (await catalog.listCatalog("kripto", { venue: "binance-alpha", q: "alpaaaa" })).items[0];
+  assert.ok(alp?.symbol.startsWith("ALP"), JSON.stringify(alp));
+  assert.deepEqual(alp.platforms, ["Binance"]);
+  // Fon / BIST listelerinde klasör ve rozet yok
+  const bist = await catalog.listCatalog("bist", { pageSize: 5 });
+  assert.equal(bist.folders, undefined);
+  assert.equal(bist.items[0].platforms, undefined);
+});
+
+await test("kripto klasörleri: arama seçili klasörün içinde; sayılar aramaya göre", async () => {
+  const q = await catalog.listCatalog("kripto", { q: "bitcoin", venue: "midas" });
+  assert.deepEqual(q.items.map((i) => i.symbol), ["BTC"]);
+  assert.equal(q.folders!.midas, 1);
+  assert.equal(q.folders!.btcturk, 2);
+  assert.equal(q.folders!["binance-usdt"], 1);
+  assert.equal(q.folders![""], 4);
+  assert.equal(q.folders!.coingecko, 0);
+  assert.deepEqual((await catalog.listCatalog("kripto", { q: "bitcoin", venue: "btcturk" })).items.map((i) => i.symbol), ["BTC@BTCTURK", "BTC-USDT@BTCTURK"]);
+  assert.deepEqual((await catalog.listCatalog("kripto", { q: "cronos", venue: "midas" })).items.map((i) => i.symbol), ["CRO@COINGECKO"]);
+  assert.equal((await catalog.listCatalog("kripto", { q: "cronos", venue: "binance" })).total, 0);
+  assert.deepEqual((await catalog.listCatalog("kripto", { q: "pepe", venue: "binance" })).items.map((i) => i.symbol), ["PEPE@BINANCE-F"]);
+  // Bilinmeyen süzgeç: tümü
+  assert.equal((await catalog.listCatalog("kripto", { venue: "kraken", pageSize: 5 })).total, (await catalog.listCatalog("kripto", { pageSize: 5 })).total);
+});
+
 await test("fiyat: CoinGecko tek toplu istek, önbellek; hata / hız sınırında son fiyat bayat döner", async () => {
   (globalThis as { __yatirimPrices?: unknown }).__yatirimPrices = undefined;
   Object.assign(globalThis, { __yatirimCoinGecko: null });
