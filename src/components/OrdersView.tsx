@@ -22,6 +22,7 @@ import { Card, Field, inputCls, Modal, PrimaryButton, Segmented } from "./ui";
 import { SymbolField, symbolOnTypeChange } from "./SymbolField";
 import { AccountSelect } from "./AccountControls";
 import { EmptyState } from "./help";
+import { alertDialog, confirmDialog } from "./ConfirmDialog";
 
 const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   pending: { label: "Bekliyor", cls: "bg-sky-500/15 text-sky-300" },
@@ -44,9 +45,9 @@ export function OrdersView() {
   const history = orders?.filter((o) => o.status !== "pending") ?? [];
 
   async function cancel(o: Order) {
-    if (!confirm(`#${o.id} numaralı emir iptal edilsin mi?`)) return;
+    if (!(await confirmDialog(`#${o.id} numaralı emir iptal edilsin mi?`, { confirmLabel: "Emri iptal et", danger: true }))) return;
     const res = await fetch(`/api/orders/${o.id}`, { method: "DELETE" });
-    if (!res.ok) alert(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "İptal edilemedi.");
+    if (!res.ok) await alertDialog(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "İptal edilemedi.");
     void reload();
   }
 

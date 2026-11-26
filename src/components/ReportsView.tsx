@@ -8,6 +8,7 @@ import type { YearlyReport } from "@/lib/reports";
 import { goToLogin, usePolling } from "@/lib/usePolling";
 import { AccountSelect, refreshAccounts } from "./AccountControls";
 import { Card, Explain, Field, inputCls, PrimaryButton } from "./ui";
+import { confirmDialog } from "./ConfirmDialog";
 
 // Rapor ve veri: yıllık gerçekleşen kazanç raporu, CSV dışa aktarma, CSV'den işlem içe aktarma.
 
@@ -243,7 +244,7 @@ function ImportSection() {
 
   async function commit() {
     if (!text || !preview) return;
-    if (!confirm(`${preview.counts.valid} işlem içe aktarılsın mı?${preview.counts.duplicate ? ` (${preview.counts.duplicate} mükerrer satır atlanacak)` : ""}`)) return;
+    if (!(await confirmDialog(`${preview.counts.valid} işlem içe aktarılsın mı?${preview.counts.duplicate ? ` (${preview.counts.duplicate} mükerrer satır atlanacak)` : ""}`, { confirmLabel: "İçe aktar" }))) return;
     setBusy(true);
     setError(null);
     try {

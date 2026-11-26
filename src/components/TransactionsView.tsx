@@ -10,6 +10,7 @@ import { VirtualEntryForm } from "./VirtualEntryForm";
 import { fetchJson, goToLogin, UnauthorizedError } from "@/lib/usePolling";
 import { AccountChips, useAccounts } from "./AccountControls";
 import { EmptyState } from "./help";
+import { alertDialog, confirmDialog } from "./ConfirmDialog";
 
 export function TransactionsView() {
   const [mode, setMode] = useState<Mode>("real");
@@ -42,11 +43,11 @@ export function TransactionsView() {
   }, [mode, version]);
 
   async function remove(t: Transaction) {
-    if (!confirm(`${displaySymbol(t.assetType, t.symbol)} ${t.side === "buy" ? "alış" : "satış"} işlemi silinsin mi?`)) return;
+    if (!(await confirmDialog(`${displaySymbol(t.assetType, t.symbol)} ${t.side === "buy" ? "alış" : "satış"} işlemi silinsin mi?`, { confirmLabel: "Sil", danger: true }))) return;
     const res = await fetch(`/api/transactions/${t.id}`, { method: "DELETE" });
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
-      alert(data.error ?? "Silinemedi.");
+      await alertDialog(data.error ?? "Silinemedi.");
       return;
     }
     void load();

@@ -9,6 +9,7 @@ import { DIVIDEND_EXPLAIN, DividendSuggestionRow } from "./AssetPanels";
 import { detailHref } from "./MarketView";
 import { Card, Explain } from "./ui";
 import { EmptyState, InfoTip, Term } from "./help";
+import { alertDialog, confirmDialog } from "./ConfirmDialog";
 
 const modeLabel = (m: string) => (m === "real" ? "Gerçek" : "Sanal");
 
@@ -21,12 +22,12 @@ export function DividendsView() {
     if (v == null) return;
     const res = await fetch(`/api/dividends/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amount: v }) });
     if (res.status === 401) return goToLogin();
-    if (!res.ok) alert(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Kaydedilemedi.");
+    if (!res.ok) await alertDialog(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Kaydedilemedi.");
     void reload();
   }
 
   async function undo(r: DividendRecord) {
-    if (!confirm(`${r.symbol} ${formatDate(r.exDate)} temettü kaydı silinsin mi? Gerçekleşen K/Z'den düşülür.`)) return;
+    if (!(await confirmDialog(`${r.symbol} ${formatDate(r.exDate)} temettü kaydı silinsin mi? Gerçekleşen K/Z'den düşülür.`, { confirmLabel: "Sil", danger: true }))) return;
     const res = await fetch(`/api/dividends/${r.id}`, { method: "DELETE" });
     if (res.status === 401) return goToLogin();
     void reload();

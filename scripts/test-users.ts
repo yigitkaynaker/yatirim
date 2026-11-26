@@ -335,6 +335,58 @@ await test("yerel model (Ollama): yalnızca sahip seçer ve adres girer; paylaş
   await asOwner(() => settings.updateAiSettings({ provider: "anthropic", budgetUsd: settings.DEFAULT_AI_SETTINGS.budgetUsd }));
 });
 
+await test("paylaşımda bulut sağlayıcısı: sahibin yerel modeli bulutta kullanılamazsa sahibin Claude / OpenAI anahtarına geçilir", async () => {
+  const { getProvider } = await import("../src/lib/aiProvider");
+  const { aiErrorMessage, aiStatus, isAiConfigured, NO_SHARED_KEY_MESSAGE } = await import("../src/lib/aiClient");
+  const ownerClaude = "sk-ant-sahibin-gizli-anahtari-123456";
+  const ownerOpenAi = "sk-proj-sahibin-openai-anahtari-0123456789";
+  assert.equal((await asOwner(() => settings.getApiKey("anthropic"))).key, ownerClaude);
+  assert.equal(await ctx.runAsUser(A, () => settings.usesSharedAi()), true);
+  await asOwner(() => settings.updateAiSettings({ provider: "ollama" }));
+  process.env.VERCEL = "1";
+  try {
+    // Sahip yerel modeli seçmiş, uygulama bulutta: A sahibin Claude anahtarını kullanır (kotadan düşer)
+    assert.equal((await ctx.runAsUser(A, () => settings.getAiSettings())).provider, "anthropic");
+    assert.deepEqual(await ctx.runAsUser(A, () => aiStatus()), { configured: true, sharedMissing: false });
+    const before = await ctx.runAsUser(A, () => settings.sharedAiUsedToday());
+    assert.equal((await ctx.runAsUser(A, () => getProvider())).id, "anthropic");
+    assert.equal(await ctx.runAsUser(A, () => settings.sharedAiUsedToday()), before + 1);
+    // Anahtar istemciye hiçbir biçimde dönmez
+    assert.deepEqual(await ctx.runAsUser(A, () => settings.publicKeyState("anthropic")), { source: "owner", masked: null });
+    // Sahibin yalnızca OpenAI anahtarı varsa OpenAI'ye geçilir
+    await asOwner(() => settings.deleteApiKey("anthropic"));
+    await asOwner(() => settings.saveApiKey(ownerOpenAi, "openai"));
+    assert.equal((await asOwner(() => settings.getAiSettings())).provider, "ollama", "sahibin seçimi değişmez");
+    assert.equal((await ctx.runAsUser(A, () => settings.getAiSettings())).provider, "openai");
+    assert.equal((await ctx.runAsUser(A, () => getProvider())).id, "openai");
+    assert.deepEqual(await ctx.runAsUser(A, () => settings.publicKeyState("openai")), { source: "owner", masked: null });
+    // Sahip OpenAI seçmiş ama yalnızca Claude anahtarı var: Claude'a geçilir
+    await asOwner(() => settings.deleteApiKey("openai"));
+    await asOwner(() => settings.saveApiKey(ownerClaude, "anthropic"));
+    await asOwner(() => settings.updateAiSettings({ provider: "openai" }));
+    assert.equal((await ctx.runAsUser(A, () => settings.getAiSettings())).provider, "anthropic");
+    // Sahibin hiç bulut anahtarı yok: anlaşılır Türkçe mesaj ("paylaşılan anahtar yok")
+    await asOwner(() => settings.updateAiSettings({ provider: "ollama" }));
+    await asOwner(() => settings.deleteApiKey("anthropic"));
+    assert.equal(await ctx.runAsUser(A, () => isAiConfigured()), false);
+    assert.deepEqual(await ctx.runAsUser(A, () => aiStatus()), { configured: false, sharedMissing: true });
+    const err = await ctx.runAsUser(A, () => getProvider()).then(() => null, (e: unknown) => e);
+    assert.equal(aiErrorMessage(err), NO_SHARED_KEY_MESSAGE);
+    // Kendi anahtarı olan B'de "paylaşılan" mesajı çıkmaz
+    assert.equal((await ctx.runAsUser(B, () => aiStatus())).sharedMissing, false);
+  } finally {
+    delete process.env.VERCEL;
+  }
+  // Yerelde sahibin yerel modeli paylaşılmaya devam eder
+  assert.equal((await ctx.runAsUser(A, () => settings.getAiSettings())).provider, "ollama");
+  await asOwner(() => settings.saveApiKey(ownerClaude, "anthropic"));
+  await asOwner(() => settings.updateAiSettings({ provider: "anthropic" }));
+  // Paylaşım kapalı (sınır 0): "sınıra ulaştınız" yerine "paylaşımı kapattı"
+  await asOwner(() => settings.setSharedAiGlobalLimit(0));
+  await assert.rejects(() => ctx.runAsUser(A, () => settings.consumeSharedAiQuota()), (e: unknown) => e instanceof settings.AiGlobalLimitError && /paylaşımını kapattı/.test((e as Error).message));
+  await asOwner(() => settings.setSharedAiGlobalLimit(settings.DEFAULT_SHARED_AI_GLOBAL_LIMIT));
+});
+
 await test("paylaşılan anahtarda kullanıcı başına günlük sınır; sahip ve kendi anahtarı olan sınırsız", async () => {
   await assert.rejects(() => ctx.runAsUser(A, () => settings.setSharedAiDailyLimit(1)), /yalnızca uygulama sahibi/);
   await asOwner(() => settings.setSharedAiDailyLimit(2));

@@ -6,6 +6,7 @@ import { BudgetLine } from "./AiNotice";
 import { AccountsSection, BackupSection, NobetSection } from "./DataSettings";
 import { Card, Field, inputCls, PrimaryButton, Segmented } from "./ui";
 import { useHashScroll } from "./help";
+import { confirmDialog } from "./ConfirmDialog";
 
 type ProviderId = "anthropic" | "openai" | "ollama";
 type KeyProvider = Exclude<ProviderId, "ollama">;
@@ -173,8 +174,8 @@ function KeySection({ data, onChange }: { data: SettingsData; onChange: (d: Sett
     });
   }
 
-  function remove() {
-    if (!confirm("Kayıtlı anahtar silinsin mi?")) return;
+  async function remove() {
+    if (!(await confirmDialog("Kayıtlı anahtar silinsin mi?", { confirmLabel: "Sil", danger: true }))) return;
     void run("delete", async () => {
       await send(`/api/settings/key?provider=${provider}`, "DELETE");
       onChange(await fetchJson<SettingsData>("/api/settings"));

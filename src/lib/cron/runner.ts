@@ -133,7 +133,9 @@ export const TASKS: TaskDef[] = [
     name: "katalog",
     label: "Sembol kataloğu (kripto pariteleri, hisse/ETF listeleri, TEFAS fonları)",
     slow: true,
-    minIntervalSec: 6 * 3600,
+    // Saatlik kontrol ucuzdur (yalnızca katalog 24 saatten eskiyse ya da bir kaynak hiç yoksa yenilenir);
+    // yeni eklenen ya da önceki yenilemede alınamamış kaynak yayından sonra en geç bir saatte dolar.
+    minIntervalSec: 3600,
     leaseSec: 300,
     run: async () => {
       // Paylaşımlı (kullanıcıya özel değil); 24 saatten eskiyse yenilenir

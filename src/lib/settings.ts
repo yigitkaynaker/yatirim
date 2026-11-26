@@ -197,6 +197,20 @@ export async function publicKeyState(provider: KeyProviderId): Promise<{ source:
   return { source: used.source === "owner" ? "owner" : null, masked: null };
 }
 
+/**
+ * Paylaşımda kullanılacak sağlayıcı (sahibin seçimine göre). Sahibin yerel modeli (Ollama) yalnızca
+ * bu sunucuda erişilebiliyorsa paylaşılır (bilgisayardaki sunucu); bulutta (Vercel) ya da sahibin
+ * seçili bulut sağlayıcısının anahtarı yoksa sahibin anahtarı olan diğer bulut sağlayıcıya (önce
+ * Claude, sonra OpenAI) geçilir. Hiçbiri yoksa sahibin seçili bulut sağlayıcısı (ya da varsayılan)
+ * döner; o durumda istemci NoApiKeyError verir ve arayüz "paylaşılan anahtar yok" der.
+ */
+async function sharedProvider(owner: AiSettings): Promise<AiProviderId> {
+  if (owner.provider === "ollama" && !localModelUnavailable()) return "ollama";
+  if (isKeyProviderId(owner.provider) && (await ownerKey(owner.provider))) return owner.provider;
+  for (const p of KEY_PROVIDERS) if (await ownerKey(p)) return p;
+  return isKeyProviderId(owner.provider) ? owner.provider : DEFAULT_AI_SETTINGS.provider;
+}
+
 /** Sahip-dışı kullanıcının hiç kendi anahtarı yok: sahibin yapay zekasını (sağlayıcı + model) paylaşır */
 export async function usesSharedAi(): Promise<boolean> {
   if ((await getCurrentUserId()) === OWNER_USER_ID) return false;
@@ -214,11 +228,14 @@ const SHARED_GLOBAL_LIMIT_KEY = "shared_ai_global_daily_limit";
 const SHARED_USED_PREFIX = "ai_shared_used:";
 const SHARED_TOTAL_PREFIX = "ai_shared_total:";
 
+/** Sahip paylaşımı kapattı (günlük sınır ya da toplam tavan 0) */
+const SHARED_AI_DISABLED = "Uygulama sahibi yapay zeka paylaşımını kapattı. Ayarlar'dan kendi API anahtarınızı ekleyerek kullanabilirsiniz.";
+
 /** Günlük paylaşılan yapay zeka sınırı aşıldı (ValidationError: API'de 400 + Türkçe mesaj) */
 export class AiDailyLimitError extends ValidationError {
   constructor(limit: number) {
     super(
-      `Bugünkü yapay zeka kullanım sınırına ulaştınız (günde ${limit} istek). Uygulama sahibinin anahtarı paylaşımlı kullanıldığı için bu sınır var. ` +
+      limit === 0 ? SHARED_AI_DISABLED : `Bugünkü yapay zeka kullanım sınırına ulaştınız (günde ${limit} istek). Uygulama sahibinin anahtarı paylaşımlı kullanıldığı için bu sınır var. ` +
         "Yarın yeniden kullanabilir ya da Ayarlar'dan kendi API anahtarınızı ekleyerek sınırsız kullanabilirsiniz.",
     );
     this.name = "AiDailyLimitError";
@@ -227,9 +244,9 @@ export class AiDailyLimitError extends ValidationError {
 
 /** Sunucu geneli günlük tavan doldu (tüm kullanıcılar için) */
 export class AiGlobalLimitError extends ValidationError {
-  constructor() {
+  constructor(disabled = false) {
     super(
-      "Uygulama sahibinin yapay zeka erişimi bugün için tüm kullanıcılarda toplam sınıra ulaştı. Yarın yeniden deneyebilir ya da " +
+      disabled ? SHARED_AI_DISABLED : "Uygulama sahibinin yapay zeka erişimi bugün için tüm kullanıcılarda toplam sınıra ulaştı. Yarın yeniden deneyebilir ya da " +
         "Ayarlar'dan kendi API anahtarınızı ekleyerek hemen kullanabilirsiniz.",
     );
     this.name = "AiGlobalLimitError";
@@ -314,9 +331,10 @@ export async function consumeSharedAiQuota(now = Date.now()): Promise<void> {
 
   const limit = await getSharedAiDailyLimit();
   if (!(await incrementBelow(uid, userKey, limit, now))) throw new AiDailyLimitError(limit);
-  if (!(await incrementBelow(GLOBAL_UID, totalKey, await getSharedAiGlobalLimit(), now))) {
+  const globalLimit = await getSharedAiGlobalLimit();
+  if (!(await incrementBelow(GLOBAL_UID, totalKey, globalLimit, now))) {
     await db.run("UPDATE settings SET value = CAST(CAST(value AS INTEGER) - 1 AS TEXT) WHERE user_id = ? AND key = ? AND CAST(value AS INTEGER) > 0", [uid, userKey]);
-    throw new AiGlobalLimitError();
+    throw new AiGlobalLimitError(globalLimit === 0);
   }
 }
 
@@ -429,7 +447,7 @@ export async function getAiSettings(): Promise<AiSettings> {
   return {
     ...own,
     ...local,
-    provider: o.provider,
+    provider: await sharedProvider(o),
     model: o.model,
     openaiModel: o.openaiModel,
     openaiPrice: o.openaiPrice,

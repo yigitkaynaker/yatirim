@@ -10,6 +10,7 @@ import { Card } from "./ui";
 
 interface Data {
   configured: boolean;
+  sharedMissing?: boolean;
   running: boolean;
   latest: NewsReport | null;
 }
@@ -65,7 +66,7 @@ export function AssetNewsPanel({ instrument }: { instrument: string }) {
       </div>
       {data && !data.configured ? (
         <div className="px-4 pb-4">
-          <AiMissingKey compact />
+          <AiMissingKey compact shared={data.sharedMissing} />
         </div>
       ) : (
         <>

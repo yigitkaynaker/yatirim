@@ -11,6 +11,7 @@ import { EmptyState } from "./help";
 
 interface NewsData {
   configured: boolean;
+  sharedMissing?: boolean;
   running: boolean;
   budget: { spentUsd: number; budgetUsd: number; overBudget: boolean };
   settings: { scheduleEnabled: boolean; scheduleTimes: string[]; maxSearches: number };
@@ -198,7 +199,7 @@ export function NewsView() {
       {!data ? (
         <p className="text-sm text-slate-500">Yükleniyor…</p>
       ) : !data.configured ? (
-        <AiMissingKey />
+        <AiMissingKey shared={data.sharedMissing} />
       ) : (
         <>
           <Card className="space-y-3 p-4">

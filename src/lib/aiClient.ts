@@ -2,7 +2,7 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { getDb } from "./db";
-import { getCurrentUserId } from "./userContext";
+import { getCurrentUserId, OWNER_USER_ID } from "./userContext";
 import {
   AI_MODELS,
   AiDailyLimitError,
@@ -13,6 +13,7 @@ import {
   knownPrice,
   localModelUnavailable,
   OPENAI_MODELS,
+  usesSharedAi,
   WEB_SEARCH_USD,
   type AiModelKey,
   type AiProviderId,
@@ -79,10 +80,25 @@ export function setOllamaFetchOverride(f: typeof fetch | null) {
   g.__yatirimOllamaFetchOverride = f;
 }
 
+/** Sahip-dışı kullanıcı: ne kendi anahtarı ne de sahibin paylaşılabilir (Claude / OpenAI) anahtarı var */
+export const NO_SHARED_KEY_MESSAGE =
+  "Uygulama sahibinin paylaşılan bir yapay zeka anahtarı yok. Ayarlar'dan kendi Claude ya da OpenAI API anahtarınızı ekleyerek kullanabilirsiniz.";
+
 export class NoApiKeyError extends Error {
-  constructor(provider: KeyProviderId = "anthropic") {
-    super(provider === "openai" ? "OpenAI anahtarı eklenmedi — Ayarlar'dan ekleyin." : "Yapay zeka anahtarı eklenmedi — Ayarlar'dan ekleyin.");
+  constructor(provider: KeyProviderId = "anthropic", shared = false) {
+    super(
+      shared
+        ? NO_SHARED_KEY_MESSAGE
+        : provider === "openai"
+          ? "OpenAI anahtarı eklenmedi — Ayarlar'dan ekleyin."
+          : "Yapay zeka anahtarı eklenmedi — Ayarlar'dan ekleyin.",
+    );
   }
+}
+
+/** Anahtar yok hatası; sahip-dışı kullanıcıda "sahibin paylaşılan anahtarı yok" mesajıyla */
+async function noKey(provider: KeyProviderId): Promise<NoApiKeyError> {
+  return new NoApiKeyError(provider, (await getCurrentUserId()) !== OWNER_USER_ID);
 }
 
 /** Claude istemcisi. Anahtar yoksa NoApiKeyError. */
@@ -91,7 +107,7 @@ export async function getAiClient(): Promise<AiClient> {
   // Sahibin anahtarını paylaşan kullanıcı: her işlem günlük sınırdan düşer
   if (source === "owner") await consumeSharedAiQuota();
   if (g.__yatirimAiClientOverride) return g.__yatirimAiClientOverride;
-  if (!key) throw new NoApiKeyError("anthropic");
+  if (!key) throw await noKey("anthropic");
   return new Anthropic({ apiKey: key, maxRetries: 2, timeout: 5 * 60_000 });
 }
 
@@ -100,7 +116,7 @@ export async function getOpenAiClient(): Promise<OpenAiClient> {
   const { key, source } = await getApiKey("openai");
   if (source === "owner") await consumeSharedAiQuota();
   if (g.__yatirimOpenAiClientOverride) return g.__yatirimOpenAiClientOverride;
-  if (!key) throw new NoApiKeyError("openai");
+  if (!key) throw await noKey("openai");
   return new OpenAI({ apiKey: key, maxRetries: 2, timeout: 5 * 60_000 });
 }
 
@@ -113,6 +129,16 @@ export async function getOllamaClient(): Promise<OllamaClient> {
   const s = await getAiSettings();
   const f = g.__yatirimOllamaFetchOverride;
   return { baseUrl: s.ollamaUrl, model: s.ollamaModel, fetch: f ?? ((input, init) => fetch(input, init)) };
+}
+
+/**
+ * Arayüz için yapay zeka durumu: configured ve (kullanılamıyorsa) sharedMissing — sahip-dışı, kendi
+ * anahtarı olmayan kullanıcıda sahibin paylaşılabilir anahtarı da yok ("Ayarlar'dan ekleyin" yerine
+ * "sahibin paylaşılan anahtarı yok" denir).
+ */
+export async function aiStatus(): Promise<{ configured: boolean; sharedMissing: boolean }> {
+  const configured = await isAiConfigured();
+  return { configured, sharedMissing: !configured && (await usesSharedAi()) };
 }
 
 /** Etkin sağlayıcının (ya da verilen sağlayıcının) anahtarı / sahte istemcisi var mı (yerel model: bulutta değilse) */

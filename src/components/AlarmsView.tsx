@@ -8,6 +8,7 @@ import { usePolling } from "@/lib/usePolling";
 import { Card, Explain, Field, inputCls, Modal, PrimaryButton, Segmented } from "./ui";
 import { SymbolField, symbolOnTypeChange } from "./SymbolField";
 import { EmptyState } from "./help";
+import { confirmDialog } from "./ConfirmDialog";
 
 // Alarmlar: işlem yapmayan uyarılar. Koşul sağlanınca bildirim + push gelir.
 
@@ -45,7 +46,7 @@ export function AlarmsView() {
   const list = data?.alarms ?? null;
 
   async function remove(a: Alarm) {
-    if (!confirm("Bu alarm silinsin mi?")) return;
+    if (!(await confirmDialog("Bu alarm silinsin mi?", { confirmLabel: "Sil", danger: true }))) return;
     await fetch(`/api/alarms/${a.id}`, { method: "DELETE" });
     void reload();
   }

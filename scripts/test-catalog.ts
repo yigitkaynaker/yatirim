@@ -407,12 +407,90 @@ await test("ABD: HTTPS bot koruması (200 + HTML) verirse dizin FTP'den alınır
   assert.deepEqual(ftp.sort(), Object.keys(files));
   assert.ok(await catalog.catalogEntry("foreign", "SPYZ"), "otherlisted.txt FTP'den yazılır");
   assert.equal((await (await db.getDb()).get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog WHERE source = 'nasdaq'"))?.c, r.nasdaq);
-  // FTP de sorgu sayfası / hata verirse kaynak hata döner, ABD satırları silinmez
-  const r2 = await catalog.refreshCatalog({ fetchFtp: async () => challenge });
-  assert.match(String(r2.nasdaq), /(nasdaq|other)listed\.txt alınamadı \(HTTPS: (.*bot koruması.*|fetch failed); FTP: sembol dizini değil\)/);
+  // FTP ve GitHub aynası da olmazsa kaynak hata döner; ABD satırları varken anlık görüntü yazılmaz, satırlar silinmez
+  let snapshotLoads = 0;
+  const r2 = await catalog.refreshCatalog({ fetchFtp: async () => challenge, loadUsSnapshot: async () => (snapshotLoads++, null) });
+  assert.match(String(r2.nasdaq), /(nasdaq|other)listed\.txt alınamadı \(HTTPS: (.*bot koruması.*|fetch failed); FTP: sembol dizini değil; GitHub: ağ kapalı/);
+  assert.equal(snapshotLoads, 0);
+  assert.equal(r2.usSnapshot, undefined);
   assert.equal(r2.bist, r.bist, "sonraki kaynak etkilenmez");
   assert.ok(await catalog.catalogEntry("foreign", "SPYZ"), "ABD satırları korunmalı");
   routes = catalogRoutes();
+});
+
+// GitHub aynası Nasdaq Trader dosyalarının CSV kopyasıdır (fazladan "Company Name" sütunu, tırnaklı alanlar)
+const toMirrorCsv = (pipe: string) =>
+  pipe
+    .split("\r\n")
+    .map((line, i) => {
+      const f = line.split("|");
+      f.splice(1, 0, i === 0 ? "Company Name" : (f[1] ?? ""));
+      return f.map((x) => (/[",]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x)).join(",");
+    })
+    .join("\n");
+
+await test("CSV → | biçimi: tırnaklı alan, virgül, kaçış, CRLF", () => {
+  assert.equal(catalog.csvToPipe('a,b,c\r\n"x, y","say ""hi""",z\n1,,3'), 'a|b|c\nx, y|say "hi"|z\n1||3');
+  assert.equal(catalog.csvToPipe('h1,h2\n"a|b",c\n'), "h1|h2\na/b|c");
+});
+
+await test("ABD: HTTPS ve FTP olmazsa dizin GitHub aynasından (CSV) alınır", async () => {
+  await new Promise((r) => setTimeout(r, 1100));
+  routes = catalogRoutes();
+  routes["https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"] = "<html>Incapsula</html>";
+  routes["https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"] = new Error("fetch failed");
+  routes[catalog.US_MIRROR["nasdaqlisted.txt"]] = toMirrorCsv(NASDAQ_LISTED);
+  routes[catalog.US_MIRROR["otherlisted.txt"]] = toMirrorCsv(OTHER_LISTED);
+  const statics = new Set(catalog.staticRows().filter((x) => x.asset_type === "foreign").map((x) => x.symbol));
+  const direct = catalog.parseUsSymbolDirectory(NASDAQ_LISTED, OTHER_LISTED, statics);
+  const r = await catalog.refreshCatalog({ fetchFtp: async () => Promise.reject(new Error("FTP bağlantısı kapandı")), loadUsSnapshot: async () => null });
+  assert.equal(r.nasdaq, direct.length, String(r.nasdaq));
+  assert.equal((await catalog.catalogEntry("foreign", "RIVN"))?.name, "Rivian Automotive, Inc. Class A", "virgüllü ad bozulmaz");
+  assert.equal((await catalog.catalogEntry("foreign", "SPYZ"))?.category, "etf");
+  assert.equal((await catalog.catalogEntry("foreign", "BF-B"))?.exchange, "NYSE");
+  routes = catalogRoutes();
+});
+
+await test("ABD: hiçbir ağ kaynağı olmazsa ve katalogda ABD listesi yoksa gömülü anlık görüntü yazılır", async () => {
+  await new Promise((r) => setTimeout(r, 1100));
+  const conn = await db.getDb();
+  await conn.run("DELETE FROM symbol_catalog WHERE source = 'nasdaq'");
+  routes = catalogRoutes();
+  delete routes["https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"];
+  delete routes["https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"];
+  const noFtp = async () => Promise.reject(new Error("FTP zaman aşımı"));
+  const snap: import("../src/lib/catalog").UsSnapshot = {
+    generatedAt: "2026-11-26T12:00:00.000Z",
+    source: "test",
+    rows: [
+      ["AAPL", "Apple (statik listede: atlanır)", "Nasdaq", 0],
+      ["SNPA", "Snapshot A Corp", "Nasdaq", 0],
+      ["SNPE", "Snapshot ETF", "NYSE Arca", 1],
+      ["bad symbol", "Geçersiz", "NYSE", 0],
+    ],
+  };
+  const r = await catalog.refreshCatalog({ fetchFtp: noFtp, loadUsSnapshot: async () => snap });
+  assert.equal(r.nasdaq, 2);
+  assert.equal(r.usSnapshot, snap.generatedAt);
+  assert.match(catalog.refreshSummary(r), /ABD 2 \(yedek liste 2026-11-26\)/);
+  assert.equal((await catalog.catalogEntry("foreign", "SNPE"))?.category, "etf");
+  assert.equal((await catalog.catalogEntry("foreign", "AAPL"))?.name, "Apple", "statik satır ezilmez");
+  // Gömülü (uygulamayla gelen) gerçek anlık görüntü açılabiliyor ve tam liste içeriyor
+  await new Promise((r) => setTimeout(r, 1100));
+  await conn.run("DELETE FROM symbol_catalog WHERE source = 'nasdaq'");
+  const r2 = await catalog.refreshCatalog({ fetchFtp: noFtp });
+  assert.ok(typeof r2.nasdaq === "number" && r2.nasdaq > 8000, String(r2.nasdaq));
+  assert.ok(r2.usSnapshot);
+  assert.equal((await catalog.catalogEntry("foreign", "QQQM"))?.category, "etf");
+  assert.equal((await catalog.catalogEntry("foreign", "BRK-A"))?.category, "hisse");
+  assert.equal(await catalog.catalogEntry("foreign", "SNPA"), null, "yeni görüntüde olmayan satır budanır");
+  // Ağ geri gelince gerçek liste yazılır, anlık görüntü satırları budanır (budama saniye çözünürlüklü)
+  await new Promise((r) => setTimeout(r, 1100));
+  routes = catalogRoutes();
+  const r3 = await catalog.refreshCatalog();
+  assert.equal(r3.usSnapshot, undefined);
+  assert.equal(await catalog.catalogEntry("foreign", "QQQM"), null);
+  assert.ok(await catalog.catalogEntry("foreign", "SPYZ"));
 });
 
 await test("katalogdan seçilen fon: fiyatı TEFAS'tan gelir, portföye eklenir", async () => {

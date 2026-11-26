@@ -12,6 +12,7 @@ import { goToLogin, usePolling } from "@/lib/usePolling";
 import { Card, inputCls, Modal, PriceMeta, PrimaryButton, StaleBadge } from "./ui";
 import { EmptyState } from "./help";
 import { MarketLists } from "./MarketLists";
+import { alertDialog } from "./ConfirmDialog";
 
 /** Genel bakış kartları: kimlik + Türkçe ad */
 export const OVERVIEW: { id: string; label: string }[] = [
@@ -71,7 +72,7 @@ export function MarketView() {
       return false;
     }
     if (!res.ok) {
-      alert(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Eklenemedi.");
+      await alertDialog(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Eklenemedi.");
       return false;
     }
     void watch.reload();

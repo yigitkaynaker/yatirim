@@ -6,9 +6,11 @@ import type { ActionCard } from "@/lib/chatTools";
 import type { ChatEvent, Conversation, DisplayMessage } from "@/lib/chat";
 import { fetchJson, goToLogin, UnauthorizedError } from "@/lib/usePolling";
 import { AiMissingKey } from "./AiNotice";
+import { confirmDialog } from "./ConfirmDialog";
 
 interface ChatList {
   configured: boolean;
+  sharedMissing?: boolean;
   budget: { spentUsd: number; budgetUsd: number; overBudget: boolean };
   conversations: Conversation[];
 }
@@ -240,7 +242,7 @@ export function ChatView() {
     return (
       <div className="flex h-[calc(100dvh-12rem)] flex-col md:h-[calc(100dvh-8rem)]">
         <h1 className="mb-3 text-xl font-semibold tracking-tight">Sohbet</h1>
-        <div className="flex flex-1 flex-col justify-center">{list ? <AiMissingKey /> : <p className="text-center text-sm text-slate-500">Yükleniyor…</p>}</div>
+        <div className="flex flex-1 flex-col justify-center">{list ? <AiMissingKey shared={list.sharedMissing} /> : <p className="text-center text-sm text-slate-500">Yükleniyor…</p>}</div>
       </div>
     );
   }
@@ -287,7 +289,7 @@ export function ChatView() {
                 </button>
                 <button
                   onClick={async () => {
-                    if (!confirm("Bu sohbet silinsin mi?")) return;
+                    if (!(await confirmDialog("Bu sohbet silinsin mi?", { confirmLabel: "Sil", danger: true }))) return;
                     await fetch(`/api/chat/${c.id}`, { method: "DELETE" });
                     if (c.id === convId) void openConversation(null);
                     void loadList();

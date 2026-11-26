@@ -2,7 +2,7 @@ import { after } from "next/server";
 import { handle, readJson } from "@/lib/api";
 import { drainBackground } from "@/lib/background";
 import { listConversations, runChatTurn, type ChatEvent } from "@/lib/chat";
-import { getBudgetStatus, isAiConfigured } from "@/lib/aiClient";
+import { aiStatus, getBudgetStatus } from "@/lib/aiClient";
 
 export const dynamic = "force-dynamic";
 // Yapay zeka araç döngüsü uzun sürebilir (bulut modunda işlev süre sınırı).
@@ -10,7 +10,7 @@ export const maxDuration = 300;
 
 /** GET /api/chat — sohbet listesi ve yapay zeka durumu */
 export async function GET() {
-  return handle(async () => ({ configured: await isAiConfigured(), budget: await getBudgetStatus(), conversations: await listConversations() }));
+  return handle(async () => ({ ...(await aiStatus()), budget: await getBudgetStatus(), conversations: await listConversations() }));
 }
 
 /**

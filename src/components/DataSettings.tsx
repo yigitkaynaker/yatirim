@@ -6,6 +6,7 @@ import type { BackupCheck, BackupFile } from "@/lib/backup";
 import { fetchJson, goToLogin, UnauthorizedError } from "@/lib/usePolling";
 import { ACCOUNT_EXPLAIN, FEE_EXPLAIN, refreshAccounts, useAccounts } from "./AccountControls";
 import { Card, Explain, Field, inputCls, PrimaryButton } from "./ui";
+import { confirmDialog } from "./ConfirmDialog";
 
 // Ayarlar: hesap yönetimi (ekle, yeniden adlandır, komisyon oranı, toplama dahil, arşivle)
 // ve yedekleme / geri yükleme.
@@ -175,8 +176,8 @@ function AccountRow({ a, onMsg }: { a: Account; onMsg: (m: Msg) => void }) {
         )}
         <button
           disabled={busy}
-          onClick={() => {
-            if (!a.archived && !confirm(`"${a.name}" arşivlensin mi? Geçmiş işlemleri korunur, yeni işlemlerde seçilemez.`)) return;
+          onClick={async () => {
+            if (!a.archived && !(await confirmDialog(`"${a.name}" arşivlensin mi? Geçmiş işlemleri korunur, yeni işlemlerde seçilemez.`, { confirmLabel: "Arşivle" }))) return;
             void patch({ archived: !a.archived }, a.archived ? "Hesap arşivden çıkarıldı." : "Hesap arşivlendi.");
           }}
           className="rounded-lg px-2.5 py-1.5 text-sm text-slate-400 hover:bg-surface-2"
@@ -262,8 +263,8 @@ export function BackupSection() {
   async function restore() {
     if (!staged) return;
     // İki kez onay: geri yükleme mevcut verilerin yerine geçer.
-    if (!confirm(`"${staged.name}" geri yüklensin mi? Şu anki verilerinizin YERİNE geçecek (önce otomatik yedeği alınır).`)) return;
-    if (!confirm("Emin misiniz? Bu yedekten sonra yaptığınız işlemler görünmeyecek. Devam etmek için Tamam'a basın.")) return;
+    if (!(await confirmDialog(`"${staged.name}" geri yüklensin mi? Şu anki verilerinizin YERİNE geçecek (önce otomatik yedeği alınır).`, { confirmLabel: "Geri yükle", danger: true }))) return;
+    if (!(await confirmDialog("Emin misiniz? Bu yedekten sonra yaptığınız işlemler görünmeyecek. Devam etmek için Tamam'a basın.", { title: "Son onay", danger: true }))) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -383,8 +384,8 @@ export function CloudBackupSection() {
 
   async function restore() {
     if (!staged) return;
-    if (!confirm(`"${staged.name}" geri yüklensin mi? Şu anki verilerinizin YERİNE geçecek.`)) return;
-    if (!confirm("Emin misiniz? Önce mevcut verileriniz bilgisayarınıza indirilecek, sonra geri yükleme yapılacak.")) return;
+    if (!(await confirmDialog(`"${staged.name}" geri yüklensin mi? Şu anki verilerinizin YERİNE geçecek.`, { confirmLabel: "Geri yükle", danger: true }))) return;
+    if (!(await confirmDialog("Emin misiniz? Önce mevcut verileriniz bilgisayarınıza indirilecek, sonra geri yükleme yapılacak.", { title: "Son onay", danger: true }))) return;
     setBusy(true);
     setMsg(null);
     try {

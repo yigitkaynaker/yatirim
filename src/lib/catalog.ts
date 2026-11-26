@@ -30,7 +30,10 @@ import { BROWSER_UA } from "./http";
 //   - Nasdaq Trader sembol dizini (nasdaqlisted.txt + otherlisted.txt): Nasdaq, NYSE, NYSE Arca ve
 //     NYSE American'daki tüm hisse ve ETF'ler (deneme kağıtları, varant, birim, hak, imtiyazlı pay hariç).
 //     HTTPS ucu Imperva bot korumasının arkasında (çoğu zaman 200 + HTML sorgu sayfası döner); dizin
-//     değilse aynı dosyalar ftp.nasdaqtrader.com'dan alınır.
+//     değilse aynı dosyalar ftp.nasdaqtrader.com'dan, o da olmazsa GitHub'daki düzenli güncellenen
+//     aynadan (datasets/nasdaq-listings aylık, datasets/nyse-other-listings günlük; CSV) alınır.
+//     Hiçbiri olmazsa ve katalogda ABD listesi yoksa uygulamayla gelen anlık görüntü
+//     (data/usSymbolsSnapshot.ts; scripts/generate-us-symbols.ts ile üretilir) yazılır.
 //   - İş Yatırım "Temel Değerler ve Oranlar" sayfası: Borsa İstanbul'daki tüm hisseler (piyasa
 //     değerine göre sıralı). Midas'taki BIST / ABD hisseleri, ETF ve TEFAS fonları bu tam listelerin
 //     alt kümesidir; ayrı satır açılmaz.
@@ -48,6 +51,11 @@ const NASDAQ_LISTED = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.
 const OTHER_LISTED = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt";
 const NASDAQ_FTP_HOST = "ftp.nasdaqtrader.com";
 const NASDAQ_FTP_DIR = "/symboldirectory/";
+/** GitHub aynası (Nasdaq Trader dosyalarının CSV kopyası; kimlik doğrulamasız, veri merkezi IP'lerinden erişilebilir) */
+export const US_MIRROR: Record<string, string> = {
+  "nasdaqlisted.txt": "https://raw.githubusercontent.com/datasets/nasdaq-listings/main/data/nasdaq-listed-symbols.csv",
+  "otherlisted.txt": "https://raw.githubusercontent.com/datasets/nyse-other-listings/main/data/other-listed.csv",
+};
 const ISYATIRIM_STOCKS = "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/Temel-Degerler-Ve-Oranlar.aspx";
 
 /** TEFAS fon türleri ve katalog kaynağı adları (fon türü süzgeci kaynağa göre çalışır) */
@@ -398,7 +406,43 @@ const defaultFetchFtp: FetchFtp = (file) => ftpGetText(NASDAQ_FTP_HOST, file);
 /** Sembol dizini başlığıyla başlıyor mu (bot koruması 200 durum koduyla HTML sorgu sayfası döndürebilir) */
 const isSymbolDirectory = (text: string) => /^(Symbol|ACT Symbol)\|/.test(text.replace(/^﻿/, ""));
 
-/** Önce HTTPS; yanıt hata ya da dizin dışı bir sayfaysa (Imperva) aynı dosya FTP'den */
+/** CSV (RFC 4180: tırnaklı alan, "" kaçışı) → | ayrılmış metin (Nasdaq Trader dosya biçimi; GitHub aynası için) */
+export function csvToPipe(csv: string): string {
+  const out: string[] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  const endRow = () => {
+    row.push(field);
+    out.push(row.map((f) => f.replace(/\|/g, "/")).join("|"));
+    row = [];
+    field = "";
+  };
+  for (let i = 0; i < csv.length; i++) {
+    const c = csv[i];
+    if (quoted) {
+      if (c === '"' && csv[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && csv[i + 1] === "\n") i++;
+      endRow();
+    } else field += c;
+  }
+  if (field || row.length) endRow();
+  return out.join("\n");
+}
+
+/**
+ * Önce HTTPS; yanıt hata ya da dizin dışı bir sayfaysa (Imperva) aynı dosya FTP'den; o da olmazsa
+ * GitHub aynasından (CSV → | biçimi). Hepsi başarısızsa her denemenin nedeniyle hata verir.
+ */
 async function loadSymbolFile(url: string, fetchText: FetchText, fetchFtp: FetchFtp): Promise<string> {
   const file = url.slice(url.lastIndexOf("/") + 1);
   let reason: string;
@@ -409,13 +453,26 @@ async function loadSymbolFile(url: string, fetchText: FetchText, fetchFtp: Fetch
   } catch (err) {
     reason = (err as Error).message;
   }
+  let ftpReason: string;
   try {
     const text = await fetchFtp(`${NASDAQ_FTP_DIR}${file}`);
     if (isSymbolDirectory(text)) return text;
-    throw new Error("sembol dizini değil");
+    ftpReason = "sembol dizini değil";
   } catch (err) {
-    throw new Error(`Nasdaq ${file} alınamadı (HTTPS: ${reason}; FTP: ${(err as Error).message})`);
+    ftpReason = (err as Error).message;
   }
+  let mirrorReason = "ayna yok";
+  const mirror = US_MIRROR[file];
+  if (mirror) {
+    try {
+      const text = csvToPipe(await fetchText(mirror));
+      if (isSymbolDirectory(text)) return text;
+      mirrorReason = "sembol dizini değil";
+    } catch (err) {
+      mirrorReason = (err as Error).message;
+    }
+  }
+  throw new Error(`Nasdaq ${file} alınamadı (HTTPS: ${reason}; FTP: ${ftpReason}; GitHub: ${mirrorReason})`);
 }
 
 export async function fetchUsCatalog(skip: ReadonlySet<string>, fetchText: FetchText = defaultFetchText, fetchFtp: FetchFtp = defaultFetchFtp): Promise<CatalogRow[]> {
@@ -424,6 +481,44 @@ export async function fetchUsCatalog(skip: ReadonlySet<string>, fetchText: Fetch
   if (rows.length < MIN_ROWS.nasdaq) throw new Error(`Nasdaq sembol dizini eksik geldi (${rows.length})`);
   return rows;
 }
+
+// ---- ABD anlık görüntüsü (son çare) ---------------------------------------------------------------
+
+/** Uygulamayla gelen ABD sembol listesi: [sembol, ad, borsa, ETF mi (1/0)], borsa kademesine göre sıralı */
+export interface UsSnapshot {
+  /** Üretildiği an (ISO) ve kaynak */
+  generatedAt: string;
+  source: string;
+  rows: [string, string, string, 0 | 1][];
+}
+type LoadUsSnapshot = () => Promise<UsSnapshot | null>;
+
+/** Satırları anlık görüntü biçimine çevirir (scripts/generate-us-symbols.ts) */
+export function toUsSnapshot(rows: CatalogRow[], source: string, generatedAt = new Date().toISOString()): UsSnapshot {
+  return { generatedAt, source, rows: rows.map((r) => [r.symbol, r.name, r.exchange, r.category === "etf" ? 1 : 0]) };
+}
+
+/** Anlık görüntü → katalog satırları (statik listedekiler atlanır). Saf fonksiyon. */
+export function usSnapshotRows(snap: UsSnapshot, skip: ReadonlySet<string> = new Set()): CatalogRow[] {
+  return snap.rows
+    .filter(([symbol]) => !skip.has(symbol) && isValidSymbol("foreign", symbol))
+    .map(([symbol, name, exchange, etf], i) => ({
+      asset_type: "foreign" as const,
+      symbol,
+      name,
+      exchange,
+      currency: "USD",
+      category: etf ? ("etf" as const) : ("hisse" as const),
+      source: "nasdaq",
+      sort_rank: 10_000 + i,
+    }));
+}
+
+/** Gömülü (gzip + base64) anlık görüntüyü açar; yalnızca gerektiğinde yüklenir */
+const defaultLoadUsSnapshot: LoadUsSnapshot = async () => {
+  const [{ US_SYMBOLS_SNAPSHOT_GZ }, { gunzipSync }] = await Promise.all([import("./data/usSymbolsSnapshot"), import("node:zlib")]);
+  return JSON.parse(gunzipSync(Buffer.from(US_SYMBOLS_SNAPSHOT_GZ, "base64")).toString("utf8")) as UsSnapshot;
+};
 
 // ---- Borsa İstanbul tüm hisseler (İş Yatırım) ----------------------------------------------------
 
@@ -498,6 +593,8 @@ export interface CatalogRefreshResult {
   /** TEFAS fon türü başına satır sayısı ya da hata metni */
   tefas: Record<FundKind, number | string>;
   nasdaq: number | string;
+  /** ABD listesi ağdan alınamayıp gömülü anlık görüntüden yazıldıysa görüntünün tarihi (ISO) */
+  usSnapshot?: string;
   bist: number | string;
   static: number;
   total: number;
@@ -543,7 +640,9 @@ function staticSymbols(rows: CatalogRow[], assetType: AssetType): Set<string> {
  * Bir kaynak hata verirse o kaynağın eski satırları korunur (sonuçta hata metni döner).
  * fetchJson / fetchText / fetchFtp testlerde sahte HTTP / FTP için verilir.
  */
-export async function refreshCatalog(opts: { fetchJson?: FetchJson; fetchText?: FetchText; fetchFtp?: FetchFtp } = {}): Promise<CatalogRefreshResult> {
+export async function refreshCatalog(
+  opts: { fetchJson?: FetchJson; fetchText?: FetchText; fetchFtp?: FetchFtp; loadUsSnapshot?: LoadUsSnapshot } = {},
+): Promise<CatalogRefreshResult> {
   const fetchJson = opts.fetchJson ?? defaultFetchJson;
   const fetchText = opts.fetchText ?? defaultFetchText;
   const fetchFtp = opts.fetchFtp ?? defaultFetchFtp;
@@ -589,18 +688,40 @@ export async function refreshCatalog(opts: { fetchJson?: FetchJson; fetchText?: 
   } catch (err) {
     console.warn("[katalog] bilinen fonlar:", (err as Error).message);
   }
-  const nasdaq = await refreshSource("Nasdaq", "nasdaq", () => fetchUsCatalog(staticSymbols(st, "foreign"), fetchText, fetchFtp), now);
+  let nasdaq = await refreshSource("Nasdaq", "nasdaq", () => fetchUsCatalog(staticSymbols(st, "foreign"), fetchText, fetchFtp), now);
+  let usSnapshot: string | undefined;
+  if (typeof nasdaq === "string") {
+    // Ağ kaynaklarının hiçbiri olmadı: katalogda ABD listesi yoksa (ya da eksikse) gömülü anlık görüntü
+    // yazılır (eski ama dolu liste); varsa mevcut satırlar korunur. Ertesi gün ağdan yeniden denenir.
+    const have = await (await getDb()).get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog WHERE source = 'nasdaq'");
+    if (Number(have?.c ?? 0) < MIN_ROWS.nasdaq) {
+      try {
+        const snap = await (opts.loadUsSnapshot ?? defaultLoadUsSnapshot)();
+        if (snap) {
+          const networkError = nasdaq;
+          const n = await refreshSource("Nasdaq (anlık görüntü)", "nasdaq", async () => usSnapshotRows(snap, staticSymbols(st, "foreign")), now);
+          if (typeof n === "number") {
+            console.warn(`[katalog] ABD listesi ağdan alınamadı, gömülü anlık görüntü (${snap.generatedAt.slice(0, 10)}) yazıldı: ${networkError}`);
+            nasdaq = n;
+            usSnapshot = snap.generatedAt;
+          }
+        }
+      } catch (err) {
+        console.warn("[katalog] ABD anlık görüntüsü:", (err as Error).message);
+      }
+    }
+  }
   const bist = await refreshSource("BIST", "isyatirim", () => fetchBistCatalog(staticSymbols(st, "bist"), fetchText), now);
 
   const total = (await (await getDb()).get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog"))?.c ?? 0;
   gc.__yatirimCatalogAt = Date.now();
-  return { binance, btcturk, tefas, nasdaq, bist, static: st.length, total: Number(total) };
+  return { binance, btcturk, tefas, nasdaq, ...(usSnapshot ? { usSnapshot } : {}), bist, static: st.length, total: Number(total) };
 }
 
 /** Yenileme sonucunun kısa özeti (nöbet / zamanlayıcı günlüğü) */
 export function refreshSummary(r: CatalogRefreshResult): string {
   const short = (v: number | string) => (typeof v === "number" ? String(v) : "hata");
-  return `Binance ${short(r.binance)}, BtcTurk ${short(r.btcturk)}, TEFAS ${FUND_KINDS.map((k) => `${k} ${short(r.tefas[k])}`).join("/")}, ABD ${short(r.nasdaq)}, BIST ${short(r.bist)}, toplam ${r.total}`;
+  return `Binance ${short(r.binance)}, BtcTurk ${short(r.btcturk)}, TEFAS ${FUND_KINDS.map((k) => `${k} ${short(r.tefas[k])}`).join("/")}, ABD ${short(r.nasdaq)}${r.usSnapshot ? ` (yedek liste ${r.usSnapshot.slice(0, 10)})` : ""}, BIST ${short(r.bist)}, toplam ${r.total}`;
 }
 
 // ---- Tembel doldurma ------------------------------------------------------------------------

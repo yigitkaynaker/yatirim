@@ -1,13 +1,17 @@
 import Link from "next/link";
 
-/** Yapay zeka anahtarı yokken tüm yapay zeka ekranlarında gösterilen dostça durum. */
-export function AiMissingKey({ compact = false }: { compact?: boolean }) {
+/**
+ * Yapay zeka anahtarı yokken tüm yapay zeka ekranlarında gösterilen dostça durum. shared: sahip-dışı
+ * kullanıcı, uygulama sahibinin paylaşılabilir (Claude / OpenAI) anahtarı da yok.
+ */
+export function AiMissingKey({ compact = false, shared = false }: { compact?: boolean; shared?: boolean }) {
+  const headline = shared ? "Paylaşılan yapay zeka şu an kullanılamıyor" : "Yapay zeka anahtarı eklenmedi";
   if (compact) {
     return (
       <p className="rounded-xl border border-line bg-surface px-3 py-2.5 text-sm text-slate-400">
-        Yapay zeka anahtarı eklenmedi —{" "}
+        {headline} —{" "}
         <Link href="/ayarlar" className="text-accent underline-offset-2 hover:underline">
-          Ayarlar&apos;dan ekleyin
+          {shared ? "Ayarlar'dan kendi anahtarınızı ekleyin" : "Ayarlar'dan ekleyin"}
         </Link>
         .
       </p>
@@ -20,9 +24,11 @@ export function AiMissingKey({ compact = false }: { compact?: boolean }) {
           <path d="M15 7a4 4 0 1 1-3.9 4.9L4 19v2h3v-2h2v-2h2l1.1-1.1A4 4 0 0 1 15 7zM16 10h.01" />
         </svg>
       </div>
-      <p className="font-medium">Yapay zeka anahtarı eklenmedi — Ayarlar&apos;dan ekleyin</p>
+      <p className="font-medium">{shared ? "Paylaşılan yapay zeka şu an kullanılamıyor" : "Yapay zeka anahtarı eklenmedi — Ayarlar'dan ekleyin"}</p>
       <p className="mt-1 max-w-sm text-sm text-slate-500">
-        Sohbet ve haber analizi için bir Claude API anahtarı gerekiyor. Ayarlar sayfasında nasıl alacağınız adım adım anlatılıyor.
+        {shared
+          ? "Uygulama sahibi paylaşılan bir Claude ya da OpenAI anahtarı tanımlamamış. Kendi API anahtarınızı Ayarlar'dan ekleyerek sohbet ve haber analizini kullanabilirsiniz."
+          : "Sohbet ve haber analizi için bir Claude API anahtarı gerekiyor. Ayarlar sayfasında nasıl alacağınız adım adım anlatılıyor."}
       </p>
       <Link href="/ayarlar" className="mt-4 rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-semibold text-white hover:brightness-110">
         Ayarlar&apos;a git
