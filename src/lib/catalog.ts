@@ -125,6 +125,14 @@ export function searchKey(text: string): string {
     .trim();
 }
 
+/**
+ * Satırın arama metni: sembol + ad. Kripto sembolündeki borsa eki (@BTCTURK, @BINANCE-F, @COINGECKO)
+ * aranmaz: yoksa "btc" araması "@btcturk" yüzünden BtcTurk'teki her coini getiriyordu.
+ */
+function rowSearchKey(symbol: string, name: string): string {
+  return searchKey(`${symbol.replace(/@.*$/, "")} ${name}`);
+}
+
 function toItem(r: Pick<CatalogRow, "asset_type" | "symbol" | "name" | "exchange" | "currency" | "category">): CatalogItem {
   return {
     instrument: instrumentId(r.asset_type, r.symbol),
@@ -678,7 +686,7 @@ async function upsertRows(rows: CatalogRow[], now: string) {
   const valid = rows.filter((r) => isValidSymbol(r.asset_type, r.symbol));
   for (let i = 0; i < valid.length; i += 200) {
     const chunk = valid.slice(i, i + 200);
-    const params = chunk.flatMap((r) => [r.asset_type, r.symbol, r.name, r.exchange, r.currency, r.category, r.source, r.sort_rank, searchKey(`${r.symbol} ${r.name}`), now]);
+    const params = chunk.flatMap((r) => [r.asset_type, r.symbol, r.name, r.exchange, r.currency, r.category, r.source, r.sort_rank, rowSearchKey(r.symbol, r.name), now]);
     await db.run(
       `INSERT INTO symbol_catalog (${COLS}) VALUES ${chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ")}
        ON CONFLICT (asset_type, symbol) DO UPDATE SET name = excluded.name, exchange = excluded.exchange, currency = excluded.currency,

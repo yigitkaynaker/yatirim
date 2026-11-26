@@ -24,7 +24,7 @@ const NAV: { href: string; label: string; short: string; icon: string; mobile?: 
   { href: "/islemler", label: "İşlemler", short: "İşlemler", icon: "M4 6h16M4 12h16M4 18h10" },
   { href: "/rapor", label: "Rapor & veri", short: "Rapor", icon: "M4 20V10M10 20V4M16 20v-7M22 20H2" },
   { href: "/emirler", label: "Emirler", short: "Emirler", primary: true, icon: "M12 3v18M5 10l7-7 7 7M5 21h14" },
-  { href: "/hesaplayicilar", label: "Hesaplayıcılar", short: "Hesapla", icon: "M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 7h8M8 12h2M14 12h2M8 16h2M14 16h2" },
+  { href: "/hesaplayicilar", label: "Hesaplayıcılar", short: "Hesapla", extra: true, icon: "M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 7h8M8 12h2M14 12h2M8 16h2M14 16h2" },
   { href: "/sohbet", label: "Sohbet", short: "Sohbet", primary: true, icon: "M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" },
   { href: "/analizler", label: "Analizler", short: "Analiz", icon: "M4 5h16v14H4zM8 9h8M8 13h8M8 17h5" },
   { href: "/kilavuz", label: "Kılavuz", short: "Kılavuz", extra: true, icon: BOOK_ICON_PATH },
@@ -69,18 +69,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-dvh">
       <header className="pt-safe sticky top-0 z-30 border-b border-line/70 bg-bg/85 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4 md:px-6">
+        <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4 md:px-6 xl:gap-4">
           <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/icons/icon-192.png" alt="" width={28} height={28} className="rounded-lg" />
             Yatırım
           </Link>
-          <nav className="hidden items-center gap-0.5 md:flex lg:gap-1">
+          <nav className="hidden items-center gap-0.5 md:flex lg:gap-1 xl:gap-0">
             {MAIN_NAV.filter((n) => !n.extra).map((n) => (
               <Link
                 key={n.href}
                 href={n.href}
-                className={`rounded-lg px-2.5 py-1.5 lg:px-3 text-sm transition ${n.primary ? "" : "hidden xl:block"} ${
+                className={`rounded-lg px-2.5 py-1.5 text-sm whitespace-nowrap transition lg:px-3 xl:px-2 ${n.primary ? "" : "hidden xl:block"} ${
                   isActive(pathname, n.href) ? "bg-surface-2 text-white" : "text-slate-400 hover:text-white"
                 }`}
               >
@@ -92,7 +92,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 type="button"
                 onClick={() => setMoreOpen((o) => !o)}
                 aria-expanded={moreOpen}
-                className={`rounded-lg px-2.5 py-1.5 text-sm transition lg:px-3 ${
+                className={`rounded-lg px-2.5 py-1.5 text-sm whitespace-nowrap transition lg:px-3 xl:px-2 ${
                   MORE_NAV.some((n) => isActive(pathname, n.href)) ? "bg-surface-2 text-white" : "text-slate-400 hover:text-white"
                 }`}
               >

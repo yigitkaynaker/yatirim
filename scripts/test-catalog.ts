@@ -506,10 +506,15 @@ const CG_PRICES = {
   mantra: { usd: 0, usd_24h_change: 0, last_updated_at: cgNow }, // 0 fiyat → yok
   maker: { usd: 1050, usd_24h_change: null, last_updated_at: cgNow - 10 * 86_400 }, // uzun süredir güncellenmiyor → yok
 };
-const cgChart = (n: number, stepMs: number) => ({
-  prices: Array.from({ length: n }, (_, i) => [Date.now() - (n - 1 - i) * stepMs, 80 + i]),
-  total_volumes: Array.from({ length: n }, (_, i) => [Date.now() - (n - 1 - i) * stepMs, 1000 + i]),
-});
+// Gerçek uçtaki gibi fiyat ve hacim aynı zaman damgalarını taşır: an bir kez alınır (her noktada
+// ayrı Date.now() çağrısı milisaniye dönünce iki seriyi kaydırıyor, hacim eşleşmiyordu → aralıklı hata)
+const cgChart = (n: number, stepMs: number) => {
+  const now = Date.now();
+  return {
+    prices: Array.from({ length: n }, (_, i) => [now - (n - 1 - i) * stepMs, 80 + i]),
+    total_volumes: Array.from({ length: n }, (_, i) => [now - (n - 1 - i) * stepMs, 1000 + i]),
+  };
+};
 
 await test("CoinGecko listesi: sembol ve kimlik tekil, geçerli sembol; Binance'teki / dönüşen coinler yok", () => {
   const coins = gecko.COINGECKO_COINS.map(([c]) => c);
@@ -681,6 +686,10 @@ await test("kripto klasörleri: arama seçili klasörün içinde; sayılar arama
   assert.deepEqual((await catalog.listCatalog("kripto", { q: "cronos", venue: "midas" })).items.map((i) => i.symbol), ["CRO@COINGECKO"]);
   assert.equal((await catalog.listCatalog("kripto", { q: "cronos", venue: "binance" })).total, 0);
   assert.deepEqual((await catalog.listCatalog("kripto", { q: "pepe", venue: "binance" })).items.map((i) => i.symbol), ["PEPE@BINANCE-F"]);
+  // Borsa eki aranmaz: "btc" BtcTurk'teki ETH'yi ("@btcturk"), "coingecko" / "binance-f" o borsanın her satırını getirmez
+  assert.deepEqual((await catalog.listCatalog("kripto", { q: "btc", venue: "btcturk" })).items.map((i) => i.symbol), ["BTC@BTCTURK", "BTC-USDT@BTCTURK"]);
+  assert.equal((await catalog.listCatalog("kripto", { q: "coingecko" })).total, 0);
+  assert.equal((await catalog.listCatalog("kripto", { q: "binance-f" })).total, 0);
   // Bilinmeyen süzgeç: tümü
   assert.equal((await catalog.listCatalog("kripto", { venue: "kraken", pageSize: 5 })).total, (await catalog.listCatalog("kripto", { pageSize: 5 })).total);
 });
