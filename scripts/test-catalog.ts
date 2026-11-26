@@ -393,6 +393,28 @@ await test("yenileme: fon kaynağı hata verirse eski fonlar korunur; az satır 
   await catalog.refreshCatalog();
 });
 
+await test("ABD: HTTPS bot koruması (200 + HTML) verirse dizin FTP'den alınır; FTP de olmazsa eski satırlar korunur", async () => {
+  await new Promise((r) => setTimeout(r, 1100));
+  // nasdaqtrader.com Imperva'nın arkasında: Node isteklerine çoğu zaman 200 + sorgu sayfası döner
+  const challenge = '<html style="height:100%"><head><META NAME="ROBOTS" CONTENT="NOINDEX, NOFOLLOW"></head><body><iframe>Request unsuccessful. Incapsula incident ID: 1-2</iframe></body></html>';
+  routes = catalogRoutes();
+  routes["https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"] = challenge;
+  routes["https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"] = new Error("fetch failed");
+  const ftp: string[] = [];
+  const files: Record<string, string> = { "/symboldirectory/nasdaqlisted.txt": NASDAQ_LISTED, "/symboldirectory/otherlisted.txt": OTHER_LISTED };
+  const r = await catalog.refreshCatalog({ fetchFtp: async (f) => (ftp.push(f), files[f] ?? "") });
+  assert.equal(typeof r.nasdaq, "number", String(r.nasdaq));
+  assert.deepEqual(ftp.sort(), Object.keys(files));
+  assert.ok(await catalog.catalogEntry("foreign", "SPYZ"), "otherlisted.txt FTP'den yazılır");
+  assert.equal((await (await db.getDb()).get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog WHERE source = 'nasdaq'"))?.c, r.nasdaq);
+  // FTP de sorgu sayfası / hata verirse kaynak hata döner, ABD satırları silinmez
+  const r2 = await catalog.refreshCatalog({ fetchFtp: async () => challenge });
+  assert.match(String(r2.nasdaq), /(nasdaq|other)listed\.txt alınamadı \(HTTPS: (.*bot koruması.*|fetch failed); FTP: sembol dizini değil\)/);
+  assert.equal(r2.bist, r.bist, "sonraki kaynak etkilenmez");
+  assert.ok(await catalog.catalogEntry("foreign", "SPYZ"), "ABD satırları korunmalı");
+  routes = catalogRoutes();
+});
+
 await test("katalogdan seçilen fon: fiyatı TEFAS'tan gelir, portföye eklenir", async () => {
   routes = {
     "https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir": (b: { fonKodu?: string } | null) => ({

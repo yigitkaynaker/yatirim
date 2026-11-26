@@ -13,6 +13,7 @@ import {
   type CryptoQuote,
 } from "./assets";
 import { BIST_INDEX_NAMES, BIST_STOCKS, COMMODITIES, FX_CURRENCIES, US_ETFS, US_STOCKS, WORLD_INDICES } from "./catalogData";
+import { ftpGetText } from "./ftp";
 import { BROWSER_UA } from "./http";
 
 // Sembol kataloğu (symbol_catalog tablosu; paylaşımlı, kullanıcıya özel değil). Piyasa sayfasındaki
@@ -28,6 +29,8 @@ import { BROWSER_UA } from "./http";
 //     listede olmayan fonlar (funds tablosu) da eklenir.
 //   - Nasdaq Trader sembol dizini (nasdaqlisted.txt + otherlisted.txt): Nasdaq, NYSE, NYSE Arca ve
 //     NYSE American'daki tüm hisse ve ETF'ler (deneme kağıtları, varant, birim, hak, imtiyazlı pay hariç).
+//     HTTPS ucu Imperva bot korumasının arkasında (çoğu zaman 200 + HTML sorgu sayfası döner); dizin
+//     değilse aynı dosyalar ftp.nasdaqtrader.com'dan alınır.
 //   - İş Yatırım "Temel Değerler ve Oranlar" sayfası: Borsa İstanbul'daki tüm hisseler (piyasa
 //     değerine göre sıralı). Midas'taki BIST / ABD hisseleri, ETF ve TEFAS fonları bu tam listelerin
 //     alt kümesidir; ayrı satır açılmaz.
@@ -43,6 +46,8 @@ const BTCTURK_EXCHANGEINFO = "https://api.btcturk.com/api/v2/server/exchangeinfo
 const TEFAS_FUND_LIST = "https://www.tefas.gov.tr/api/funds/fonGetiriBazliBilgiGetir";
 const NASDAQ_LISTED = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt";
 const OTHER_LISTED = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt";
+const NASDAQ_FTP_HOST = "ftp.nasdaqtrader.com";
+const NASDAQ_FTP_DIR = "/symboldirectory/";
 const ISYATIRIM_STOCKS = "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/Temel-Degerler-Ve-Oranlar.aspx";
 
 /** TEFAS fon türleri ve katalog kaynağı adları (fon türü süzgeci kaynağa göre çalışır) */
@@ -126,6 +131,8 @@ export function staticRows(): CatalogRow[] {
 
 type FetchJson = (url: string, init?: { json?: unknown }) => Promise<unknown>;
 type FetchText = (url: string) => Promise<string>;
+/** FTP sunucusundaki dosya yolu → metin (testlerde sahte) */
+type FetchFtp = (file: string) => Promise<string>;
 
 async function defaultFetchJson(url: string, init: { json?: unknown } = {}): Promise<unknown> {
   const res = await fetch(url, {
@@ -386,8 +393,33 @@ export function parseUsSymbolDirectory(nasdaqListed: string, otherListed: string
     }));
 }
 
-export async function fetchUsCatalog(skip: ReadonlySet<string>, fetchText: FetchText = defaultFetchText): Promise<CatalogRow[]> {
-  const [a, b] = await Promise.all([fetchText(NASDAQ_LISTED), fetchText(OTHER_LISTED)]);
+const defaultFetchFtp: FetchFtp = (file) => ftpGetText(NASDAQ_FTP_HOST, file);
+
+/** Sembol dizini başlığıyla başlıyor mu (bot koruması 200 durum koduyla HTML sorgu sayfası döndürebilir) */
+const isSymbolDirectory = (text: string) => /^(Symbol|ACT Symbol)\|/.test(text.replace(/^﻿/, ""));
+
+/** Önce HTTPS; yanıt hata ya da dizin dışı bir sayfaysa (Imperva) aynı dosya FTP'den */
+async function loadSymbolFile(url: string, fetchText: FetchText, fetchFtp: FetchFtp): Promise<string> {
+  const file = url.slice(url.lastIndexOf("/") + 1);
+  let reason: string;
+  try {
+    const text = await fetchText(url);
+    if (isSymbolDirectory(text)) return text;
+    reason = "sembol dizini yerine başka bir sayfa (bot koruması)";
+  } catch (err) {
+    reason = (err as Error).message;
+  }
+  try {
+    const text = await fetchFtp(`${NASDAQ_FTP_DIR}${file}`);
+    if (isSymbolDirectory(text)) return text;
+    throw new Error("sembol dizini değil");
+  } catch (err) {
+    throw new Error(`Nasdaq ${file} alınamadı (HTTPS: ${reason}; FTP: ${(err as Error).message})`);
+  }
+}
+
+export async function fetchUsCatalog(skip: ReadonlySet<string>, fetchText: FetchText = defaultFetchText, fetchFtp: FetchFtp = defaultFetchFtp): Promise<CatalogRow[]> {
+  const [a, b] = await Promise.all([loadSymbolFile(NASDAQ_LISTED, fetchText, fetchFtp), loadSymbolFile(OTHER_LISTED, fetchText, fetchFtp)]);
   const rows = parseUsSymbolDirectory(a, b, skip);
   if (rows.length < MIN_ROWS.nasdaq) throw new Error(`Nasdaq sembol dizini eksik geldi (${rows.length})`);
   return rows;
@@ -509,11 +541,12 @@ function staticSymbols(rows: CatalogRow[], assetType: AssetType): Set<string> {
 /**
  * Kataloğu yeniler: statik liste + Binance + BtcTurk + TEFAS fonları + ABD hisse/ETF + BIST hisseleri.
  * Bir kaynak hata verirse o kaynağın eski satırları korunur (sonuçta hata metni döner).
- * fetchJson / fetchText testlerde sahte HTTP için verilir.
+ * fetchJson / fetchText / fetchFtp testlerde sahte HTTP / FTP için verilir.
  */
-export async function refreshCatalog(opts: { fetchJson?: FetchJson; fetchText?: FetchText } = {}): Promise<CatalogRefreshResult> {
+export async function refreshCatalog(opts: { fetchJson?: FetchJson; fetchText?: FetchText; fetchFtp?: FetchFtp } = {}): Promise<CatalogRefreshResult> {
   const fetchJson = opts.fetchJson ?? defaultFetchJson;
   const fetchText = opts.fetchText ?? defaultFetchText;
+  const fetchFtp = opts.fetchFtp ?? defaultFetchFtp;
   const now = sqlNow();
   const st = staticRows();
   await (await getDb()).tx(async () => {
@@ -556,7 +589,7 @@ export async function refreshCatalog(opts: { fetchJson?: FetchJson; fetchText?: 
   } catch (err) {
     console.warn("[katalog] bilinen fonlar:", (err as Error).message);
   }
-  const nasdaq = await refreshSource("Nasdaq", "nasdaq", () => fetchUsCatalog(staticSymbols(st, "foreign"), fetchText), now);
+  const nasdaq = await refreshSource("Nasdaq", "nasdaq", () => fetchUsCatalog(staticSymbols(st, "foreign"), fetchText, fetchFtp), now);
   const bist = await refreshSource("BIST", "isyatirim", () => fetchBistCatalog(staticSymbols(st, "bist"), fetchText), now);
 
   const total = (await (await getDb()).get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog"))?.c ?? 0;
