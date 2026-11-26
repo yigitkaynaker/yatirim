@@ -171,8 +171,8 @@ export interface Lesson {
   examples: ChartExample[];
   /** Fiyat grafiği yerine gösterilecek açıklayıcı çizim (src/components/egitim/LessonDiagram.tsx) */
   diagram?: { id: DiagramId; title: string; caption: string };
-  /** Dizinde hangi bölümde listelenir: grafik (varsayılan) ya da yatırımın temelleri */
-  track?: "temel";
+  /** Dizinde hangi bölümde listelenir: yoksa grafik analizi, varsa TRACKS'teki bölüm */
+  track?: Track;
   /** "Nasıl yorumlanır?": adım adım */
   steps: string[];
   /** "Sık yapılan hatalar" */
@@ -185,7 +185,23 @@ export interface Lesson {
   extra?: "positionCalculator";
 }
 
-export type DiagramId = "ucret" | "stopaj" | "cesitlendirme" | "duygular";
+export type DiagramId = "ucret" | "stopaj" | "cesitlendirme" | "duygular" | "saatler" | "kur" | "gider" | "contango" | "altinMakas";
+
+/** Grafik analizi dışındaki ders bölümleri (dizinde bu sırayla, grafik analizinden sonra listelenir) */
+export type Track = "temel" | "kripto" | "bist" | "abd" | "etf" | "endeks" | "emtia" | "doviz" | "altin" | "fon";
+
+export const TRACKS: { id: Track; label: string; intro: string }[] = [
+  { id: "temel", label: "Temel Bilgiler", intro: "Her yatırımcı için: ücretler, vergi, çeşitlendirme ve duygular." },
+  { id: "kripto", label: "Kripto Paralar", intro: "Blokzincir, borsalar, USDT ve TL pariteleri, cüzdan güvenliği." },
+  { id: "bist", label: "BIST Hisseleri", intro: "Borsa İstanbul'da hisse almak: seanslar, maliyetler ve vergi." },
+  { id: "abd", label: "ABD Hisseleri", intro: "Türkiye'den ABD borsalarına yatırım: saatler, kur riski, W-8BEN." },
+  { id: "etf", label: "ETF'ler", intro: "Borsada işlem gören fonlar: endeks takibi ve gider oranı." },
+  { id: "endeks", label: "Endeksler", intro: "BIST 100, S&P 500 gibi endeksler ne ölçer, endekse nasıl yatırım yapılır." },
+  { id: "emtia", label: "Emtia", intro: "Gümüş, petrol ve diğerleri: vadeli kontratlar, contango ve rollover." },
+  { id: "doviz", label: "Döviz", intro: "Kur nasıl oluşur, makas, maliyetler ve dövizin riskleri." },
+  { id: "altin", label: "Altın", intro: "Gram, çeyrek, cumhuriyet, has altın; makas ve fiziki ile hesap farkı." },
+  { id: "fon", label: "Yatırım Fonları", intro: "Fon türleri, TEFAS, valör, ücretler ve stopaj." },
+];
 
 /** Dizin sayfası ve gezinme için hafif özet (grafik verisi olmadan) */
 export type LessonSummary = Pick<Lesson, "slug" | "title" | "summary" | "level" | "minutes" | "track">;

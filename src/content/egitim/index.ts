@@ -18,6 +18,29 @@ import { ucretlerVeKomisyon } from "./dersler/ucretler-ve-komisyon";
 import { vergiTemelleriStopaj } from "./dersler/vergi-temelleri-stopaj";
 import { cesitlendirme } from "./dersler/cesitlendirme";
 import { duygularVeAsiriIslem } from "./dersler/duygular-ve-asiri-islem";
+import { kriptoNedir } from "./dersler/kripto-nedir";
+import { kriptoBorsaVePariteler } from "./dersler/kripto-borsa-ve-pariteler";
+import { kriptoGuvenlik } from "./dersler/kripto-guvenlik";
+import { bistHisseleri } from "./dersler/bist-hisseleri";
+import { bistMaliyetVergiRisk } from "./dersler/bist-maliyet-vergi-risk";
+import { abdHisseleri } from "./dersler/abd-hisseleri";
+import { abdKurRiski } from "./dersler/abd-kur-riski";
+import { abdVergiW8ben } from "./dersler/abd-vergi-w8ben";
+import { etfNedir } from "./dersler/etf-nedir";
+import { etfGiderOrani } from "./dersler/etf-gider-orani";
+import { endeksNedir } from "./dersler/endeks-nedir";
+import { endekseYatirim } from "./dersler/endekse-yatirim";
+import { emtiaNedir } from "./dersler/emtia-nedir";
+import { vadeliKontrat } from "./dersler/vadeli-kontrat";
+import { contangoRollover } from "./dersler/contango-rollover";
+import { dovizNedir } from "./dersler/doviz-nedir";
+import { dovizMaliyetRisk } from "./dersler/doviz-maliyet-risk";
+import { altinTurleri } from "./dersler/altin-turleri";
+import { altinMakas } from "./dersler/altin-makas";
+import { altinFizikiHesap } from "./dersler/altin-fiziki-hesap";
+import { fonTurleri } from "./dersler/fon-turleri";
+import { tefasVeValor } from "./dersler/tefas-ve-valor";
+import { fonUcretStopaj } from "./dersler/fon-ucret-stopaj";
 import type { Lesson, LessonSummary } from "./types";
 
 export const LESSONS: Lesson[] = [
@@ -38,6 +61,30 @@ export const LESSONS: Lesson[] = [
   vergiTemelleriStopaj,
   cesitlendirme,
   duygularVeAsiriIslem,
+  // Yatırım araçları (TRACKS sırasıyla): kripto, BIST, ABD, ETF, endeks, emtia, döviz, altın, fon
+  kriptoNedir,
+  kriptoBorsaVePariteler,
+  kriptoGuvenlik,
+  bistHisseleri,
+  bistMaliyetVergiRisk,
+  abdHisseleri,
+  abdKurRiski,
+  abdVergiW8ben,
+  etfNedir,
+  etfGiderOrani,
+  endeksNedir,
+  endekseYatirim,
+  emtiaNedir,
+  vadeliKontrat,
+  contangoRollover,
+  dovizNedir,
+  dovizMaliyetRisk,
+  altinTurleri,
+  altinMakas,
+  altinFizikiHesap,
+  fonTurleri,
+  tefasVeValor,
+  fonUcretStopaj,
 ];
 
 export const LESSON_SUMMARIES: LessonSummary[] = LESSONS.map(({ slug, title, summary, level, minutes, track }) => ({ slug, title, summary, level, minutes, track }));
@@ -46,4 +93,4 @@ export function getLesson(slug: string): Lesson | undefined {
   return LESSONS.find((l) => l.slug === slug);
 }
 
-export { DISCLAIMER } from "./types";
+export { DISCLAIMER, TRACKS } from "./types";

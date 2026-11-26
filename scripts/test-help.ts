@@ -136,6 +136,17 @@ await test("yeni dersler: kayıtlı, testli, çizimli; 1. ders 'İlk adımlar' i
   assert.ok(src.includes(`FIRST_LESSON_SLUG = "${LESSONS[0].slug}"`), "FIRST_LESSON_SLUG güncel değil");
 });
 
+await test("yatırım aracı bölümleri: her bölümde 2+ ders, benzersiz slug, geçerli testler", async () => {
+  const { TRACKS } = await import("../src/content/egitim/types");
+  assert.equal(lessonSlugs.size, LESSONS.length, "yinelenen ders slug'ı");
+  for (const t of TRACKS) assert.ok(LESSONS.filter((l) => l.track === t.id).length >= (t.id === "temel" ? 4 : 2), t.id);
+  for (const l of LESSONS.filter((x) => x.track && x.track !== "temel")) {
+    assert.equal(l.quiz.length, 3, l.slug);
+    for (const q of l.quiz) assert.ok(q.answer >= 0 && q.answer < q.options.length, l.slug);
+    assert.ok(l.what.length >= 2 && l.steps.length >= 3 && l.mistakes.length >= 2 && l.tryIt.length > 0, l.slug);
+  }
+});
+
 console.log("İlk adımlar (veritabanı)");
 await resetDatabase();
 const db = await import("../src/lib/db");

@@ -232,7 +232,7 @@ export const SECTIONS_2: GuideSection[] = [
     blocks: [
       {
         type: "p",
-        text: "Eğitim sayfasında, her biri birkaç dakika süren kısa dersler vardır: mum grafiği, trend, destek/direnç, RSI, MACD… Ayrıca **Yatırımın temelleri** bölümünde ücretler ve komisyon, vergi temelleri, çeşitlendirme ve duygular üzerine dersler bulunur.",
+        text: "Eğitim sayfasında, her biri birkaç dakika süren kısa dersler vardır: mum grafiği, trend, destek/direnç, RSI, MACD… Ayrıca **Temel Bilgiler** bölümünde ücretler ve komisyon, vergi temelleri, çeşitlendirme ve duygular; kripto paralar, BIST ve ABD hisseleri, ETF'ler, endeksler, emtia, döviz, altın ve yatırım fonları için de ayrı bölümlerde dersler bulunur.",
       },
       {
         type: "list",

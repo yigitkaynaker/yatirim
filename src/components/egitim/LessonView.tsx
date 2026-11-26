@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Card } from "@/components/ui";
-import type { Lesson, LessonSummary } from "@/content/egitim/types";
+import { TRACKS, type Lesson, type LessonSummary } from "@/content/egitim/types";
 import { ChartExamples } from "./ChartExamples";
 import { LessonDiagram } from "./LessonDiagram";
 import { CheckIcon, Disclaimer, LevelBadge } from "./common";
@@ -52,6 +52,7 @@ export function LessonView({
           <span className="num">
             Ders {order} / {total}
           </span>
+          <span>{TRACKS.find((t) => t.id === lesson.track)?.label ?? "Grafik Analizi"}</span>
           <LevelBadge level={lesson.level} />
           <span>{lesson.minutes} dk okuma</span>
           {done && (
