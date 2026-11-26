@@ -13,7 +13,8 @@ import {
   type CatalogCategory,
   type CryptoQuote,
 } from "./assets";
-import { parseAlphaTokens, parseFuturesExchangeInfo, parseFuturesTickers, type AlphaToken } from "./binanceExtra";
+import { parseAlphaTokens, parseFuturesExchangeInfo, parseFuturesTickers, splitMultiplier, type AlphaToken } from "./binanceExtra";
+import { COINGECKO_COINS } from "./coingecko";
 import { BIST_INDEX_NAMES, BIST_STOCKS, COMMODITIES, FX_CURRENCIES, US_ETFS, US_STOCKS, WORLD_INDICES } from "./catalogData";
 import { ftpGetText } from "./ftp";
 import { BROWSER_UA } from "./http";
@@ -30,6 +31,9 @@ import { BROWSER_UA } from "./http";
 //   - Binance Alpha: www.binance.com/bapi/defi/.../cex/alpha/all/token/list (herkese açık, kimlik
 //     doğrulamasız). Yalnızca spotta ve vadelide olmayan tokenlar. Bu uç veri merkezi IP'lerini
 //     engellerse kaynak hata verir ve eski satırlar korunur.
+//   - CoinGecko: Binance (spot, vadeli, Alpha) ve BtcTurk'te olmayan, derlenmiş listedeki coinler
+//     (coingecko.ts; Midas'ın kripto listesinden derlendi). Katalog için ağ isteği yok; fiyat ve grafik
+//     CoinGecko'nun anahtarsız ucundan.
 //   - Derlenmiş statik liste (catalogData.ts) + altın türleri; Yahoo aramasında bulunan yabancı
 //     semboller de (kategori etiketiyle) eklenir.
 //   - TEFAS: /api/funds/fonGetiriBazliBilgiGetir (fon türü başına bir istek: YAT yatırım, EMK
@@ -80,6 +84,7 @@ export const ALPHA_TOKEN_LIST = "https://www.binance.com/bapi/defi/v1/public/wal
 /** Vadeli / Alpha satırlarının sıra tabanı: Binance spottan sonra, BtcTurk'ten (100.000) önce */
 const FUTURES_RANK = 40_000;
 const ALPHA_RANK = 60_000;
+const COINGECKO_RANK = 80_000;
 /** Katalog bu süreden eskiyse yeniden doldurulur */
 export const CATALOG_MAX_AGE_MS = 24 * 3600_000;
 
@@ -328,7 +333,24 @@ export function alphaCatalogRows(tokens: Map<string, AlphaToken>, knownBases: Se
     }));
 }
 
-/** Katalogdaki kripto satırlarının taban coinleri (kaynağa göre) */
+/** CoinGecko listesi → katalog satırları: `knownBases` (Binance, BtcTurk, vadeli, Alpha) içinde olmayanlar. Saf fonksiyon. */
+export function coingeckoCatalogRows(knownBases: Set<string>): CatalogRow[] {
+  return COINGECKO_COINS.filter(([coin]) => !knownBases.has(coin)).map(([coin, name], i) => ({
+    asset_type: "crypto" as const,
+    symbol: cryptoSymbol(coin, "USDT", "COINGECKO"),
+    name,
+    exchange: "CoinGecko",
+    currency: "USD",
+    category: "kripto" as const,
+    source: "coingecko",
+    sort_rank: COINGECKO_RANK + i,
+  }));
+}
+
+/**
+ * Katalogdaki kripto satırlarının taban coinleri (kaynağa göre). Çarpanlı adların (spotta 1000CAT,
+ * 1000SATS) çarpansız adı da eklenir: aynı coin başka kaynakta CAT adıyla ikinci kez açılmasın.
+ */
 async function catalogBases(sources: string[]): Promise<Set<string>> {
   const rows = await (await getDb()).all<{ symbol: string }>(
     `SELECT symbol FROM symbol_catalog WHERE asset_type = 'crypto' AND source IN (${sources.map(() => "?").join(", ")})`,
@@ -337,7 +359,9 @@ async function catalogBases(sources: string[]): Promise<Set<string>> {
   const out = new Set<string>();
   for (const r of rows) {
     const c = parseCryptoSymbol(r.symbol);
-    if (c) out.add(c.base);
+    if (!c) continue;
+    out.add(c.base);
+    out.add(splitMultiplier(c.base).coin);
   }
   return out;
 }
@@ -671,6 +695,8 @@ export interface CatalogRefreshResult {
   binanceFutures: number | string;
   /** Yalnız Alpha'da olan tokenlar */
   binanceAlpha: number | string;
+  /** Binance ve BtcTurk'te olmayan, fiyatı CoinGecko'dan alınan coinler */
+  coingecko: number | string;
   /** TEFAS fon türü başına satır sayısı ya da hata metni */
   tefas: Record<FundKind, number | string>;
   nasdaq: number | string;
@@ -788,6 +814,16 @@ export async function refreshCatalog(
     },
     now,
   );
+  const coingecko = await refreshSource(
+    "CoinGecko",
+    "coingecko",
+    async () => {
+      // Spot listesi hiç yoksa Binance'teki coinler de CoinGecko satırı olarak açılabilirdi
+      if (spotBases.size === 0) throw new Error("spot listesi yok, CoinGecko atlandı");
+      return coingeckoCatalogRows(await catalogBases(["binance", "btcturk", "binance-futures", "binance-alpha"]));
+    },
+    now,
+  );
 
   const tefas = {} as Record<FundKind, number | string>;
   for (const kind of FUND_KINDS) tefas[kind] = await refreshSource(`TEFAS ${kind}`, fundSource(kind), () => fetchTefasCatalog(kind, fetchJson), now);
@@ -823,13 +859,13 @@ export async function refreshCatalog(
 
   const total = (await (await getDb()).get<{ c: number }>("SELECT COUNT(*) AS c FROM symbol_catalog"))?.c ?? 0;
   gc.__yatirimCatalogAt = Date.now();
-  return { binance, btcturk, binanceFutures, binanceAlpha, tefas, nasdaq, ...(usSnapshot ? { usSnapshot } : {}), bist, static: st.length, total: Number(total) };
+  return { binance, btcturk, binanceFutures, binanceAlpha, coingecko, tefas, nasdaq, ...(usSnapshot ? { usSnapshot } : {}), bist, static: st.length, total: Number(total) };
 }
 
 /** Yenileme sonucunun kısa özeti (nöbet / zamanlayıcı günlüğü) */
 export function refreshSummary(r: CatalogRefreshResult): string {
   const short = (v: number | string) => (typeof v === "number" ? String(v) : "hata");
-  return `Binance ${short(r.binance)}, BtcTurk ${short(r.btcturk)}, Binance Vadeli ${short(r.binanceFutures)}, Binance Alpha ${short(r.binanceAlpha)}, TEFAS ${FUND_KINDS.map((k) => `${k} ${short(r.tefas[k])}`).join("/")}, ABD ${short(r.nasdaq)}${r.usSnapshot ? ` (yedek liste ${r.usSnapshot.slice(0, 10)})` : ""}, BIST ${short(r.bist)}, toplam ${r.total}`;
+  return `Binance ${short(r.binance)}, BtcTurk ${short(r.btcturk)}, Binance Vadeli ${short(r.binanceFutures)}, Binance Alpha ${short(r.binanceAlpha)}, CoinGecko ${short(r.coingecko)}, TEFAS ${FUND_KINDS.map((k) => `${k} ${short(r.tefas[k])}`).join("/")}, ABD ${short(r.nasdaq)}${r.usSnapshot ? ` (yedek liste ${r.usSnapshot.slice(0, 10)})` : ""}, BIST ${short(r.bist)}, toplam ${r.total}`;
 }
 
 // ---- Tembel doldurma ------------------------------------------------------------------------
@@ -865,7 +901,7 @@ export async function ensureCatalog(opts: { waitMs?: number } = {}): Promise<voi
 }
 
 /** Düzenli yenilenen kaynaklar (biri hiç yoksa — örn. yeni eklenen kaynak — beklemeden yenilenir) */
-const REFRESHED_SOURCES = ["binance", "btcturk", "binance-futures", "binance-alpha", "static", ...FUND_KINDS.map(fundSource), "nasdaq", "isyatirim"];
+const REFRESHED_SOURCES = ["binance", "btcturk", "binance-futures", "binance-alpha", "coingecko", "static", ...FUND_KINDS.map(fundSource), "nasdaq", "isyatirim"];
 
 /** Günlük yenileme (nöbet / yerel zamanlayıcı): son yenileme 24 saatten eskiyse ya da bir kaynağın hiç satırı yoksa */
 export async function maybeRefreshCatalog(): Promise<CatalogRefreshResult | null> {
@@ -935,6 +971,7 @@ export async function listCatalog(
     else if (opts.venue === "btcturk") where.push("source = 'btcturk'");
     else if (opts.venue === "binance-futures") where.push("source = 'binance-futures'");
     else if (opts.venue === "binance-alpha") where.push("source = 'binance-alpha'");
+    else if (opts.venue === "coingecko") where.push("source = 'coingecko'");
   }
   const kind = FUND_KINDS.find((k) => k.toLowerCase() === opts.fundKind?.toLowerCase());
   if (category === "fon" && kind) {

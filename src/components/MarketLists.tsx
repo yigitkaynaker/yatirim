@@ -24,14 +24,17 @@ const VENUES: { value: string; label: string }[] = [
   { value: "btcturk", label: "BtcTurk" },
   { value: "binance-futures", label: "Binance Vadeli" },
   { value: "binance-alpha", label: "Binance Alpha" },
+  { value: "coingecko", label: "Diğer (CoinGecko)" },
 ];
 
-/** Süzgece özel kısa uyarı (vadeli ve Alpha satırları) */
+/** Süzgece özel kısa uyarı (vadeli, Alpha ve CoinGecko satırları) */
 const VENUE_HINTS: Record<string, string> = {
   "binance-futures":
     "Yalnızca Binance vadeli işlemlerde (sürekli kontrat) olan, spotta bulunmayan coinler. Fiyat vadeli kontrat fiyatıdır (1 coin için; 1000RATS gibi kontratlarda 1000'e bölünür) ve spot fiyattan biraz farklı olabilir. Yatırım tavsiyesi değildir.",
   "binance-alpha":
     "Binance Alpha: henüz Binance'te listelenmemiş, erken aşama zincir üstü tokenlar. Fiyatı çok oynak, likiditesi düşük olabilir; yüksek risklidir. Yatırım tavsiyesi değildir.",
+  coingecko:
+    "Binance ve BtcTurk'te işlem görmeyen coinler (OKB, Cronos, Pi gibi). Fiyat ve grafik CoinGecko'dan gelir: birçok borsanın ortalamasıdır, ~2 dk gecikebilir; grafik en fazla son 1 yılı gösterir. Yatırım tavsiyesi değildir.",
 };
 
 const FUND_KINDS: { value: string; label: string }[] = [
@@ -43,7 +46,7 @@ const FUND_KINDS: { value: string; label: string }[] = [
 
 const HINTS: Partial<Record<CatalogCategory, string>> = {
   kripto:
-    "Binance (USDT ve TL pariteleri) ve BtcTurk (TL pariteleri). Aynı coin farklı borsada ayrı satırdır; TL paritelerinin fiyatı TL'dir. Spotta olmayan coinler Binance Vadeli ve Binance Alpha süzgeçlerindedir (her coin bir kez).",
+    "Binance (USDT ve TL pariteleri) ve BtcTurk (TL pariteleri). Aynı coin farklı borsada ayrı satırdır; TL paritelerinin fiyatı TL'dir. Spotta olmayan coinler Binance Vadeli ve Binance Alpha, Binance ve BtcTurk'te hiç olmayanlar Diğer (CoinGecko) süzgecindedir (her coin bir kez).",
   bist: "Borsa İstanbul'daki tüm hisseler (büyükler önce). Fiyatlar ~15 dk gecikmelidir.",
   hisse: "Nasdaq ve NYSE'deki tüm ABD hisseleri (popülerler önce). Fiyatlar USD'dir.",
   etf: "ABD borsa yatırım fonları (ETF): tek alımla bir endeksi ya da sepeti takip eder. Popülerler önce.",
@@ -208,10 +211,10 @@ function FilterButtons({ options, value, onChange }: { options: { value: string;
   );
 }
 
-/** Vadeli / Alpha satırlarında sembol + rozet (sembolün yanında "(Vadeli)" tekrar yazılmaz) */
+/** Vadeli / Alpha / CoinGecko satırlarında sembol + rozet (sembolün yanında "(Vadeli)" tekrar yazılmaz) */
 function rowSymbol(it: CatalogItem) {
   const c = it.assetType === "crypto" ? parseCryptoSymbol(it.symbol) : null;
-  return c && (c.venue === "BINANCE-F" || c.venue === "BINANCE-ALPHA") ? c.base : displaySymbol(it.assetType, it.symbol);
+  return c && (c.venue === "BINANCE-F" || c.venue === "BINANCE-ALPHA" || c.venue === "COINGECKO") ? c.base : displaySymbol(it.assetType, it.symbol);
 }
 
 function VenueBadge({ item }: { item: CatalogItem }) {
@@ -220,6 +223,8 @@ function VenueBadge({ item }: { item: CatalogItem }) {
     return <span className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300" title="Binance vadeli kontrat fiyatı">Vadeli</span>;
   if (c?.venue === "BINANCE-ALPHA")
     return <span className="shrink-0 rounded bg-fuchsia-500/15 px-1.5 py-0.5 text-[10px] font-medium text-fuchsia-300" title="Binance Alpha: erken aşama, yüksek riskli token">Alpha</span>;
+  if (c?.venue === "COINGECKO")
+    return <span className="shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300" title="Binance ve BtcTurk'te yok; fiyat CoinGecko'dan (borsalar ortalaması)">CoinGecko</span>;
   return null;
 }
 

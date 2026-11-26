@@ -251,7 +251,7 @@ export function SymbolSearch({ onPick, existing }: { onPick: (r: SearchResult) =
       />
       <p className="text-xs text-slate-500">
         BIST, ABD hisse / ETF / endeks, emtia (gümüş, petrol…), döviz, altın türleri ile Binance (USDT ve TL) ve BtcTurk kripto paritelerinde arar. TL
-        paritesi için BTC-TRY, BtcTurk için BTC@BTCTURK yazabilirsiniz; spotta olmayan coinler Binance Vadeli (örn. RATS@BINANCE-F) ve Binance Alpha (örn. SHARE@BINANCE-ALPHA) olarak listelenir. Yatırım fonu için 3 harfli TEFAS kodunu yazın (örn. AFT); fon, birçok kişinin
+        paritesi için BTC-TRY, BtcTurk için BTC@BTCTURK yazabilirsiniz; spotta olmayan coinler Binance Vadeli (örn. RATS@BINANCE-F) ve Binance Alpha (örn. SHARE@BINANCE-ALPHA), hiçbir borsada olmayanlar CoinGecko (örn. OKB@COINGECKO) olarak listelenir. Yatırım fonu için 3 harfli TEFAS kodunu yazın (örn. AFT); fon, birçok kişinin
         parasının uzmanlarca hisse, tahvil, altın gibi varlıklara yatırıldığı ortak bir sepettir.
       </p>
       {query && !current && <p className="text-sm text-slate-500">Aranıyor…</p>}

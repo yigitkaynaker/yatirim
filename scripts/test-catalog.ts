@@ -233,7 +233,7 @@ await test("sahte HTTP ile doldurma: Binance USDT+TRY, BtcTurk TRY+USDT, statik 
 
 await test("kripto listesi: hacim sırası ve borsa süzgeçleri, sayfalama", async () => {
   const all = await catalog.listCatalog("kripto", { pageSize: 50 });
-  assert.equal(all.total, 7);
+  assert.equal(all.total, 7 + (await import("../src/lib/coingecko")).COINGECKO_COINS.length); // + CoinGecko satırları
   assert.deepEqual(all.items.slice(0, 2).map((i) => i.symbol), ["ETH", "BTC"]); // ETH hacmi daha büyük
   assert.deepEqual((await catalog.listCatalog("kripto", { venue: "binance-try" })).items.map((i) => i.symbol), ["BTC-TRY"]);
   assert.deepEqual((await catalog.listCatalog("kripto", { venue: "btcturk" })).items.map((i) => i.symbol), ["BTC@BTCTURK", "BTC-USDT@BTCTURK", "ETH@BTCTURK"]);
@@ -494,6 +494,169 @@ await test("fiyat: vadeli tek toplu istek (1 coin fiyatı), Alpha listeden; graf
   const h = (await portfolio.getPortfolio("virtual")).holdings.find((x) => x.symbol === "PEPE@BINANCE-F");
   assert.ok(h, "vadeli coin portföyde");
   assert.equal(h.currency, "USD");
+});
+
+// ---- CoinGecko (Binance ve BtcTurk'te olmayan coinler) --------------------------------------------
+const gecko = await import("../src/lib/coingecko");
+const CG_PRICE = "https://api.coingecko.com/api/v3/simple/price";
+const cgNow = Math.floor(Date.now() / 1000);
+const CG_PRICES = {
+  okb: { usd: 82.11, usd_24h_change: 1.5, last_updated_at: cgNow },
+  "crypto-com-chain": { usd: 0.0394, usd_24h_change: -1.25, last_updated_at: cgNow },
+  mantra: { usd: 0, usd_24h_change: 0, last_updated_at: cgNow }, // 0 fiyat → yok
+  maker: { usd: 1050, usd_24h_change: null, last_updated_at: cgNow - 10 * 86_400 }, // uzun süredir güncellenmiyor → yok
+};
+const cgChart = (n: number, stepMs: number) => ({
+  prices: Array.from({ length: n }, (_, i) => [Date.now() - (n - 1 - i) * stepMs, 80 + i]),
+  total_volumes: Array.from({ length: n }, (_, i) => [Date.now() - (n - 1 - i) * stepMs, 1000 + i]),
+});
+
+await test("CoinGecko listesi: sembol ve kimlik tekil, geçerli sembol; Binance'teki / dönüşen coinler yok", () => {
+  const coins = gecko.COINGECKO_COINS.map(([c]) => c);
+  const ids = gecko.COINGECKO_COINS.map(([, , id]) => id);
+  assert.equal(new Set(coins).size, coins.length);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const [c, name, id] of gecko.COINGECKO_COINS) {
+    assert.match(c, extra.VALID_COIN);
+    assert.ok(name.length > 0 && /^[a-z0-9-]+$/.test(id), id);
+    assert.equal(assets.parseCryptoSymbol(assets.cryptoSymbol(c, "USDT", "COINGECKO"))?.venue, "COINGECKO");
+  }
+  // Belirsiz semboller doğru coine eşlenmiş olmalı (Midas'taki ad / piyasa değeri)
+  assert.equal(gecko.coingeckoId("CRO"), "crypto-com-chain");
+  assert.equal(gecko.coingeckoId("CORE"), "coredaoorg");
+  assert.equal(gecko.coingeckoId("SUP"), "superfluid");
+  assert.equal(gecko.coingeckoId("WELL"), "moonwell-artemis");
+  assert.equal(gecko.coingeckoId("REI"), "rei-network");
+  for (const c of ["CAT", "IP", "OMNI", "TROY", "SLF", "BTC"]) assert.equal(gecko.coingeckoId(c), null, c);
+});
+
+await test("sembol biçimi: @COINGECKO (yalnız USDT), gösterim ve normalleştirme", () => {
+  assert.deepEqual(assets.parseCryptoSymbol("OKB@COINGECKO"), { base: "OKB", quote: "USDT", venue: "COINGECKO" });
+  assert.equal(assets.normalizeSymbol("crypto", "okb/usdt@coingecko"), "OKB@COINGECKO");
+  assert.equal(assets.parseInstrumentId("crypto:OKB-TRY@COINGECKO"), null);
+  assert.equal(assets.displaySymbol("crypto", "OKB@COINGECKO"), "OKB (CoinGecko)");
+  assert.equal(assets.cryptoCurrency("OKB@COINGECKO"), "USD");
+});
+
+await test("CoinGecko yanıt ayrıştırma: 0 / geçersiz / bayat fiyat elenir; grafik sıralı, hacimli", () => {
+  const m = gecko.parseSimplePrice(CG_PRICES);
+  near(m.get("okb")?.price, 82.11);
+  assert.equal(m.get("okb")?.sourceTime, cgNow * 1000);
+  assert.ok(!m.has("mantra") && !m.has("maker"));
+  assert.equal(gecko.parseSimplePrice({ error: "x" }).size, 0);
+  assert.equal(gecko.parseSimplePrice(null).size, 0);
+  const pts = gecko.parseMarketChart({ prices: [[2000, 2], [1000, 1], [3000, 0], ["x", 5]], total_volumes: [[1000, 10]] });
+  assert.deepEqual(pts, [{ time: 1, close: 1, volume: 10 }, { time: 2, close: 2, volume: null }]);
+});
+
+await test("katalog: CoinGecko satırları yalnız Binance / BtcTurk / vadeli / Alpha'da olmayanlar; süzgeç", async () => {
+  const rows = catalog.coingeckoCatalogRows(new Set(["OKB", "CRO"]));
+  assert.equal(rows.length, gecko.COINGECKO_COINS.length - 2);
+  assert.ok(!rows.some((r) => r.symbol === "OKB@COINGECKO"));
+  assert.deepEqual({ ...rows[0], sort_rank: 0 }, { asset_type: "crypto", symbol: "WSTETH@COINGECKO", name: "Lido wstETH", exchange: "CoinGecko", currency: "USD", category: "kripto", source: "coingecko", sort_rank: 0 });
+  const list = await catalog.listCatalog("kripto", { venue: "coingecko", pageSize: 50 });
+  assert.equal(list.total, gecko.COINGECKO_COINS.length);
+  assert.equal(list.items[0].symbol, "WSTETH@COINGECKO");
+  assert.equal((await catalog.searchCatalog("cronos")).find((i) => i.symbol === "CRO@COINGECKO")?.name, "Cronos");
+  assert.equal((await catalog.listCatalog("kripto", { venue: "binance-usdt" })).total, 3, "diğer süzgeçler etkilenmez");
+});
+
+await test("katalog: spotta 1000CAT varsa Alpha'da CAT ikinci kez açılmaz; spotta listelenen coin CoinGecko'dan çıkar", async () => {
+  await new Promise((r) => setTimeout(r, 1100));
+  routes = extraRoutes();
+  routes["https://api.binance.com/api/v3/exchangeInfo"] = {
+    symbols: [
+      ...BINANCE_INFO.symbols,
+      { symbol: "1000CATUSDT", status: "TRADING", baseAsset: "1000CAT", quoteAsset: "USDT", isSpotTradingAllowed: true },
+      { symbol: "OKBUSDT", status: "TRADING", baseAsset: "OKB", quoteAsset: "USDT", isSpotTradingAllowed: true },
+    ],
+  };
+  routes[ALPHA_URL] = { ...ALPHA_LIST, data: [...ALPHA_LIST.data, alphaTok("ALPHA_900", "CAT")] };
+  const r = await catalog.refreshCatalog();
+  assert.equal(r.coingecko, gecko.COINGECKO_COINS.length - 1);
+  const conn = await db.getDb();
+  assert.ok(await conn.get("SELECT 1 FROM symbol_catalog WHERE symbol = '1000CAT'"));
+  assert.ok(!(await conn.get("SELECT 1 FROM symbol_catalog WHERE symbol = 'CAT@BINANCE-ALPHA'")), "CAT tekrar açılmaz");
+  assert.ok(!(await conn.get("SELECT 1 FROM symbol_catalog WHERE symbol = 'OKB@COINGECKO'")), "OKB yalnız Binance satırı");
+  assert.match(catalog.refreshSummary(r), new RegExp(`CoinGecko ${gecko.COINGECKO_COINS.length - 1}`));
+  // Eski duruma dön
+  await new Promise((r2) => setTimeout(r2, 1100));
+  routes = extraRoutes();
+  assert.equal((await catalog.refreshCatalog()).coingecko, gecko.COINGECKO_COINS.length);
+});
+
+await test("fiyat: CoinGecko tek toplu istek, önbellek; hata / hız sınırında son fiyat bayat döner", async () => {
+  (globalThis as { __yatirimPrices?: unknown }).__yatirimPrices = undefined;
+  Object.assign(globalThis, { __yatirimCoinGecko: null });
+  routes = { [CG_PRICE]: CG_PRICES };
+  calls.length = 0;
+  const q = await prices.getQuotes([
+    { type: "crypto", symbol: "OKB@COINGECKO" },
+    { type: "crypto", symbol: "CRO@COINGECKO" },
+    { type: "crypto", symbol: "OM@COINGECKO" },
+    { type: "crypto", symbol: "NOPE@COINGECKO" },
+  ]);
+  near(q[0].price, 82.11);
+  assert.deepEqual([q[0].currency, q[0].source, q[0].stale, q[0].name], ["USD", "CoinGecko", false, "OKB"]);
+  near(q[1].changePct, -1.25);
+  assert.equal(q[1].name, "Cronos");
+  assert.equal(q[2].price, null, "0 fiyat kullanılmaz");
+  assert.equal(q[3].price, null);
+  assert.ok(prices.quoteUsable(q[0]));
+  const cgCalls = calls.filter((u) => u.startsWith(CG_PRICE));
+  assert.equal(cgCalls.length, 1, "tek istek");
+  assert.ok(cgCalls[0].includes("okb") && cgCalls[0].includes("crypto-com-chain") && cgCalls[0].includes("include_24hr_change=true"));
+  // Önbellek: hemen tekrar sorulursa (zorla yenile dahil) yeni istek yok
+  await prices.getQuotes([{ type: "crypto", symbol: "OKB@COINGECKO" }], { force: true });
+  assert.equal(calls.filter((u) => u.startsWith(CG_PRICE)).length, 1, "önbellekten");
+  // Kaynak 429: son bilinen fiyat bayat işaretiyle
+  const old = Date.now() - 10 * 60_000;
+  const st = (globalThis as unknown as { __yatirimPrices: { mem: Map<string, { fetchedAt: number }> } }).__yatirimPrices;
+  for (const [k, e] of st.mem) if (k.startsWith("cg:")) e.fetchedAt = old;
+  await (await db.getDb()).run("UPDATE price_cache SET fetched_at = ? WHERE key LIKE 'cg:%'", [old]);
+  Object.assign(globalThis, { __yatirimCoinGecko: null });
+  routes = { [CG_PRICE]: 429 };
+  const [s] = await prices.getQuotes([{ type: "crypto", symbol: "OKB@COINGECKO" }]);
+  near(s.price, 82.11);
+  assert.equal(s.stale, true);
+  assert.ok(!prices.quoteUsable(s), "bayat fiyatla emir / alarm tetiklenmez");
+});
+
+await test("grafik ve günlük mumlar: CoinGecko market_chart (aralık → gün), önbellek; portföy, alarm, emir", async () => {
+  const http = await import("../src/lib/http");
+  http.markSuccess("CoinGecko"); // önceki testteki 429 geri çekilmesi
+  Object.assign(globalThis, { __yatirimCoinGecko: null, __yatirimGeckoCharts: undefined, __yatirimPrices: undefined });
+  routes = { [CG_PRICE]: CG_PRICES, "https://api.coingecko.com/api/v3/coins/okb/market_chart": cgChart(40, 86_400_000) };
+  calls.length = 0;
+  const ch = await market.getChart("crypto", "OKB@COINGECKO", "1A");
+  assert.ok(calls.some((u) => u.includes("/coins/okb/market_chart?vs_currency=usd&days=31")));
+  assert.equal(ch.currency, "USD");
+  assert.equal(ch.name, "OKB (CoinGecko)");
+  assert.ok(ch.points.length >= 30 && ch.points.length <= 32, String(ch.points.length));
+  near(ch.points[ch.points.length - 1].value, 119);
+  const y5 = await market.getChart("crypto", "OKB@COINGECKO", "5Y");
+  assert.ok(calls.some((u) => u.includes("days=365&interval=daily")), "anahtarsız uçta en fazla 365 gün");
+  assert.equal(y5.points.length, 40);
+  const technical = await import("../src/lib/technical");
+  const n = calls.length;
+  const d = await technical.getDailyCandles("crypto", "OKB@COINGECKO");
+  assert.equal(calls.length, n, "aynı gün aralığı bellekten");
+  assert.equal(d.candles.length, 40);
+  assert.equal(d.lastPartial, true);
+  assert.equal(d.candles[0].volume, 1000);
+  await assert.rejects(market.getChart("crypto", "NOPE@COINGECKO", "1A"), /eşlemesi yok/);
+  await portfolio.recordTransaction(
+    await portfolio.parseTransactionInput({ mode: "virtual", assetType: "crypto", symbol: "okb@coingecko", side: "buy", quantity: "2", price: "80", currency: "USD", date: "2026-11-20" }),
+    { fxTry: 40 },
+  );
+  const h = (await portfolio.getPortfolio("virtual")).holdings.find((x) => x.symbol === "OKB@COINGECKO");
+  assert.ok(h, "CoinGecko coini portföyde");
+  assert.equal(h.currency, "USD");
+  const alarms = await import("../src/lib/alarms");
+  assert.equal((await alarms.createAlarm({ assetType: "crypto", symbol: "okb@coingecko", kind: "price", direction: "up", threshold: "100" })).symbol, "OKB@COINGECKO");
+  const orders = await import("../src/lib/orders");
+  const o = await orders.createOrder({ mode: "virtual", assetType: "crypto", symbol: "OKB@COINGECKO", side: "buy", condition: "lte", triggerPrice: "90", entryBy: "quantity", quantity: "1" });
+  assert.equal(o.symbol, "OKB@COINGECKO");
 });
 
 await test("arama: katalog eşleşmeleri kategori başına sınırlı, kripto 6 sınırı yok; gruplama", async () => {

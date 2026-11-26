@@ -3,6 +3,7 @@ import YahooFinance from "yahoo-finance2";
 import { getDb, sqlNow } from "./db";
 import { cryptoCurrency, GOLD_KINDS, GOLD_SYMBOL, goldKind, instrumentId, isDelayedType, parseCryptoSymbol, type AssetType } from "./assets";
 import { parseAlphaTokens, parseFuturesTickers, type AlphaToken, type FuturesQuote } from "./binanceExtra";
+import { COINGECKO_API, COINGECKO_BATCH, COINGECKO_COINS, coingeckoId, parseSimplePrice, type CoinGeckoQuote } from "./coingecko";
 import { inBackoff, markFailure, markSuccess, politeFetch } from "./http";
 import {
   parseFundPrices,
@@ -21,6 +22,8 @@ import {
 //   Spotta olmayan coinler: Binance Vadeli (fapi /fapi/v1/ticker/24hr sembolsüz tek istek, ağırlık 40,
 //   10 sn bellek; çarpanlı kontratta fiyat 1 coin için = kontrat fiyatı / çarpan) ve Binance Alpha
 //   (bapi token listesi tek istek; fiyat ve 24 saatlik değişim listede; 30 sn bellek).
+//   Binance / BtcTurk'te hiç olmayan coinler: CoinGecko simple/price (anahtarsız; derlenmiş listenin
+//   tamamı tek istekte, 2 dk önbellek — CoinGecko'nun anahtarsız hız sınırı düşüktür).
 // - Yatırım fonları: TEFAS (günde bir fiyat; 0 gelen fiyatlar geçersiz sayılır)
 // - Çeyrek / yarım / tam / cumhuriyet / ata altın, 22 ayar bilezik: Truncgil
 //   (yedek: Genelpara; ikisi de yoksa gram altından "yaklaşık" hesap)
@@ -31,6 +34,7 @@ import {
 export const CACHE_TTL_MS = 30_000;
 const GOLD_TTL_MS = 2 * 60_000;
 const FUND_TTL_MS = 30 * 60_000;
+const COINGECKO_TTL_MS = 2 * 60_000;
 /** TEFAS'a aynı anda en fazla bu kadar fon fiyatı isteği */
 const FUND_CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 8_000;
@@ -110,11 +114,12 @@ export function yahooClient() {
 
 // ---- Kaynak anahtarları -------------------------------------------------
 
-type SourceKey = `yahoo:${string}` | `binance:${string}` | `binancef:${string}` | `alpha:${string}` | `btcturk:${string}` | `tefas:${string}` | `gold:${string}`;
+type SourceKey = `yahoo:${string}` | `binance:${string}` | `binancef:${string}` | `alpha:${string}` | `cg:${string}` | `btcturk:${string}` | `tefas:${string}` | `gold:${string}`;
 
 function ttlFor(key: string): number {
   if (key.startsWith("tefas:")) return FUND_TTL_MS;
   if (key.startsWith("gold:")) return GOLD_TTL_MS;
+  if (key.startsWith("cg:")) return COINGECKO_TTL_MS;
   return CACHE_TTL_MS;
 }
 
@@ -138,6 +143,7 @@ function sourcesFor(type: AssetType, symbol: string): SourceKey[] {
     if (!c) return [];
     if (c.venue === "BINANCE-F") return [`binancef:${c.base}`];
     if (c.venue === "BINANCE-ALPHA") return [`alpha:${c.base}`];
+    if (c.venue === "COINGECKO") return [`cg:${c.base}`];
     return [c.venue === "BTCTURK" ? `btcturk:${c.base}${c.quote}` : `binance:${c.base}${c.quote}`];
   }
   if (type === "fund") return [`tefas:${symbol}`];
@@ -344,6 +350,8 @@ const gx = globalThis as unknown as {
   __yatirimFuturesJob?: Promise<Map<string, FuturesQuote>> | null;
   __yatirimAlpha?: Shared<Map<string, AlphaToken>> | null;
   __yatirimAlphaJob?: Promise<Map<string, AlphaToken>> | null;
+  __yatirimCoinGecko?: Shared<Map<string, CoinGeckoQuote>> | null;
+  __yatirimCoinGeckoJob?: Promise<Map<string, CoinGeckoQuote>> | null;
 };
 
 /** Tüm vadeli kontratların fiyatı, coin adına göre (tek istek; maxAgeMs bellekte; eşzamanlı çağrılar aynı isteği bekler) */
@@ -376,6 +384,44 @@ export async function binanceAlphaTokens(maxAgeMs = 30_000): Promise<Map<string,
     gx.__yatirimAlphaJob = null;
   });
   return await gx.__yatirimAlphaJob;
+}
+
+/**
+ * Derlenmiş CoinGecko listesinin tüm fiyatları, kimliğe göre (100'lük gruplarla; liste küçük olduğundan
+ * pratikte tek istek; maxAgeMs bellekte; eşzamanlı çağrılar aynı isteği bekler). 429'da geri çekilir.
+ */
+export async function coingeckoQuotes(maxAgeMs = 60_000): Promise<Map<string, CoinGeckoQuote>> {
+  const c = gx.__yatirimCoinGecko;
+  if (c && Date.now() - c.at < maxAgeMs) return c.data;
+  gx.__yatirimCoinGeckoJob ??= (async () => {
+    const ids = [...new Set(COINGECKO_COINS.map(([, , id]) => id))];
+    const data = new Map<string, CoinGeckoQuote>();
+    for (let i = 0; i < ids.length; i += COINGECKO_BATCH) {
+      const url = `${COINGECKO_API}/simple/price?ids=${ids.slice(i, i + COINGECKO_BATCH).join(",")}&vs_currencies=usd&include_24hr_change=true&include_last_updated_at=true`;
+      const text = await politeFetch("CoinGecko", url, { timeoutMs: 15_000, backoffBaseMs: 60_000, backoffMaxMs: 15 * 60_000 });
+      for (const [id, q] of parseSimplePrice(JSON.parse(text))) data.set(id, q);
+    }
+    if (data.size === 0) throw new Error("CoinGecko fiyat listesi boş geldi");
+    gx.__yatirimCoinGecko = { at: Date.now(), data };
+    return data;
+  })().finally(() => {
+    gx.__yatirimCoinGeckoJob = null;
+  });
+  return await gx.__yatirimCoinGeckoJob;
+}
+
+async function fetchCoinGecko(coins: string[]): Promise<Map<string, RawQuote>> {
+  const out = new Map<string, RawQuote>();
+  if (coins.length === 0) return out;
+  const all = await coingeckoQuotes();
+  for (const coin of coins) {
+    const id = coingeckoId(coin);
+    const q = id ? all.get(id) : undefined;
+    if (!q) continue;
+    const name = COINGECKO_COINS.find(([c]) => c === coin)?.[1];
+    out.set(coin, { price: q.price, currency: "USD", changePct: q.changePct, sourceTime: q.sourceTime, ...(name ? { extra: { name } } : {}) });
+  }
+  return out;
 }
 
 async function fetchBinanceFutures(coins: string[]): Promise<Map<string, RawQuote>> {
@@ -605,7 +651,7 @@ async function refresh(keys: SourceKey[], force: boolean) {
   const waitFor: Promise<void>[] = [];
   const isDue = (k: string, e: CacheEntry | undefined) => {
     // Fon ve altın kaynaklarında "zorla yenile" de en az 1 dk bekler (kibar olmak için).
-    const minAge = k.startsWith("tefas:") || k.startsWith("gold:") ? 60_000 : 0;
+    const minAge = k.startsWith("tefas:") || k.startsWith("gold:") || k.startsWith("cg:") ? 60_000 : 0;
     return !e || now - e.fetchedAt >= ttlFor(k) || (force && now - e.fetchedAt >= minAge);
   };
   // Bellekte olmayan ya da süresi dolmuş anahtarlar için önce veritabanına bak.
@@ -633,11 +679,12 @@ async function refresh(keys: SourceKey[], force: boolean) {
     const btcturk = due.filter((k) => k.startsWith("btcturk:")).map((k) => k.slice(8));
     const futures = due.filter((k) => k.startsWith("binancef:")).map((k) => k.slice(9));
     const alpha = due.filter((k) => k.startsWith("alpha:")).map((k) => k.slice(6));
+    const gecko = due.filter((k) => k.startsWith("cg:")).map((k) => k.slice(3));
     const funds = due.filter((k) => k.startsWith("tefas:")).map((k) => k.slice(6));
     const golds = due.filter((k) => k.startsWith("gold:")).map((k) => k.slice(5));
 
     const job = (async () => {
-      const [y, b, bt, f, au, bf, al] = await Promise.allSettled([
+      const [y, b, bt, f, au, bf, al, cg] = await Promise.allSettled([
         fetchYahoo(yahoo),
         fetchBinance(binance),
         fetchBtcTurk(btcturk),
@@ -645,6 +692,7 @@ async function refresh(keys: SourceKey[], force: boolean) {
         fetchGoldKinds(golds),
         fetchBinanceFutures(futures),
         fetchBinanceAlpha(alpha),
+        fetchCoinGecko(gecko),
       ]);
       const fetchedAt = Date.now();
       const writes: Promise<void>[] = [];
@@ -664,6 +712,7 @@ async function refresh(keys: SourceKey[], force: boolean) {
       store("btcturk:", bt, "BtcTurk");
       store("binancef:", bf, "Binance Vadeli");
       store("alpha:", al, "Binance Alpha");
+      store("cg:", cg, "CoinGecko");
       store("tefas:", f, "TEFAS");
       store("gold:", au, "Altın");
       await Promise.all(writes);
@@ -728,6 +777,7 @@ function sourceLabel(key: string): string {
   if (key.startsWith("binance:")) return "Binance";
   if (key.startsWith("binancef:")) return "Binance Vadeli";
   if (key.startsWith("alpha:")) return "Binance Alpha";
+  if (key.startsWith("cg:")) return "CoinGecko";
   if (key.startsWith("btcturk:")) return "BtcTurk";
   if (key.startsWith("tefas:")) return "TEFAS";
   return "Yahoo";

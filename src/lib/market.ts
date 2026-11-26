@@ -18,6 +18,8 @@ import {
 } from "./assets";
 import { rememberSearchHit, searchCatalog } from "./catalog";
 import { COMMODITIES, COMMODITY_KEYWORDS } from "./catalogData";
+import { COINGECKO_API, coingeckoId, parseMarketChart } from "./coingecko";
+import { politeFetch } from "./http";
 import { ValidationError } from "./portfolio";
 import { getCurrentUserId } from "./userContext";
 import { binanceAlphaTokens, binanceFuturesQuotes, fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
@@ -434,6 +436,41 @@ export async function extraVenueKlines(c: CryptoRef, interval: string, limit: nu
   throw new Error("Bu borsa için mum verisi yok.");
 }
 
+/** Grafik aralığının CoinGecko gün sayısı (anahtarsız uç en fazla 365 gün verir; 5Y de son 1 yıl) */
+const COINGECKO_DAYS: Record<ChartRange, number> = { "1G": 1, "1H": 7, "1A": 31, "3A": 92, "1Y": 365, "5Y": 365 };
+
+const gecko = (() => {
+  const g = globalThis as unknown as { __yatirimGeckoCharts?: { data: Map<string, { at: number; rows: KlineRow[] }>; jobs: Map<string, Promise<KlineRow[]>> } };
+  g.__yatirimGeckoCharts ??= { data: new Map(), jobs: new Map() };
+  return g.__yatirimGeckoCharts;
+})();
+
+/**
+ * CoinGecko fiyat geçmişi (/coins/{id}/market_chart; 1 gün ~5 dk, 2–90 gün saatlik, üstü günlük noktalar).
+ * Anahtarsız ucun hız sınırı düşük: kimlik + gün başına bellek önbelleği (1 gün 2 dk, üstü 15 dk),
+ * eşzamanlı istekler aynı çağrıyı bekler, 429'da geri çekilir (fiyatlarla aynı sağlayıcı sayacı).
+ * Son nokta güncel fiyattır (kapanmamış mum).
+ */
+export async function coingeckoKlines(coin: string, days: number): Promise<KlineRow[]> {
+  const id = coingeckoId(coin);
+  if (!id) throw new Error(`${coin} için CoinGecko eşlemesi yok.`);
+  const key = `${id}|${days}`;
+  const hit = gecko.data.get(key);
+  if (hit && Date.now() - hit.at < (days <= 1 ? 2 * 60_000 : 15 * 60_000)) return hit.rows;
+  let job = gecko.jobs.get(key);
+  if (!job) {
+    job = (async () => {
+      const url = `${COINGECKO_API}/coins/${encodeURIComponent(id)}/market_chart?vs_currency=usd&days=${days}${days > 90 ? "&interval=daily" : ""}`;
+      const pts = parseMarketChart(JSON.parse(await politeFetch("CoinGecko", url, { timeoutMs: 15_000, backoffBaseMs: 60_000, backoffMaxMs: 15 * 60_000 })));
+      const rows = pts.map((p, i) => ({ time: p.time, close: p.close, volume: p.volume, closeTime: i + 1 < pts.length ? pts[i + 1].time * 1000 : Date.now() + 60_000 }));
+      if (rows.length > 0) gecko.data.set(key, { at: Date.now(), rows });
+      return rows;
+    })().finally(() => gecko.jobs.delete(key));
+    gecko.jobs.set(key, job);
+  }
+  return await job;
+}
+
 /** Binance aralıklarının BtcTurk karşılığı (dakika) */
 const BTCTURK_RES: Record<string, number> = { "5m": 5, "30m": 30, "4h": 240, "1d": 1440, "1w": 10080 };
 
@@ -442,7 +479,19 @@ async function cryptoSeries(symbol: string, range: ChartRange): Promise<Series> 
   if (!c) throw new Error("Kripto sembolü geçersiz.");
   const spec = RANGE_SPEC[range];
   const currency = c.quote === "TRY" ? "TRY" : "USD";
-  const name = c.venue === "BINANCE-F" ? `${c.base} (Binance Vadeli)` : c.venue === "BINANCE-ALPHA" ? `${c.base} (Binance Alpha)` : `${c.base}/${c.quote}${c.venue === "BTCTURK" ? " (BtcTurk)" : ""}`;
+  const name =
+    c.venue === "BINANCE-F"
+      ? `${c.base} (Binance Vadeli)`
+      : c.venue === "BINANCE-ALPHA"
+        ? `${c.base} (Binance Alpha)`
+        : c.venue === "COINGECKO"
+          ? `${c.base} (CoinGecko)`
+          : `${c.base}/${c.quote}${c.venue === "BTCTURK" ? " (BtcTurk)" : ""}`;
+  if (c.venue === "COINGECKO") {
+    const rows = await coingeckoKlines(c.base, COINGECKO_DAYS[range]);
+    // 5Y: anahtarsız uçta en fazla son 1 yıl
+    return { points: rows.filter((r) => r.time * 1000 >= Date.now() - spec.ms).map((r) => ({ time: r.time, value: r.close })), currency, name };
+  }
   if (c.venue === "BINANCE-F" || c.venue === "BINANCE-ALPHA") {
     const rows = await extraVenueKlines(c, spec.binance, spec.limit);
     return { points: rows.map((r) => ({ time: r.time, value: r.close })), currency, name };

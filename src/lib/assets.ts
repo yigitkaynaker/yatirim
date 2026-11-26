@@ -165,6 +165,7 @@ export function displaySymbol(type: AssetType, symbol: string): string {
     if (!c || (c.venue === "BINANCE" && c.quote === "USDT")) return symbol;
     if (c.venue === "BINANCE-F") return `${c.base} (Vadeli)`;
     if (c.venue === "BINANCE-ALPHA") return `${c.base} (Alpha)`;
+    if (c.venue === "COINGECKO") return `${c.base} (CoinGecko)`;
     return `${c.base}/${c.quote}${c.venue === "BTCTURK" ? " (BtcTurk)" : ""}`;
   }
   return symbol;
@@ -179,16 +180,18 @@ export function displaySymbol(type: AssetType, symbol: string): string {
 //   "RATS@BINANCE-F"   → Binance vadeli (USDⓈ-M sürekli) kontrat; yalnızca spotta olmayan coinler. Fiyat
 //                        1 coin içindir: 1000RATSUSDT gibi çarpanlı kontratlarda kontrat fiyatı 1000'e bölünür.
 //   "SHARE@BINANCE-ALPHA" → Binance Alpha (erken aşama) token; yalnızca spotta ve vadelide olmayanlar.
-// Vadeli ve Alpha'da kotasyon her zaman USDT'dir (fiyat USD).
+//   "OKB@COINGECKO"    → Binance ve BtcTurk'te olmayan coin; fiyat ve grafik CoinGecko'dan (derlenmiş
+//                        eşleme listesi: coingecko.ts).
+// Vadeli, Alpha ve CoinGecko'da kotasyon her zaman USDT'dir (fiyat USD).
 
-export const CRYPTO_VENUES = ["BINANCE", "BTCTURK", "BINANCE-F", "BINANCE-ALPHA"] as const;
+export const CRYPTO_VENUES = ["BINANCE", "BTCTURK", "BINANCE-F", "BINANCE-ALPHA", "COINGECKO"] as const;
 export type CryptoVenue = (typeof CRYPTO_VENUES)[number];
 export const CRYPTO_QUOTES = ["USDT", "TRY"] as const;
 export type CryptoQuote = (typeof CRYPTO_QUOTES)[number];
 
-export const CRYPTO_VENUE_LABEL: Record<CryptoVenue, string> = { BINANCE: "Binance", BTCTURK: "BtcTurk", "BINANCE-F": "Binance Vadeli", "BINANCE-ALPHA": "Binance Alpha" };
+export const CRYPTO_VENUE_LABEL: Record<CryptoVenue, string> = { BINANCE: "Binance", BTCTURK: "BtcTurk", "BINANCE-F": "Binance Vadeli", "BINANCE-ALPHA": "Binance Alpha", COINGECKO: "CoinGecko" };
 
-const CRYPTO_SYMBOL_RE = /^[A-Z0-9]{1,15}(-(USDT|TRY))?(@(BTCTURK|BINANCE-F|BINANCE-ALPHA))?$/;
+const CRYPTO_SYMBOL_RE = /^[A-Z0-9]{1,15}(-(USDT|TRY))?(@(BTCTURK|BINANCE-F|BINANCE-ALPHA|COINGECKO))?$/;
 const isCryptoVenue = (v: string): v is CryptoVenue => (CRYPTO_VENUES as readonly string[]).includes(v);
 
 export interface CryptoRef {
@@ -211,8 +214,8 @@ export function parseCryptoSymbol(symbol: string): CryptoRef | null {
   const venue: CryptoVenue = venueRaw && isCryptoVenue(venueRaw) ? venueRaw : "BINANCE";
   const [base, quoteRaw] = pair.split("-");
   const quote = (quoteRaw as CryptoQuote | undefined) ?? defaultQuote(venue);
-  // Vadeli ve Alpha yalnızca USDT kotasyonlu
-  if ((venue === "BINANCE-F" || venue === "BINANCE-ALPHA") && quote !== "USDT") return null;
+  // Vadeli, Alpha ve CoinGecko yalnızca USDT kotasyonlu
+  if ((venue === "BINANCE-F" || venue === "BINANCE-ALPHA" || venue === "COINGECKO") && quote !== "USDT") return null;
   return { base, quote, venue };
 }
 

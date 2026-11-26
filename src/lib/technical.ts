@@ -3,7 +3,7 @@ import { background } from "./background";
 import { getDb, sqlNow } from "./db";
 import { displaySymbol, GOLD_SYMBOL, goldKind, instrumentId, parseCryptoSymbol, type AssetType } from "./assets";
 import { fetchFundPrices, fundDateMs, getQuotes, yahooClient, yahooSymbolFor } from "./prices";
-import { binanceKlines, btcturkKlines, extraVenueKlines, listWatchlist } from "./market";
+import { binanceKlines, btcturkKlines, coingeckoKlines, extraVenueKlines, listWatchlist } from "./market";
 import { getPortfolio } from "./portfolio";
 import { addNotification } from "./orders";
 import { sendPushToAll } from "./push";
@@ -102,6 +102,12 @@ async function cryptoCandles(symbol: string): Promise<CandleSet> {
   const c = parseCryptoSymbol(symbol);
   if (!c) throw new Error("Kripto sembolü geçersiz.");
   const currency = c.quote === "TRY" ? "TRY" : "USD";
+  if (c.venue === "COINGECKO") {
+    // Günlük noktalar (anahtarsız uçta en fazla 365 gün); son nokta güncel fiyat
+    const rows = await coingeckoKlines(c.base, 365);
+    const lastRow = rows[rows.length - 1];
+    return { candles: rows.map(({ time, close, volume }) => ({ time, close, volume })), currency, lastPartial: !!lastRow && lastRow.closeTime > Date.now() };
+  }
   if (c.venue === "BINANCE-F" || c.venue === "BINANCE-ALPHA") {
     const rows = await extraVenueKlines(c, "1d", BINANCE_LIMIT);
     const lastRow = rows[rows.length - 1];
